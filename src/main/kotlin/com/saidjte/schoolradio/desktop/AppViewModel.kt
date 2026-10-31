@@ -26,12 +26,13 @@ import java.io.File
 import kotlin.concurrent.thread
 
 /**
- * صفحات التطبيق الخمس — فلسفة السلاسة:
- * «البث المباشر» وحدها هي الصفحة المدمجة، ومحتواها فقط ما يلزم المذيع على الهواء.
- * أما الإدارة (الجدولة، تحرير السكريبت، الموسيقى، التسجيلات) فلِكلٍّ منها صفحة مستقلة
- * كي لا تكتظ صفحة البث وينقلب المطلوب إلى عكسه.
+ * صفحات التطبيق — فلسفة مزدوجة:
+ * «الاستوديو المدمج» صفحة كاملة للإذاعة (جدولة + لوحة قراءة + بث) لمن يريد كل شيء أمام عينيه،
+ * و«البث المباشر» صفحة مدمجة أخف لمَ يفضّل التركيز، ولِبقيّة الإدارة صفحات مستقلة
+ * كي لا تكتظ صفحة واحدة وينقلب المطلوب إلى عكسه.
  */
 enum class Tab(val label: String) {
+    STUDIO("الاستوديو المدمج"),
     LIVE("البث المباشر"),
     SCHEDULE("جدولة الفقرات"),
     SCRIPT("سكريبت المذيع"),
@@ -44,7 +45,7 @@ data class Track(val file: File, val title: String, val durationMs: Long)
 /** حالة التطبيق المشتركة بين الصفحات الخمس: البث، الجدولة، السكريبت، الموسيقى، التسجيلات. */
 class AppViewModel {
 
-    private val _tab = MutableStateFlow(Tab.LIVE)
+    private val _tab = MutableStateFlow(Tab.STUDIO)
     val tab: StateFlow<Tab> = _tab.asStateFlow()
 
     val mic = MicLiveEngine()

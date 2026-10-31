@@ -38,6 +38,7 @@ import com.saidjte.schoolradio.desktop.ui.MusicTab
 import com.saidjte.schoolradio.desktop.ui.RecordingsTab
 import com.saidjte.schoolradio.desktop.ui.ScheduleTab
 import com.saidjte.schoolradio.desktop.ui.ScriptTab
+import com.saidjte.schoolradio.desktop.ui.StudioScreen
 import com.saidjte.schoolradio.desktop.audio.MicState
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 
@@ -76,14 +77,20 @@ fun AppRoot(vm: AppViewModel = remember { AppViewModel() }) {
     ).onAir
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-        Row(modifier = Modifier.fillMaxSize()) {
-            SideNav(selected = tab, onSelect = vm::selectTab, onAir = onAir)
-            when (tab) {
-                Tab.LIVE -> LivePage(vm)
-                Tab.SCHEDULE -> ScheduleTab(vm)
-                Tab.SCRIPT -> ScriptTab(vm)
-                Tab.MUSIC -> MusicTab(vm)
-                Tab.RECORDINGS -> RecordingsTab(vm)
+        if (tab == Tab.STUDIO) {
+            // الاستوديو المدمج: الجدولة + السكريبت + البث في شاشة واحدة بلا قائمة جانبية
+            StudioScreen(vm)
+        } else {
+            Row(modifier = Modifier.fillMaxSize()) {
+                SideNav(selected = tab, onSelect = vm::selectTab, onAir = onAir)
+                when (tab) {
+                    Tab.STUDIO -> StudioScreen(vm)
+                    Tab.LIVE -> LivePage(vm)
+                    Tab.SCHEDULE -> ScheduleTab(vm)
+                    Tab.SCRIPT -> ScriptTab(vm)
+                    Tab.MUSIC -> MusicTab(vm)
+                    Tab.RECORDINGS -> RecordingsTab(vm)
+                }
             }
         }
     }
@@ -110,7 +117,7 @@ private fun SideNav(selected: Tab, onSelect: (Tab) -> Unit, onAir: Boolean) {
             val isSelected = t == selected
             val content: @Composable RowScope.() -> Unit = {
                 Text(t.label, modifier = Modifier.weight(1f, fill = false))
-                if (t == Tab.LIVE && onAir) {
+                if ((t == Tab.LIVE || t == Tab.STUDIO) && onAir) {
                     Dot(color = Color(0xFFFF6E6E), size = 9.dp)
                 }
             }

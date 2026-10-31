@@ -142,11 +142,14 @@ class StudioTest {
     }
 
     @Test
-    fun `navigation has five focused pages with live broadcast as the default`() {
-        // فلسفة v0.4.0: صفحة بث مدمجة واحدة فقط + أربع صفحات إدارة مستقلة، بلا شاشة محشورة
-        assertEquals(listOf("LIVE", "SCHEDULE", "SCRIPT", "MUSIC", "RECORDINGS"), Tab.entries.map { it.name })
-        assertTrue(Tab.entries.none { it.name == "STUDIO" })
-        assertEquals("البث المباشر", Tab.entries.first().label)
+    fun `navigation restores integrated studio first with five focused pages after it`() {
+        // فلسفة v0.6.0: عودة الاستوديو المدمج شاشةً افتراضية كاملة، مع بقاء صفحات التركيز والإدارة المستقلة
+        assertEquals(
+            listOf("STUDIO", "LIVE", "SCHEDULE", "SCRIPT", "MUSIC", "RECORDINGS"),
+            Tab.entries.map { it.name }
+        )
+        assertEquals("الاستوديو المدمج", Tab.entries.first().label)
+        assertEquals("البث المباشر", Tab.entries.first { it.name == "LIVE" }.label)
     }
 
     @Test

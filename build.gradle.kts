@@ -47,6 +47,9 @@ sourceSets {
 }
 
 tasks.register("generateAppVersion") {
+    // version.properties مدخل مُعلَن: أي تغيير في الإصدار يجبر إعادة التوليد
+    // (بدونها تبقى الجرة تحمل رقم إصدار قديمًا رغم اسمها الجديد)
+    inputs.file(rootProject.file("version.properties"))
     outputs.dir(generatedVersionDir)
     doLast {
         val dir = generatedVersionDir.get().asFile
