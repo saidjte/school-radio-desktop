@@ -5,6 +5,12 @@ import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
+import com.saidjte.schoolradio.desktop.data.ScheduleMath
+import com.saidjte.schoolradio.desktop.data.ScheduleStore
+import com.saidjte.schoolradio.desktop.data.SegmentKind
+import com.saidjte.schoolradio.desktop.data.SegmentStatus
+import com.saidjte.schoolradio.desktop.data.ScriptStats
+import com.saidjte.schoolradio.desktop.data.ScriptStore
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.sin
@@ -58,6 +64,45 @@ object SelfTest {
             // 4) ماسح التسجيلات
             val items = RecordingsScanner.scan(tmp)
             check(items.size == 1 && items[0].displayName == "t1") { "scanner=$items" }
+
+            // 5) سكريبت المذيع: مخزن + حسابات + دورة حفظ/استرجاع
+            val scriptStore = ScriptStore(File(tmp, "script.json"))
+            val secA = scriptStore.add("مقدمة", "السلام عليكم ورحمة الله وبركاته")
+            scriptStore.add("نشرات", "أخبار المدرسة اليوم\nبسم الله نبدأ")
+            check(scriptStore.sections().size == 2) { "script add" }
+            check(ScriptStats.wordCount("أخبار المدرسة اليوم\nبسم الله نبدأ") == 6) { "wordCount" }
+            check(ScriptStats.secondsFor("x".repeat(1)) == 1L) { "ceil 1 word" }
+            check(scriptStore.move(secA.id, +1)) { "script move" }
+            check(scriptStore.sections()[0].body.contains("أخبار")) { "script order" }
+            scriptStore.update(secA.id, "مقدمة معدلة", "نص جديد")
+            val reloadedScript = ScriptStore(File(tmp, "script.json"))
+            check(reloadedScript.sections().size == 2) { "script reload" }
+            check(reloadedScript.sections().any { it.title == "مقدمة معدلة" }) { "script update persisted" }
+
+            // 6) جدولة الفقرات: مخزن + رياضيات + دورة حفظ/استرجاع
+            val schStore = ScheduleStore(File(tmp, "schedule.json"))
+            schStore.setEpisodeStart(8 * 60 + 15)
+            val it1 = schStore.add("افتتاح", SegmentKind.LIVE, 120, null, "")
+            schStore.add("نشيد", SegmentKind.RECORDING, 180, "/x/nashid.wav", "بطيء")
+            check(schStore.items().size == 2) { "schedule add" }
+            val offs = ScheduleMath.offsetsSeconds(schStore.items())
+            check(offs[0] == 0L && offs[1] == 120L) { "offsets=$offs" }
+            val clocks = ScheduleMath.plannedClocks(schStore.items(), schStore.episodeStartMinutes())
+            check(clocks[0] == "08:15" && clocks[1] == "08:17") { "clocks=$clocks" }
+            check(ScheduleMath.clockOf(25 * 60) == "01:00") { "clock wrap" }
+            check(
+                ScheduleMath.statuses(1, 3) ==
+                        listOf(SegmentStatus.DONE, SegmentStatus.CURRENT, SegmentStatus.UPCOMING)
+            ) { "statuses" }
+            check(
+                ScheduleMath.statuses(-1, 2) ==
+                        listOf(SegmentStatus.UPCOMING, SegmentStatus.UPCOMING)
+            ) { "statuses idle" }
+            val reloadedSch = ScheduleStore(File(tmp, "schedule.json"))
+            check(reloadedSch.episodeStartMinutes() == 495) { "episode start persisted" }
+            check(reloadedSch.items()[1].kind == SegmentKind.RECORDING) { "kind persisted" }
+            check(reloadedSch.items()[1].mediaPath == "/x/nashid.wav") { "mediaPath persisted" }
+            check(reloadedSch.move(it1.id, +5) == false) { "move bounds" }
 
             println("SELFTEST OK — version $APP_VERSION")
         } finally {

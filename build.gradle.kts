@@ -22,6 +22,7 @@ dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
     implementation("javazoom:jlayer:1.0.1")
+    implementation("com.google.code.gson:gson:2.11.0")
     testImplementation(kotlin("test"))
 }
 

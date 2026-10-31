@@ -33,6 +33,8 @@ import com.saidjte.schoolradio.desktop.ui.AppTheme
 import com.saidjte.schoolradio.desktop.ui.LiveTab
 import com.saidjte.schoolradio.desktop.ui.MusicTab
 import com.saidjte.schoolradio.desktop.ui.RecordingsTab
+import com.saidjte.schoolradio.desktop.ui.ScheduleTab
+import com.saidjte.schoolradio.desktop.ui.ScriptTab
 
 fun main(args: Array<String>) {
     // وضع الفحص الذاتي: تشغيل النواة دون واجهة رسومية (للأتمتة والتحقق)
@@ -63,6 +65,8 @@ fun AppRoot(vm: AppViewModel = remember { AppViewModel() }) {
             SideNav(selected = tab, onSelect = vm::selectTab)
             when (tab) {
                 Tab.LIVE -> LiveTab(vm)
+                Tab.SCHEDULE -> ScheduleTab(vm)
+                Tab.SCRIPT -> ScriptTab(vm)
                 Tab.MUSIC -> MusicTab(vm)
                 Tab.RECORDINGS -> RecordingsTab(vm)
             }

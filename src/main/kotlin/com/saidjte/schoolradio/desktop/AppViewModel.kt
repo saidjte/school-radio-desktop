@@ -7,22 +7,35 @@ import com.saidjte.schoolradio.desktop.audio.RecordingItem
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
+import com.saidjte.schoolradio.desktop.data.ScheduleItem
+import com.saidjte.schoolradio.desktop.data.ScheduleStore
+import com.saidjte.schoolradio.desktop.data.ScriptSection
+import com.saidjte.schoolradio.desktop.data.ScriptStore
+import com.saidjte.schoolradio.desktop.data.SegmentKind
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.concurrent.thread
 
 /** أقسام النافذة الواحدة: دمج الشاشات المتفرقة في نسخة الهاتف. */
 enum class Tab(val label: String) {
     LIVE("البث المباشر"),
+    SCHEDULE("جدولة الفقرات"),
+    SCRIPT("سكريبت المذيع"),
     MUSIC("الموسيقى"),
     RECORDINGS("التسجيلات")
 }
 
 data class Track(val file: File, val title: String, val durationMs: Long)
 
-/** حالة التطبيق المشتركة بين الأقسام الثلاثة. */
+/** حالة التطبيق المشتركة بين الأقسام الخمسة: البث، الجدولة، السكريبت، الموسيقى، التسجيلات. */
 class AppViewModel {
 
     private val _tab = MutableStateFlow(Tab.LIVE)
@@ -43,10 +56,170 @@ class AppViewModel {
     private val _recordings = MutableStateFlow<List<RecordingItem>>(emptyList())
     val recordings: StateFlow<List<RecordingItem>> = _recordings.asStateFlow()
 
+    // ================= سكريبت المذيع =================
+
+    private val scriptStore = ScriptStore(File(dataDir(), "script.json"))
+    private val _script = MutableStateFlow(scriptStore.sections())
+    val script: StateFlow<List<ScriptSection>> = _script.asStateFlow()
+
+    private val _selectedSectionId = MutableStateFlow<Long?>(null)
+    val selectedSectionId: StateFlow<Long?> = _selectedSectionId.asStateFlow()
+
+    /** وضع لوحة القراءة: المقطع المحدد وحده أو السكريبت كاملًا. */
+    val fullScriptReading = MutableStateFlow(false)
+
+    fun addSection(title: String, body: String) {
+        val s = scriptStore.add(title, body)
+        _script.value = scriptStore.sections()
+        _selectedSectionId.value = s.id
+    }
+
+    fun updateSection(id: Long, title: String, body: String) {
+        scriptStore.update(id, title, body)
+        _script.value = scriptStore.sections()
+    }
+
+    fun deleteSection(id: Long) {
+        scriptStore.delete(id)
+        _script.value = scriptStore.sections()
+        if (_selectedSectionId.value == id) {
+            _selectedSectionId.value = _script.value.firstOrNull()?.id
+        }
+    }
+
+    fun moveSection(id: Long, delta: Int) {
+        scriptStore.move(id, delta)
+        _script.value = scriptStore.sections()
+    }
+
+    fun selectSection(id: Long) {
+        _selectedSectionId.value = id
+    }
+
+    val selectedSection: ScriptSection?
+        get() = _script.value.firstOrNull { it.id == _selectedSectionId.value }
+            ?: _script.value.firstOrNull()
+
+    // ================= جدولة الفقرات =================
+
+    private val scheduleStore = ScheduleStore(File(dataDir(), "schedule.json"))
+    private val _schedule = MutableStateFlow(scheduleStore.items())
+    val schedule: StateFlow<List<ScheduleItem>> = _schedule.asStateFlow()
+
+    private val _episodeStartMinutes = MutableStateFlow(scheduleStore.episodeStartMinutes())
+    val episodeStartMinutes: StateFlow<Int?> = _episodeStartMinutes.asStateFlow()
+
+    fun setEpisodeStart(minutes: Int?) {
+        scheduleStore.setEpisodeStart(minutes)
+        _episodeStartMinutes.value = minutes
+    }
+
+    fun addScheduleItem(title: String, kind: SegmentKind, plannedSeconds: Long, mediaPath: String?, note: String) {
+        scheduleStore.add(title, kind, plannedSeconds, mediaPath, note)
+        _schedule.value = scheduleStore.items()
+    }
+
+    fun updateScheduleItem(id: Long, title: String, kind: SegmentKind, plannedSeconds: Long, mediaPath: String?, note: String) {
+        scheduleStore.update(id, title, kind, plannedSeconds, mediaPath, note)
+        _schedule.value = scheduleStore.items()
+        clampRun()
+    }
+
+    fun deleteScheduleItem(id: Long) {
+        scheduleStore.delete(id)
+        _schedule.value = scheduleStore.items()
+        clampRun()
+    }
+
+    fun moveScheduleItem(id: Long, delta: Int) {
+        scheduleStore.move(id, delta)
+        _schedule.value = scheduleStore.items()
+        clampRun()
+    }
+
+    // ================= التشغيل الحي للحلقة =================
+
+    private val runScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val _runActive = MutableStateFlow(false)
+    val runActive: StateFlow<Boolean> = _runActive.asStateFlow()
+
+    private val _runCurrentIndex = MutableStateFlow(-1)
+    val runCurrentIndex: StateFlow<Int> = _runCurrentIndex.asStateFlow()
+
+    private val _runElapsedMs = MutableStateFlow(0L)
+    val runElapsedMs: StateFlow<Long> = _runElapsedMs.asStateFlow()
+
+    private var itemStartedAtNanos = 0L
+    private var tickerJob: Job? = null
+
+    /** بدء الحلقة: الفقرة الأولى تصبح «جارية» ويبدأ عدّها. */
+    fun startRun() {
+        if (_runActive.value || _schedule.value.isEmpty()) return
+        _runActive.value = true
+        _runCurrentIndex.value = 0
+        beginItem()
+    }
+
+    /** إنهاء الفقرة الجارية والانتقال إلى التالية (أو إنهاء الحلقة). */
+    fun finishCurrentItem() {
+        if (!_runActive.value) return
+        val next = _runCurrentIndex.value + 1
+        if (next < _schedule.value.size) {
+            _runCurrentIndex.value = next
+            beginItem()
+        } else {
+            endRun()
+        }
+    }
+
+    /** إنهاء الحلقة: كل الحالات تعود إلى «قادمة». */
+    fun endRun() {
+        _runActive.value = false
+        _runCurrentIndex.value = -1
+        _runElapsedMs.value = 0L
+        tickerJob?.cancel()
+        tickerJob = null
+    }
+
+    private fun beginItem() {
+        itemStartedAtNanos = System.nanoTime()
+        _runElapsedMs.value = 0L
+        tickerJob?.cancel()
+        tickerJob = runScope.launch {
+            while (true) {
+                delay(200)
+                _runElapsedMs.value = (System.nanoTime() - itemStartedAtNanos) / 1_000_000L
+            }
+        }
+    }
+
+    /** حفظ تماسك المؤشر الحي بعد أي تعديل على القائمة. */
+    private fun clampRun() {
+        if (!_runActive.value) return
+        if (_schedule.value.isEmpty()) {
+            endRun()
+            return
+        }
+        if (_runCurrentIndex.value >= _schedule.value.size) {
+            _runCurrentIndex.value = _schedule.value.size - 1
+            beginItem()
+        }
+    }
+
+    /** تشغيل الملف المرتبط بفقرة الجدولة (موسيقى/تسجيل). */
+    fun runPlayMedia(item: ScheduleItem) {
+        val p = item.mediaPath ?: return
+        val f = File(p)
+        if (f.isFile) player.play(f)
+    }
+
     init {
         player.onEnded = { next(auto = true) }
         _recordingsDir.value.mkdirs()
         refreshRecordings()
+        if (_script.value.isNotEmpty()) {
+            _selectedSectionId.value = _script.value.first().id
+        }
     }
 
     fun selectTab(t: Tab) {
@@ -176,5 +349,8 @@ class AppViewModel {
 
     companion object {
         fun defaultRecordingsDir(): File = File(System.getProperty("user.home"), "SchoolRadio")
+
+        /** مجلد بيانات التطبيق (سكريبت + جدولة) — بجانب التسجيلات الافتراضية. */
+        fun dataDir(): File = defaultRecordingsDir()
     }
 }
