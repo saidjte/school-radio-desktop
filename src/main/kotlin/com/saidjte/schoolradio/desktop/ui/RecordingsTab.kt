@@ -80,9 +80,10 @@ fun RecordingsTab(vm: AppViewModel) {
         )
 
         if (recordings.isEmpty()) {
-            Text(
-                "لا توجد تسجيلات بعد. ابدأ تسجيلًا من تبويب «البث المباشر».",
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+            EmptyState(
+                icon = AppIconKind.RECORDINGS,
+                title = "لا توجد تسجيلات بعد",
+                hint = "ابدأ تسجيلًا من تبويب «البث المباشر» وستظهر تسجيلاتك هنا مع تشغيلها وإعادة تسميتها."
             )
         } else {
             LazyColumn(

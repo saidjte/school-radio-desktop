@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -86,9 +87,10 @@ fun MusicTab(vm: AppViewModel) {
             }
 
             if (playlist.isEmpty()) {
-                Text(
-                    "القائمة فارغة — أضف ملفات WAV أو MP3 للبدء.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                EmptyState(
+                    icon = AppIconKind.MUSIC,
+                    title = "القائمة فارغة",
+                    hint = "أضف ملفات WAV أو MP3 من الأعلى لتبني قائمة تشغيل الحلقة."
                 )
             } else {
                 LazyColumn(
@@ -180,37 +182,55 @@ fun MusicTab(vm: AppViewModel) {
                     formatMs(if (seekDragging) seekValue.toLong() else positionMs),
                     style = MaterialTheme.typography.bodySmall
                 )
+                Spacer(Modifier.weight(1f))
                 Text(
                     formatMs(durationMs),
                     style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SecondaryAction(
-                    text = "السابق",
-                    onClick = { vm.previous() },
-                    enabled = playlist.isNotEmpty()
-                )
+            // شبكة أزرار 2×2 — منع انضغاط أي زر وتكسّر نصه رأسيًا في العمود الضيق
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 if (isPlaying && !isPaused) {
-                    PrimaryAction(text = "إيقاف مؤقت", onClick = { player.pause() })
+                    PrimaryAction(
+                        text = "إيقاف مؤقت",
+                        onClick = { player.pause() },
+                        modifier = Modifier.weight(1f)
+                    )
                 } else {
                     PrimaryAction(
                         text = "تشغيل",
                         onClick = { vm.togglePlay() },
-                        enabled = playlist.isNotEmpty()
+                        enabled = playlist.isNotEmpty(),
+                        modifier = Modifier.weight(1f)
                     )
                 }
                 SecondaryAction(
-                    text = "التالي",
-                    onClick = { vm.next() },
-                    enabled = playlist.isNotEmpty()
-                )
-                SecondaryAction(
                     text = "إيقاف",
                     onClick = { player.stop() },
-                    enabled = hasTrack
+                    enabled = hasTrack,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                SecondaryAction(
+                    text = "السابق",
+                    onClick = { vm.previous() },
+                    enabled = playlist.isNotEmpty(),
+                    modifier = Modifier.weight(1f)
+                )
+                SecondaryAction(
+                    text = "التالي",
+                    onClick = { vm.next() },
+                    enabled = playlist.isNotEmpty(),
+                    modifier = Modifier.weight(1f)
                 )
             }
 

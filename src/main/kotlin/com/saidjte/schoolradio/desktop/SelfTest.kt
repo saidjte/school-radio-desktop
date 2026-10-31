@@ -6,6 +6,8 @@ import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
+import com.saidjte.schoolradio.desktop.data.MeterLogic
+import com.saidjte.schoolradio.desktop.data.MeterZone
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
 import com.saidjte.schoolradio.desktop.data.SegmentKind
@@ -170,6 +172,27 @@ object SelfTest {
                 RuntimeException("No line matching interface SourceDataLine supporting format is supported.")
             )
             check(outMsg.contains("سماعة")) { "output arabic: $outMsg" }
+
+            // 9) مقياس البث المقطعي: المقاطع والمناطق والذروة
+            check(MeterLogic.SEGMENTS == 24) { "segments" }
+            check(MeterLogic.litSegments(0f) == 0) { "lit zero" }
+            check(MeterLogic.litSegments(1f) == 24) { "lit full" }
+            check(MeterLogic.litSegments(0.5f) == 12) { "lit half" }
+            check(MeterLogic.litSegments(-0.7f) == 0) { "lit negative" }
+            check(MeterLogic.litSegments(2f) == 24) { "lit over" }
+            check(MeterLogic.litSegments(Float.NaN) == 0) { "lit nan" }
+            check(MeterLogic.zoneOf(0) == MeterZone.GREEN) { "zone green start" }
+            check(MeterLogic.zoneOf(13) == MeterZone.GREEN) { "zone green end" }
+            check(MeterLogic.zoneOf(14) == MeterZone.AMBER) { "zone amber start" }
+            check(MeterLogic.zoneOf(19) == MeterZone.AMBER) { "zone amber end" }
+            check(MeterLogic.zoneOf(20) == MeterZone.RED) { "zone red start" }
+            check(MeterLogic.zoneOf(23) == MeterZone.RED) { "zone red end" }
+            check(kotlin.math.abs(MeterLogic.peakIndex(0.5f, 0.2f) - 0.48f) < 1e-4f) { "peak decay" }
+            check(MeterLogic.peakIndex(0.2f, 0.5f) == 0.5f) { "peak rise" }
+            check(kotlin.math.abs(MeterLogic.peakIndex(0.1f, 0.05f) - 0.08f) < 1e-4f) { "peak floor" }
+            check(MeterLogic.peakSegment(0f) == -1) { "peak segment silent" }
+            check(MeterLogic.peakSegment(0.9f) == 21) { "peak segment 0.9=${MeterLogic.peakSegment(0.9f)}" }
+            check(MeterLogic.peakSegment(1f) == 23) { "peak segment full" }
 
             println("SELFTEST OK — version $APP_VERSION")
         } finally {

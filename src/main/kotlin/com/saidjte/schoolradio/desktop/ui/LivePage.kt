@@ -15,10 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,15 +27,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.saidjte.schoolradio.desktop.APP_VERSION
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.Tab
-import com.saidjte.schoolradio.desktop.audio.AudioDevices
 import com.saidjte.schoolradio.desktop.audio.MicState
 import com.saidjte.schoolradio.desktop.data.ScriptStats
 import com.saidjte.schoolradio.desktop.data.StudioLogic
@@ -96,31 +90,13 @@ private fun LiveTopBar(vm: AppViewModel) {
             fontWeight = FontWeight.Bold
         )
 
-        // مؤشر الهواء
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(18.dp))
-                .background(if (onAir) Color(0xFFC62828) else MaterialTheme.colorScheme.surface)
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Dot(
-                color = if (onAir) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                size = 10.dp
-            )
-            Text(
-                if (onAir) "على الهواء" else "خارج البث",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = if (onAir) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        // مؤشر الهواء الموحد بنبض حي
+        OnAirPill(onAir = onAir)
         if (recording) {
             Text(
                 "تسجيل جارٍ",
                 style = MaterialTheme.typography.labelLarge,
-                color = Color(0xFFEF9A9A),
+                color = LocalStudioColors.current.recordingAccent,
                 fontWeight = FontWeight.Bold
             )
         }
@@ -204,10 +180,10 @@ private fun ReadingPane(vm: AppViewModel, modifier: Modifier = Modifier) {
                 .padding(20.dp)
         ) {
             if (script.isEmpty()) {
-                Text(
-                    "لا يوجد سكريبت بعد — أضف فقرات النص من قسم «سكريبت المذيع» وستظهر هنا بخط كبير للقراءة على الهواء.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                EmptyState(
+                    icon = AppIconKind.SCRIPT,
+                    title = "لا يوجد سكريبت بعد",
+                    hint = "أضف فقرات النص من قسم «سكريبت المذيع» وستظهر هنا بخط كبير للقراءة على الهواء."
                 )
             } else if (fullReading) {
                 // وضع «كامل»: السكريبت بأكمله للقراءة المتصلة دون تنقّل
@@ -308,285 +284,8 @@ private fun BroadcastColumn(vm: AppViewModel) {
         modifier = Modifier.width(330.dp).fillMaxHeight(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        MicCard(vm)
-        MusicCard(vm)
+        BroadcastMicCard(vm)
+        BroadcastMusicCard(vm)
         Spacer(Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun MicCard(vm: AppViewModel) {
-    val mic = vm.mic
-    val state by mic.state.collectAsState()
-    val level by mic.level.collectAsState()
-    val monitoring by mic.monitoring.collectAsState()
-    val recording by mic.recording.collectAsState()
-    val recordMs by mic.recordMs.collectAsState()
-    val liveMs by mic.liveMs.collectAsState()
-    val error by mic.error.collectAsState()
-    val deviceName by mic.deviceName.collectAsState()
-
-    var devices by remember { mutableStateOf(AudioDevices.listMics()) }
-    var outputs by remember { mutableStateOf(AudioDevices.listOutputs()) }
-    var selectedDevice by remember { mutableStateOf(devices.firstOrNull()) }
-    var selectedOut by remember { mutableStateOf(outputs.firstOrNull()) }
-    var devicesMenu by remember { mutableStateOf(false) }
-    var outMenu by remember { mutableStateOf(false) }
-
-    /** إعادة تعداد أجهزة الإدخال والإخراج مع الحفاظ على الاختيار إن كان لا يزال موجودًا. */
-    fun refreshDeviceLists() {
-        val prevIn = selectedDevice
-        val prevOut = selectedOut
-        devices = AudioDevices.listMics()
-        outputs = AudioDevices.listOutputs()
-        selectedDevice = devices.firstOrNull { it.name == prevIn?.name } ?: devices.firstOrNull()
-        selectedOut = outputs.firstOrNull { it.name == prevOut?.name } ?: outputs.firstOrNull()
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "الميكروفون",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
-            Box {
-                SecondaryAction(
-                    text = "الجهاز…",
-                    onClick = { refreshDeviceLists(); devicesMenu = true }
-                )
-                DropdownMenu(expanded = devicesMenu, onDismissRequest = { devicesMenu = false }) {
-                    devices.forEach { d ->
-                        DropdownMenuItem(
-                            text = { Text(d.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                            onClick = {
-                                selectedDevice = d
-                                devicesMenu = false
-                            }
-                        )
-                    }
-                }
-            }
-        }
-
-        // محدّد المخرج (السماعات): يوجّه الموسيقى والتسجيلات والسماع المراقب
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "المخرج",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.weight(1f))
-            Box {
-                SecondaryAction(
-                    text = selectedOut?.let { shortenName(it.name, 14) } ?: "المخرج…",
-                    onClick = { refreshDeviceLists(); outMenu = true }
-                )
-                DropdownMenu(expanded = outMenu, onDismissRequest = { outMenu = false }) {
-                    outputs.forEach { d ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    (if (d.mixerInfo == selectedOut?.mixerInfo && d.name == selectedOut?.name) "● " else "") + d.name,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            },
-                            onClick = {
-                                selectedOut = d
-                                vm.player.setOutput(d.mixerInfo)
-                                mic.setMonitorOutput(d.mixerInfo)
-                                outMenu = false
-                            }
-                        )
-                    }
-                }
-            }
-            SecondaryAction(text = "تحديث", onClick = { refreshDeviceLists() })
-        }
-
-        if (state == MicState.LIVE) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PrimaryAction(
-                    text = "إيقاف البث",
-                    danger = true,
-                    onClick = {
-                        mic.stopRecording()
-                        mic.stop()
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    formatMs(liveMs),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color(0xFF81C784),
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            LevelBarH(level = level, modifier = Modifier.fillMaxWidth().height(14.dp))
-        } else {
-            PrimaryAction(
-                text = "بدء البث المباشر",
-                onClick = { mic.start(selectedDevice?.mixerInfo, selectedOut?.mixerInfo) },
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Switch(checked = monitoring, onCheckedChange = { mic.setMonitoring(it) })
-            Text("سماع مراقب", style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.weight(1f))
-            if (recording) {
-                SecondaryAction(text = "إيقاف التسجيل", onClick = { mic.stopRecording() })
-                Dot(color = Color(0xFFE53935), size = 10.dp)
-                Text(
-                    formatMs(recordMs),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFEF9A9A)
-                )
-            } else {
-                SecondaryAction(
-                    text = "تسجيل",
-                    enabled = state == MicState.LIVE,
-                    onClick = { mic.startRecording(vm.newRecordingTarget()) }
-                )
-            }
-        }
-        deviceName?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        error?.let {
-            Text(
-                "خطأ: $it",
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-    }
-}
-
-/** تقصير اسم الجهاز لزر صغير دون قصّ تخطيط البطاقة. */
-private fun shortenName(s: String, max: Int = 16): String =
-    if (s.length <= max) s else s.take(max - 1) + "…"
-
-@Composable
-private fun MusicCard(vm: AppViewModel) {
-    val player = vm.player
-    val playlist by vm.playlist.collectAsState()
-    val isPlaying by player.isPlaying.collectAsState()
-    val isPaused by player.isPaused.collectAsState()
-    val hasTrack by player.hasTrack.collectAsState()
-    val title by player.title.collectAsState()
-    val positionMs by player.positionMs.collectAsState()
-    val durationMs by player.durationMs.collectAsState()
-    val volume by player.volume.collectAsState()
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "الموسيقى",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
-            SecondaryAction(
-                text = "ملفات",
-                onClick = {
-                    val files = FilePickers.pickAudioFiles()
-                    if (files != null) vm.addFiles(files)
-                }
-            )
-            SecondaryAction(
-                text = "مجلد",
-                onClick = {
-                    val dir = FilePickers.pickAudioFolder()
-                    if (dir != null) vm.addFolder(dir)
-                }
-            )
-        }
-
-        Text(
-            title ?: "لا شيء قيد التشغيل",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            "${formatMs(positionMs)} / ${formatMs(durationMs)}${if (playlist.isEmpty()) "" else " · القائمة: ${playlist.size}"}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        // شبكة أزرار 2×2 — أهداف كبيرة مريحة دون أي قصّ داخل عمود 330dp
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            if (isPlaying && !isPaused) {
-                PrimaryAction(
-                    text = "إيقاف مؤقت",
-                    onClick = { player.pause() },
-                    modifier = Modifier.weight(1f)
-                )
-            } else {
-                PrimaryAction(
-                    text = "تشغيل",
-                    onClick = { vm.togglePlay() },
-                    enabled = playlist.isNotEmpty(),
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            SecondaryAction(
-                text = "إيقاف",
-                onClick = { player.stop() },
-                enabled = hasTrack,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            SecondaryAction(
-                text = "السابق",
-                onClick = { vm.previous() },
-                enabled = playlist.isNotEmpty(),
-                modifier = Modifier.weight(1f)
-            )
-            SecondaryAction(
-                text = "التالي",
-                onClick = { vm.next() },
-                enabled = playlist.isNotEmpty(),
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        Slider(
-            value = volume,
-            onValueChange = { player.setVolume(it) },
-            valueRange = 0f..1f
-        )
     }
 }
