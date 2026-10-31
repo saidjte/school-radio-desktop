@@ -326,9 +326,22 @@ private fun MicCard(vm: AppViewModel) {
     val error by mic.error.collectAsState()
     val deviceName by mic.deviceName.collectAsState()
 
-    val devices = remember { AudioDevices.listMics() }
+    var devices by remember { mutableStateOf(AudioDevices.listMics()) }
+    var outputs by remember { mutableStateOf(AudioDevices.listOutputs()) }
     var selectedDevice by remember { mutableStateOf(devices.firstOrNull()) }
+    var selectedOut by remember { mutableStateOf(outputs.firstOrNull()) }
     var devicesMenu by remember { mutableStateOf(false) }
+    var outMenu by remember { mutableStateOf(false) }
+
+    /** إعادة تعداد أجهزة الإدخال والإخراج مع الحفاظ على الاختيار إن كان لا يزال موجودًا. */
+    fun refreshDeviceLists() {
+        val prevIn = selectedDevice
+        val prevOut = selectedOut
+        devices = AudioDevices.listMics()
+        outputs = AudioDevices.listOutputs()
+        selectedDevice = devices.firstOrNull { it.name == prevIn?.name } ?: devices.firstOrNull()
+        selectedOut = outputs.firstOrNull { it.name == prevOut?.name } ?: outputs.firstOrNull()
+    }
 
     Column(
         modifier = Modifier
@@ -347,13 +360,13 @@ private fun MicCard(vm: AppViewModel) {
             )
             Box {
                 SecondaryAction(
-                    text = if (selectedDevice == null) "الجهاز" else "الجهاز…",
-                    onClick = { devicesMenu = true }
+                    text = "الجهاز…",
+                    onClick = { refreshDeviceLists(); devicesMenu = true }
                 )
                 DropdownMenu(expanded = devicesMenu, onDismissRequest = { devicesMenu = false }) {
                     devices.forEach { d ->
                         DropdownMenuItem(
-                            text = { Text(d.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            text = { Text(d.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
                             onClick = {
                                 selectedDevice = d
                                 devicesMenu = false
@@ -362,6 +375,42 @@ private fun MicCard(vm: AppViewModel) {
                     }
                 }
             }
+        }
+
+        // محدّد المخرج (السماعات): يوجّه الموسيقى والتسجيلات والسماع المراقب
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "المخرج",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.weight(1f))
+            Box {
+                SecondaryAction(
+                    text = selectedOut?.let { shortenName(it.name, 14) } ?: "المخرج…",
+                    onClick = { refreshDeviceLists(); outMenu = true }
+                )
+                DropdownMenu(expanded = outMenu, onDismissRequest = { outMenu = false }) {
+                    outputs.forEach { d ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    (if (d.mixerInfo == selectedOut?.mixerInfo && d.name == selectedOut?.name) "● " else "") + d.name,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            onClick = {
+                                selectedOut = d
+                                vm.player.setOutput(d.mixerInfo)
+                                mic.setMonitorOutput(d.mixerInfo)
+                                outMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+            SecondaryAction(text = "تحديث", onClick = { refreshDeviceLists() })
         }
 
         if (state == MicState.LIVE) {
@@ -386,7 +435,7 @@ private fun MicCard(vm: AppViewModel) {
         } else {
             PrimaryAction(
                 text = "بدء البث المباشر",
-                onClick = { mic.start(selectedDevice?.mixerInfo) },
+                onClick = { mic.start(selectedDevice?.mixerInfo, selectedOut?.mixerInfo) },
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -429,6 +478,10 @@ private fun MicCard(vm: AppViewModel) {
         }
     }
 }
+
+/** تقصير اسم الجهاز لزر صغير دون قصّ تخطيط البطاقة. */
+private fun shortenName(s: String, max: Int = 16): String =
+    if (s.length <= max) s else s.take(max - 1) + "…"
 
 @Composable
 private fun MusicCard(vm: AppViewModel) {

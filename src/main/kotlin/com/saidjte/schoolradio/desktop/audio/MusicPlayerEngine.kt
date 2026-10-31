@@ -14,6 +14,7 @@ import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioInputStream
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.FloatControl
+import javax.sound.sampled.Mixer
 import javax.sound.sampled.SourceDataLine
 import kotlin.concurrent.thread
 import kotlin.math.log10
@@ -46,7 +47,11 @@ private fun applyGain(line: SourceDataLine, volume: Float) {
 }
 
 /** قارئ MP3 عبر JLayer: فك إطارًا بإطار مع بحث زمني بإعادة الفتح والعدّ السريع. */
-private class Mp3TrackReader(private val file: File, volume: () -> Float) : TrackReader {
+private class Mp3TrackReader(
+    private val file: File,
+    outMixer: Mixer.Info?,
+    volume: () -> Float
+) : TrackReader {
 
     private val info = Mp3Info.analyze(file)
     private val fh = info?.first
@@ -68,7 +73,7 @@ private class Mp3TrackReader(private val file: File, volume: () -> Float) : Trac
         Mp3Info.skipId3v2(stream)
         bitstream = Bitstream(stream)
         format = AudioFormat(f.sampleRate.toFloat(), 16, f.channels, true, false)
-        line = AudioSystem.getSourceDataLine(format)
+        line = AudioDevices.openSourceLine(outMixer, format)
         line.open(format, 64 * 1024)
         line.start()
         applyGain(line, volume())
@@ -149,7 +154,11 @@ private class Mp3TrackReader(private val file: File, volume: () -> Float) : Trac
 }
 
 /** قارئ PCM (WAV/AIFF/AU) عبر AudioSystem مع تحويل إلى PCM 16-bit عند الحاجة. */
-private class PcmTrackReader(private val file: File, volume: () -> Float) : TrackReader {
+private class PcmTrackReader(
+    private val file: File,
+    outMixer: Mixer.Info?,
+    volume: () -> Float
+) : TrackReader {
 
     private var ais: AudioInputStream
     private val pcmFormat: AudioFormat
@@ -184,7 +193,7 @@ private class PcmTrackReader(private val file: File, volume: () -> Float) : Trac
             else -> 0L
         }
 
-        line = AudioSystem.getSourceDataLine(pcmFormat)
+        line = AudioDevices.openSourceLine(outMixer, pcmFormat)
         line.open(pcmFormat, 64 * 1024)
         line.start()
         applyGain(line, volume())
@@ -296,7 +305,21 @@ class MusicPlayerEngine {
     @Volatile private var switchTo: File? = null
     @Volatile private var seekRequest = -1L
     @Volatile private var volumeDirty = false
+
+    /** مخرج التشغيل المختار (null = السماعة الافتراضية للنظام). */
+    @Volatile private var outputMixer: Mixer.Info? = null
+    @Volatile private var reopenOutput = false
     private var worker: Thread? = null
+
+    /**
+     * تغيير مخرج التشغيل (السماعات) أثناء العمل: يُطبّق فورًا على المقطع الجاري
+     * بإعادة فتح سلسة تحفظ الموضع، وعلى كل مقطع لاحق.
+     */
+    fun setOutput(mixerInfo: Mixer.Info?) {
+        if (outputMixer === mixerInfo && !reopenOutput) return
+        outputMixer = mixerInfo
+        if (_hasTrack.value) reopenOutput = true
+    }
 
     fun play(file: File) {
         switchTo = file
@@ -369,12 +392,46 @@ class MusicPlayerEngine {
                         _positionMs.value = 0L
                         _isPlaying.value = true
                         _isPaused.value = false
+                        reopenOutput = false // فُتح للتو بالمخرج الحالي — لا حاجة لإعادة
                     } catch (t: Throwable) {
                         reader = null
                         _hasTrack.value = false
                         _isPlaying.value = false
                         _error.value = t.message ?: "تعذّر تشغيل الملف"
                         break
+                    }
+                }
+                // تبديل حي للمخرج: إعادة فتح سلسة تحفظ الموضع الحالي
+                if (reopenOutput) {
+                    reopenOutput = false
+                    val cf = _currentFile.value
+                    val r0 = reader
+                    if (r0 != null && cf != null) {
+                        val pos = r0.currentMs
+                        val wasPaused = paused
+                        try { r0.close() } catch (_: Exception) { }
+                        reader = try {
+                            val nr = openReader(cf)
+                            if (pos > 0) {
+                                try { nr.seek(pos) } catch (_: Exception) { }
+                            }
+                            if (wasPaused) nr.pause()
+                            nr
+                        } catch (t: Throwable) {
+                            // الجهاز الجديد فاشل: نعود للسماعة الافتراضية
+                            outputMixer = null
+                            try {
+                                val nr = openReader(cf)
+                                if (pos > 0) {
+                                    try { nr.seek(pos) } catch (_: Exception) { }
+                                }
+                                if (wasPaused) nr.pause()
+                                nr
+                            } catch (t2: Throwable) {
+                                _error.value = t2.message
+                                break
+                            }
+                        }
                     }
                 }
                 val r = reader ?: break
@@ -436,7 +493,7 @@ class MusicPlayerEngine {
 
     private fun openReader(file: File): TrackReader {
         val name = file.name.lowercase()
-        return if (name.endsWith(".mp3")) Mp3TrackReader(file) { _volume.value }
-        else PcmTrackReader(file) { _volume.value }
+        return if (name.endsWith(".mp3")) Mp3TrackReader(file, outputMixer) { _volume.value }
+        else PcmTrackReader(file, outputMixer) { _volume.value }
     }
 }

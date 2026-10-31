@@ -4,7 +4,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
-import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.Mixer
 import javax.sound.sampled.SourceDataLine
 import kotlin.concurrent.thread
@@ -55,6 +54,10 @@ class MicLiveEngine {
     @Volatile private var monitorWanted = false
     @Volatile private var recordWanted = false
     @Volatile private var recordTarget: File? = null
+
+    /** مخرج السماع المراقب (السماعة التي يختارها المذيع). */
+    @Volatile private var outMixer: Mixer.Info? = null
+    @Volatile private var outMixerDirty = false
     private var worker: Thread? = null
 
     /** تفعيل/تعطيل السماع المباشر (يعمل قبل البدء وأثناءه). */
@@ -63,11 +66,19 @@ class MicLiveEngine {
         if (_state.value == MicState.LIVE) _monitoring.value = on
     }
 
-    fun start(mixerInfo: Mixer.Info?) {
+    /** تغيير مخرج السماع المراقب قبل البدء وأثناءه (إعادة فتح حيّة دون قطع البث). */
+    fun setMonitorOutput(mixerInfo: Mixer.Info?) {
+        outMixer = mixerInfo
+        outMixerDirty = true
+    }
+
+    fun start(mixerInfo: Mixer.Info?, outMixerInfo: Mixer.Info? = null) {
         synchronized(this) {
             if (running) return
             running = true
         }
+        outMixer = outMixerInfo
+        outMixerDirty = false
         _error.value = null
         _liveMs.value = 0L
         _recordMs.value = 0L
@@ -107,13 +118,15 @@ class MicLiveEngine {
         try {
             val format = AudioDevices.pickFormat(mixerInfo)
             val l = AudioDevices.openTargetLine(mixerInfo, format)
-            val frameSize = format.frameSize.coerceAtLeast(1)
+            // الصيغة الفعلية بعد التفاوض (قد يرجع خط احتياطي بصيغة مختلفة)
+            val actual = l.format
+            val frameSize = actual.frameSize.coerceAtLeast(1)
             val chunk = frameSize * 1024
-            l.open(format, chunk * 4)
+            l.open(actual, chunk * 4)
             l.start()
             line = l
             _deviceName.value = mixerInfo?.name?.trim()?.ifEmpty { null } ?: "الميكروفون الافتراضي"
-            _activeFormat.value = "${format.sampleRate.toInt()} هرتز · ${format.channels} قناة · 16 بت"
+            _activeFormat.value = "${actual.sampleRate.toInt()} هرتز · ${actual.channels} قناة · 16 بت"
 
             val buf = ByteArray(chunk)
             val started = System.nanoTime()
@@ -125,20 +138,37 @@ class MicLiveEngine {
                 val rms = LevelMeter.rms(buf, n)
                 _level.value = LevelMeter.normalized(rms).toFloat()
 
+                // إعادة فتح السماع المراقب على المخرج الجديد دون قطع البث
+                if (outMixerDirty) {
+                    outMixerDirty = false
+                    try { out?.stop(); out?.close() } catch (_: Exception) { }
+                    out = null
+                }
                 if (monitorWanted) {
                     if (out == null) {
-                        val o = AudioSystem.getSourceDataLine(format)
-                        o.open(format, chunk * 4)
-                        o.start()
-                        out = o
+                        // فشل السماع المراقب لا يوقف البث المباشر أبدًا
+                        out = try {
+                            val o = AudioDevices.openSourceLine(outMixer, actual)
+                            o.open(actual, chunk * 4)
+                            o.start()
+                            o
+                        } catch (t: Throwable) {
+                            monitorWanted = false
+                            _monitoring.value = false
+                            _error.value = "السماع المراقب: " +
+                                    AudioDevices.describeOutputFailure(t)
+                            null
+                        }
                     }
-                    out.write(buf, 0, n)
+                    out?.let { o ->
+                        try { o.write(buf, 0, n) } catch (_: Exception) { }
+                    }
                 }
 
                 if (recordWanted && wav == null) {
                     val target = recordTarget
                     if (target != null) {
-                        wav = WavFileWriter(target, format.sampleRate.toInt(), format.channels)
+                        wav = WavFileWriter(target, actual.sampleRate.toInt(), actual.channels)
                         _recording.value = true
                     }
                 }
@@ -153,7 +183,7 @@ class MicLiveEngine {
                 }
             }
         } catch (t: Throwable) {
-            _error.value = t.message ?: "خطأ غير متوقع في البث المباشر"
+            _error.value = AudioDevices.describeInputFailure(t)
         } finally {
             try { wav?.close() } catch (_: Exception) { }
             try { out?.stop(); out?.close() } catch (_: Exception) { }

@@ -1,5 +1,6 @@
 package com.saidjte.schoolradio.desktop
 
+import com.saidjte.schoolradio.desktop.audio.AudioDevices
 import com.saidjte.schoolradio.desktop.audio.LevelMeter
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
@@ -16,6 +17,7 @@ import com.saidjte.schoolradio.desktop.data.ScheduleItem
 import com.saidjte.schoolradio.desktop.data.ScriptSource
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 import java.io.File
+import javax.sound.sampled.AudioFormat
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -144,6 +146,30 @@ object SelfTest {
             // معرف ارتباط سالب يُنقّى من المخزن
             schStore.add("مربوطة", SegmentKind.LIVE, 30, null, "", -5L)
             check(schStore.items().last().scriptSectionId == null) { "sanitize negative link" }
+
+            // 8) طبقة أجهزة الصوت — الإدخال والإخراج: تعداد آمن + صيغ + رسائل عربية
+            check(AudioDevices.listMics().isNotEmpty()) { "listMics empty" }
+            val outs = AudioDevices.listOutputs()
+            check(outs.isNotEmpty()) { "listOutputs empty" }
+            check(outs.first().mixerInfo == null && outs.first().name == AudioDevices.DEFAULT_OUTPUT_NAME) {
+                "outputs default first"
+            }
+            check(AudioDevices.CANDIDATE_FORMATS.size >= 12) { "candidates=${AudioDevices.CANDIDATE_FORMATS.size}" }
+            check(
+                AudioDevices.CANDIDATE_FORMATS.all {
+                    it.sampleSizeInBits == 16 && !it.isBigEndian && it.encoding == AudioFormat.Encoding.PCM_SIGNED
+                }
+            ) { "candidate formats not pcm16le" }
+            check(AudioDevices.CANDIDATE_FORMATS.any { it.sampleRate == 48000f && it.channels == 1 }) { "48k mono" }
+            check(AudioDevices.pickFormat(null).sampleSizeInBits == 16) { "pickFormat" }
+            val inMsg = AudioDevices.describeInputFailure(
+                RuntimeException("No line matching interface TargetDataLine supporting format is supported.")
+            )
+            check(inMsg.contains("ميكروفون")) { "input arabic: $inMsg" }
+            val outMsg = AudioDevices.describeOutputFailure(
+                RuntimeException("No line matching interface SourceDataLine supporting format is supported.")
+            )
+            check(outMsg.contains("سماعة")) { "output arabic: $outMsg" }
 
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
