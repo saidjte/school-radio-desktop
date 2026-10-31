@@ -183,7 +183,10 @@ class MicLiveEngine {
                 }
             }
         } catch (t: Throwable) {
-            _error.value = AudioDevices.describeInputFailure(t)
+            // IOException الآتية من openTargetLine رسالتها عربية مترجمة مسبقًا (ومعها السبب الأصلي):
+            // لا نمررها على الترجمة مرة ثانية كي لا يتراكم الغلاف «تعذّر فتح الميكروفون: تعذّر فتح…»
+            _error.value = if (t is java.io.IOException && t.cause != null) t.message
+            else AudioDevices.describeInputFailure(t)
         } finally {
             try { wav?.close() } catch (_: Exception) { }
             try { out?.stop(); out?.close() } catch (_: Exception) { }
