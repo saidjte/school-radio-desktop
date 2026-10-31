@@ -1,0 +1,132 @@
+name: build-release
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  jar:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x64
+            gradlew: .\gradlew.bat
+          - os: ubuntu-latest
+            target: linux-x64
+            gradlew: ./gradlew
+          - os: macos-latest
+            target: macos-arm64
+            gradlew: ./gradlew
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build uber jar
+        run: ${{ matrix.gradlew }} packageUberJarForCurrentOS --no-daemon --stacktrace
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jar-${{ matrix.target }}
+          path: build/compose/jars/*.jar
+
+  msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build MSI installer
+        run: .\gradlew.bat packageMsi --no-daemon --stacktrace
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: msi
+          path: build/compose/binaries/main/msi/*.msi
+
+  release:
+    needs: [jar, msi]
+    if: ${{ always() && needs.jar.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: prep
+        run: |
+          VERSION=$(grep -E '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Collect jars
+        uses: actions/download-artifact@v4
+        with:
+          pattern: jar-*
+          path: dist
+      - name: Prepare release files
+        run: |
+          VERSION="${{ steps.prep.outputs.version }}"
+          mkdir -p rel
+          for d in dist/jar-*; do
+            t="${d#dist/jar-}"
+            f=$(ls "$d"/*.jar | head -n1)
+            cp "$f" "rel/SchoolRadioDesktop_v${VERSION}-${t}.jar"
+          done
+          ls -la rel
+      - name: Attach MSI
+        if: ${{ needs.msi.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: msi
+          path: msi
+      - name: Rename MSI
+        if: ${{ needs.msi.result == 'success' }}
+        run: |
+          VERSION="${{ steps.prep.outputs.version }}"
+          mkdir -p relmsi
+          f=$(ls msi/*.msi | head -n1)
+          cp "$f" "relmsi/SchoolRadioDesktop_v${VERSION}-windows-x64.msi"
+      - name: Build release notes
+        run: |
+          VERSION="${{ steps.prep.outputs.version }}"
+          cat > notes.md <<EOF
+          إذاعة مدرسية احترافي — نسخة الحاسوب v${VERSION}
+
+          الوظائف الأساسية الثلاث في نافذة واحدة مكيّفة لشاشة الحاسوب:
+          • بث مباشر للميكروفون: اختيار جهاز الإدخال، مقياس مستوى حي، سماع مراقب، وتسجيل WAV أثناء البث.
+          • تشغيل الموسيقى: قائمة تشغيل WAV/MP3، بحث زمني، تحكم بالصوت، التالي/السابق، انتقال تلقائي.
+          • التسجيلات: مكتبة تسجيلات مع التشغيل وإعادة التسمية والحذف وتغيير المجلد.
+
+          الملفات:
+          • SchoolRadioDesktop_v${VERSION}-windows-x64.msi — مثبّت ويندوز (يتضمّن جافا، لا يحتاج أي تثبيت مسبق).
+          • SchoolRadioDesktop_v${VERSION}-windows-x64.jar — لويندوز عبر جافا 17+ (java -jar).
+          • SchoolRadioDesktop_v${VERSION}-linux-x64.jar — للينكس عبر جافا 17+.
+          • SchoolRadioDesktop_v${VERSION}-macos-arm64.jar — لماك (Apple Silicon) عبر جافا 17+.
+
+          مشروع مستقل تمامًا عن نسخة الهاتف (school-radio-android).
+          EOF
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.prep.outputs.version }}"
+          TAG="v${VERSION}"
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          FILES=(rel/*.jar)
+          if [ -d relmsi ]; then FILES+=(relmsi/*.msi); fi
+          gh release create "$TAG" "${FILES[@]}" \
+            --title "إذاعة مدرسية احترافي — نسخة الحاسوب v${VERSION}" \
+            --notes-file notes.md --latest

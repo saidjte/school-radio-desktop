@@ -1,0 +1,442 @@
+package com.saidjte.schoolradio.desktop.audio
+
+import javazoom.jl.decoder.Bitstream
+import javazoom.jl.decoder.Decoder
+import javazoom.jl.decoder.SampleBuffer
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.io.BufferedInputStream
+import java.io.Closeable
+import java.io.File
+import java.io.FileInputStream
+import javax.sound.sampled.AudioFormat
+import javax.sound.sampled.AudioInputStream
+import javax.sound.sampled.AudioSystem
+import javax.sound.sampled.FloatControl
+import javax.sound.sampled.SourceDataLine
+import kotlin.concurrent.thread
+import kotlin.math.log10
+import kotlin.math.min
+
+/**
+ * قارئ مقطع صوتي يفكّ ويكتب في خط السماع مباشرة.
+ * واجهة موحّدة فوق MP3 (JLayer) و PCM (Java Sound).
+ */
+private interface TrackReader : Closeable {
+    val durationMs: Long
+    val currentMs: Long
+    fun seek(ms: Long)
+    fun pause()
+    fun resume()
+    fun applyVolume(volume: Float)
+
+    /** يفكّ الإطار/الكتلة التالية ويكتبها في خط السماع. يعيد false عند النهاية. */
+    fun readChunk(): Boolean
+}
+
+private fun gainDb(volume: Float): Float =
+    if (volume <= 0.01f) -60f else 20f * log10(volume).toFloat()
+
+private fun applyGain(line: SourceDataLine, volume: Float) {
+    try {
+        val c = line.getControl(FloatControl.Type.MASTER_GAIN) as FloatControl
+        c.value = gainDb(volume).coerceIn(c.minimum, c.maximum)
+    } catch (_: Exception) { }
+}
+
+/** قارئ MP3 عبر JLayer: فك إطارًا بإطار مع بحث زمني بإعادة الفتح والعدّ السريع. */
+private class Mp3TrackReader(private val file: File, volume: () -> Float) : TrackReader {
+
+    private val info = Mp3Info.analyze(file)
+    private val fh = info?.first
+    private val format: AudioFormat
+    private val line: SourceDataLine
+    private var stream: BufferedInputStream
+    private var bitstream: Bitstream
+    private val decoder = Decoder()
+    private var framesDone = 0L
+    private var currentMsValue = 0L
+
+    override val durationMs: Long = info?.durationMs ?: 0L
+    override val currentMs: Long get() = currentMsValue
+
+    init {
+        val i = info ?: throw IllegalArgumentException("تعذّر تحليل ملف MP3: ${file.name}")
+        val f = fh!!
+        stream = BufferedInputStream(FileInputStream(file), 1 shl 16)
+        Mp3Info.skipId3v2(stream)
+        bitstream = Bitstream(stream)
+        format = AudioFormat(f.sampleRate.toFloat(), 16, f.channels, true, false)
+        line = AudioSystem.getSourceDataLine(format)
+        line.open(format, 64 * 1024)
+        line.start()
+        applyGain(line, volume())
+    }
+
+    override fun readChunk(): Boolean {
+        val header = try { bitstream.readFrame() } catch (_: Exception) { null } ?: return false
+        try {
+            val out = decoder.decodeFrame(header, bitstream)
+            if (out is SampleBuffer) {
+                val shorts = out.buffer
+                if (shorts.isNotEmpty()) {
+                    val bytes = ByteArray(shorts.size * 2)
+                    var bi = 0
+                    for (s in shorts) {
+                        val v = s.toInt()
+                        bytes[bi++] = (v and 0xFF).toByte()
+                        bytes[bi++] = ((v shr 8) and 0xFF).toByte()
+                    }
+                    line.write(bytes, 0, bytes.size)
+                }
+            }
+            framesDone++
+            val f = fh!!
+            currentMsValue = framesDone * f.samplesPerFrame * 1000L / f.sampleRate
+        } catch (_: Exception) {
+            // إطار تالف: نتجاوزه ونكمل
+        } finally {
+            try { bitstream.closeFrame() } catch (_: Exception) { }
+        }
+        return true
+    }
+
+    override fun seek(ms: Long) {
+        val f = fh ?: return
+        val target = ms.coerceIn(0L, durationMs)
+        try { bitstream.close() } catch (_: Exception) { }
+        try { stream.close() } catch (_: Exception) { }
+
+        val s = BufferedInputStream(FileInputStream(file), 1 shl 16)
+        stream = s
+        Mp3Info.skipId3v2(s)
+
+        // قفزة سريعة بالبايتات (تقدير CBR) مع هامش أمان 1.5 ثانية
+        val jumpMs = (target - 1500L).coerceAtLeast(0L)
+        var toSkip = jumpMs * f.bitRateKbps / 8L
+        val buf = ByteArray(8192)
+        while (toSkip > 0) {
+            val r = s.read(buf, 0, min(toSkip, buf.size.toLong()).toInt())
+            if (r < 0) break
+            toSkip -= r
+        }
+        bitstream = Bitstream(s)
+
+        // عدّ سريع للإطارات (دون فك) حتى الموضع المطلوب
+        var count = 0L
+        while (true) {
+            val h = try { bitstream.readFrame() } catch (_: Exception) { null } ?: break
+            val t = jumpMs + count * f.samplesPerFrame * 1000L / f.sampleRate
+            if (t >= target) break
+            count++
+            try { bitstream.closeFrame() } catch (_: Exception) { }
+        }
+        framesDone = jumpMs * f.sampleRate / (f.samplesPerFrame * 1000L) + count
+        currentMsValue = jumpMs + count * f.samplesPerFrame * 1000L / f.sampleRate
+        line.flush()
+    }
+
+    override fun pause() { try { line.stop() } catch (_: Exception) { } }
+    override fun resume() { try { line.start() } catch (_: Exception) { } }
+    override fun applyVolume(volume: Float) { applyGain(line, volume) }
+
+    override fun close() {
+        try { bitstream.close() } catch (_: Exception) { }
+        try { stream.close() } catch (_: Exception) { }
+        try { line.stop(); line.close() } catch (_: Exception) { }
+    }
+}
+
+/** قارئ PCM (WAV/AIFF/AU) عبر AudioSystem مع تحويل إلى PCM 16-bit عند الحاجة. */
+private class PcmTrackReader(private val file: File, volume: () -> Float) : TrackReader {
+
+    private var ais: AudioInputStream
+    private val pcmFormat: AudioFormat
+    private val line: SourceDataLine
+    private val frameSize: Int
+    private val buf = ByteArray(64 * 1024)
+    private var framesDone = 0L
+    private var currentMsValue = 0L
+
+    override val durationMs: Long
+    override val currentMs: Long get() = currentMsValue
+
+    init {
+        val raw = AudioSystem.getAudioInputStream(file)
+        val rf = raw.format
+        val isPlainPcm = rf.encoding == AudioFormat.Encoding.PCM_SIGNED &&
+                !rf.isBigEndian && rf.sampleSizeInBits == 16
+        ais = if (isPlainPcm) raw
+        else AudioSystem.getAudioInputStream(
+            AudioFormat(rf.sampleRate, 16, rf.channels, true, false), raw
+        )
+        pcmFormat = ais.format
+        frameSize = pcmFormat.frameSize.coerceAtLeast(1)
+
+        val fl = ais.frameLength
+        val wavInfo = WavHeader.read(file)
+        durationMs = when {
+            fl > 0 && pcmFormat.frameRate > 0 -> (fl * 1000L / pcmFormat.frameRate.toLong())
+            wavInfo != null -> WavFileWriter.durationMsOf(
+                wavInfo.dataBytes, wavInfo.sampleRate, wavInfo.channels, wavInfo.bitsPerSample
+            )
+            else -> 0L
+        }
+
+        line = AudioSystem.getSourceDataLine(pcmFormat)
+        line.open(pcmFormat, 64 * 1024)
+        line.start()
+        applyGain(line, volume())
+    }
+
+    override fun readChunk(): Boolean {
+        val n = try { ais.read(buf) } catch (_: Exception) { -1 }
+        if (n < 0) return false
+        if (n == 0) return true
+        val usable = n - (n % frameSize)
+        if (usable > 0) {
+            line.write(buf, 0, usable)
+            framesDone += usable / frameSize
+            if (pcmFormat.frameRate > 0) {
+                currentMsValue = framesDone * 1000L / pcmFormat.frameRate.toLong()
+            }
+        }
+        return true
+    }
+
+    override fun seek(ms: Long) {
+        val target = ms.coerceIn(0L, durationMs)
+        try { ais.close() } catch (_: Exception) { }
+        val raw = AudioSystem.getAudioInputStream(file)
+        val rf = raw.format
+        ais = if (rf.encoding == AudioFormat.Encoding.PCM_SIGNED && !rf.isBigEndian && rf.sampleSizeInBits == 16) raw
+        else AudioSystem.getAudioInputStream(AudioFormat(rf.sampleRate, 16, rf.channels, true, false), raw)
+
+        var toSkip = target * pcmFormat.frameRate.toLong() / 1000L * frameSize
+        var failed = false
+        try {
+            while (toSkip > 0) {
+                val k = ais.skip(toSkip)
+                if (k <= 0) {
+                    if (ais.read() < 0) break
+                    toSkip -= 1
+                } else {
+                    toSkip -= k
+                }
+            }
+        } catch (_: Exception) {
+            failed = true
+        }
+        if (failed) {
+            // احتياط: تجاهل بالقراءة السريعة
+            var remaining = target * pcmFormat.frameRate.toLong() / 1000L * frameSize
+            val discard = ByteArray(64 * 1024)
+            try {
+                while (remaining > 0) {
+                    val r = ais.read(discard, 0, min(remaining, discard.size.toLong()).toInt())
+                    if (r < 0) break
+                    remaining -= r
+                }
+            } catch (_: Exception) { }
+        }
+        framesDone = target * pcmFormat.frameRate.toLong() / 1000L
+        currentMsValue = target
+        line.flush()
+    }
+
+    override fun pause() { try { line.stop() } catch (_: Exception) { } }
+    override fun resume() { try { line.start() } catch (_: Exception) { } }
+    override fun applyVolume(volume: Float) { applyGain(line, volume) }
+
+    override fun close() {
+        try { ais.close() } catch (_: Exception) { }
+        try { line.stop(); line.close() } catch (_: Exception) { }
+    }
+}
+
+/**
+ * محرّك تشغيل الموسيقى (نسخة الحاسوب): خيط عامل واحد يملك القارئ والخط،
+ * أوامر متطايرة (تبديل/بحث/إيقاف مؤقت) — نمط مجرّب لا سباقات فيه.
+ */
+class MusicPlayerEngine {
+
+    private val _isPlaying = MutableStateFlow(false)
+    val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
+
+    private val _isPaused = MutableStateFlow(false)
+    val isPaused: StateFlow<Boolean> = _isPaused.asStateFlow()
+
+    private val _hasTrack = MutableStateFlow(false)
+    val hasTrack: StateFlow<Boolean> = _hasTrack.asStateFlow()
+
+    private val _title = MutableStateFlow<String?>(null)
+    val title: StateFlow<String?> = _title.asStateFlow()
+
+    private val _positionMs = MutableStateFlow(0L)
+    val positionMs: StateFlow<Long> = _positionMs.asStateFlow()
+
+    private val _durationMs = MutableStateFlow(0L)
+    val durationMs: StateFlow<Long> = _durationMs.asStateFlow()
+
+    private val _volume = MutableStateFlow(0.9f)
+    val volume: StateFlow<Float> = _volume.asStateFlow()
+
+    private val _currentFile = MutableStateFlow<File?>(null)
+    val currentFile: StateFlow<File?> = _currentFile.asStateFlow()
+
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+
+    /** يُستدعى من خيط التشغيل عند انتهاء المقطع (للانتقال التلقائي). */
+    var onEnded: (() -> Unit)? = null
+
+    @Volatile private var paused = false
+    @Volatile private var stopped = true
+    @Volatile private var switchTo: File? = null
+    @Volatile private var seekRequest = -1L
+    @Volatile private var volumeDirty = false
+    private var worker: Thread? = null
+
+    fun play(file: File) {
+        switchTo = file
+        paused = false
+        stopped = false
+        _isPaused.value = false
+        _error.value = null
+        ensureWorker()
+    }
+
+    fun toggle() { if (paused) resume() else pause() }
+
+    fun pause() {
+        if (_hasTrack.value && !_isPaused.value) {
+            paused = true
+            _isPaused.value = true
+        }
+    }
+
+    fun resume() {
+        if (paused) {
+            paused = false
+            _isPaused.value = false
+        }
+    }
+
+    fun stop() {
+        stopped = true
+        paused = false
+        _isPaused.value = false
+    }
+
+    fun seek(ms: Long) {
+        if (_hasTrack.value) seekRequest = ms.coerceAtLeast(0L)
+    }
+
+    fun setVolume(v: Float) {
+        _volume.value = v.coerceIn(0f, 1f)
+        volumeDirty = true
+    }
+
+    /** انتظار توقف الخيط العامل (لحذف/إعادة تسمية ملف قيد التشغيل). */
+    fun awaitIdle(timeoutMs: Long = 1500) {
+        val w = worker
+        w?.join(timeoutMs)
+    }
+
+    private fun ensureWorker() {
+        if (worker?.isAlive == true) return
+        worker = thread(name = "music-player", isDaemon = true) { run() }
+    }
+
+    private fun run() {
+        var reader: TrackReader? = null
+        var wasPaused = false
+        try {
+            while (!stopped) {
+                val sw = switchTo
+                if (sw != null) {
+                    switchTo = null
+                    try { reader?.close() } catch (_: Exception) { }
+                    reader = null
+                    wasPaused = false
+                    try {
+                        reader = openReader(sw)
+                        _currentFile.value = sw
+                        _title.value = sw.nameWithoutExtension
+                        _hasTrack.value = true
+                        _durationMs.value = reader.durationMs
+                        _positionMs.value = 0L
+                        _isPlaying.value = true
+                        _isPaused.value = false
+                    } catch (t: Throwable) {
+                        reader = null
+                        _hasTrack.value = false
+                        _isPlaying.value = false
+                        _error.value = t.message ?: "تعذّر تشغيل الملف"
+                        break
+                    }
+                }
+                val r = reader ?: break
+
+                val sq = seekRequest
+                if (sq >= 0) {
+                    seekRequest = -1L
+                    try { r.seek(sq) } catch (_: Exception) { }
+                }
+                if (volumeDirty) {
+                    volumeDirty = false
+                    try { r.applyVolume(_volume.value) } catch (_: Exception) { }
+                }
+
+                if (paused) {
+                    if (!wasPaused) {
+                        try { r.pause() } catch (_: Exception) { }
+                        wasPaused = true
+                    }
+                    Thread.sleep(40)
+                    continue
+                }
+                if (wasPaused) {
+                    try { r.resume() } catch (_: Exception) { }
+                    wasPaused = false
+                }
+
+                val more = try {
+                    r.readChunk()
+                } catch (t: Throwable) {
+                    _error.value = t.message
+                    false
+                }
+                if (more) {
+                    _positionMs.value = r.currentMs
+                } else {
+                    _isPlaying.value = false
+                    val cb = onEnded
+                    if (cb != null) cb()
+                    if (switchTo == null || stopped) break
+                }
+            }
+        } catch (t: Throwable) {
+            _error.value = t.message ?: "خطأ غير متوقع في المشغّل"
+        } finally {
+            try { reader?.close() } catch (_: Exception) { }
+            if (stopped) {
+                _isPlaying.value = false
+                _isPaused.value = false
+                _hasTrack.value = false
+                _currentFile.value = null
+                _title.value = null
+                _positionMs.value = 0L
+                _durationMs.value = 0L
+            }
+            worker = null
+        }
+    }
+
+    private fun openReader(file: File): TrackReader {
+        val name = file.name.lowercase()
+        return if (name.endsWith(".mp3")) Mp3TrackReader(file) { _volume.value }
+        else PcmTrackReader(file) { _volume.value }
+    }
+}
