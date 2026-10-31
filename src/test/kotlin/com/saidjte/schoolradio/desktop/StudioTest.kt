@@ -117,4 +117,63 @@ class StudioTest {
             dir.deleteRecursively()
         }
     }
+
+    // ============ v0.4.0: صفحة بث نظيفة + تنقّل سلس ============
+
+    @Test
+    fun `next run index advances within bounds`() {
+        assertEquals(1, StudioLogic.nextRunIndex(0, 3))
+        assertEquals(2, StudioLogic.nextRunIndex(1, 3))
+        assertEquals(1, StudioLogic.nextRunIndex(0, 2))
+    }
+
+    @Test
+    fun `next run index signals end of run at last item`() {
+        assertNull(StudioLogic.nextRunIndex(2, 3))
+        assertNull(StudioLogic.nextRunIndex(0, 1))
+        assertNull(StudioLogic.nextRunIndex(5, 3))
+    }
+
+    @Test
+    fun `next run index handles empty and negative index safely`() {
+        assertNull(StudioLogic.nextRunIndex(0, 0))
+        assertNull(StudioLogic.nextRunIndex(-1, 0))
+        assertEquals(0, StudioLogic.nextRunIndex(-1, 5))
+    }
+
+    @Test
+    fun `navigation has five focused pages with live broadcast as the default`() {
+        // فلسفة v0.4.0: صفحة بث مدمجة واحدة فقط + أربع صفحات إدارة مستقلة، بلا شاشة محشورة
+        assertEquals(listOf("LIVE", "SCHEDULE", "SCRIPT", "MUSIC", "RECORDINGS"), Tab.entries.map { it.name })
+        assertTrue(Tab.entries.none { it.name == "STUDIO" })
+        assertEquals("البث المباشر", Tab.entries.first().label)
+    }
+
+    @Test
+    fun `adjacent selection clamps to first and last section`() {
+        val dir = File(System.getProperty("java.io.tmpdir"), "sr-adj-test-${System.nanoTime()}")
+        dir.mkdirs()
+        try {
+            // نتحقق من منطق حدود التنقّل عبر مخزن سكريبت مؤقت: أول/آخر فقرة دون خروج عن الحدود
+            // (دون إنشاء AppViewModel كاملًا حتى لا تُفتح أجهزة صوت في بيئة الاختبار)
+            val store = com.saidjte.schoolradio.desktop.data.ScriptStore(File(dir, "s.json"))
+            val a = store.add("أ", "نص")
+            val b = store.add("ب", "نص")
+            val c = store.add("ج", "نص")
+            val ids = store.sections().map { it.id }
+            assertEquals(listOf(a.id, b.id, c.id), ids)
+            // محاكاة الحدود كما في selectAdjacentSection
+            var sel: Long = ids[1]
+            fun adjacent(delta: Int): Long {
+                val cur = ids.indexOfFirst { it == sel }
+                return ids[if (cur < 0) 0 else (cur + delta).coerceIn(0, ids.size - 1)]
+            }
+            sel = adjacent(-1); assertEquals(ids[0], sel)
+            sel = adjacent(-1); assertEquals(ids[0], sel) // مثبّت عند الأولى
+            sel = adjacent(+1); sel = adjacent(+1); assertEquals(ids[2], sel)
+            sel = adjacent(+1); assertEquals(ids[2], sel) // مثبّت عند الأخيرة
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }

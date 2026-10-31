@@ -55,6 +55,18 @@ object StudioLogic {
         return script.first() to ScriptSource.MANUAL
     }
 
+    /**
+     * مؤشر الفقرة التالية عند إنهاء الحالية في التشغيل الحي للحلقة.
+     * يعيد null عند بلوغ نهاية القائمة أو إذا كانت فارغة — إشارةً إلى إنهاء الحلقة.
+     * الفهرس الشاذ (سالب أو خارج الحدود) يُعالج بأمان: سالب يعني البدء من الفقرة الأولى،
+     * وخارج الحدود يعني الإنهاء.
+     */
+    fun nextRunIndex(currentIndex: Int, itemCount: Int): Int? {
+        if (itemCount <= 0) return null
+        val next = currentIndex + 1
+        return if (next in 0 until itemCount) next else null
+    }
+
     /** تجميع حالة الهواء من مصادرها الثلاثة. */
     fun status(micLive: Boolean, recording: Boolean, musicPlaying: Boolean): StudioStatus =
         StudioStatus(micLive, recording, musicPlaying)

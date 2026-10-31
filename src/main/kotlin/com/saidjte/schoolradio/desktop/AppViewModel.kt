@@ -25,9 +25,13 @@ import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.concurrent.thread
 
-/** أقسام النافذة: الاستوديو المدمج أولًا (شاشة واحدة للبث) ثم الأقسام التفصيلية. */
+/**
+ * صفحات التطبيق الخمس — فلسفة السلاسة:
+ * «البث المباشر» وحدها هي الصفحة المدمجة، ومحتواها فقط ما يلزم المذيع على الهواء.
+ * أما الإدارة (الجدولة، تحرير السكريبت، الموسيقى، التسجيلات) فلِكلٍّ منها صفحة مستقلة
+ * كي لا تكتظ صفحة البث وينقلب المطلوب إلى عكسه.
+ */
 enum class Tab(val label: String) {
-    STUDIO("الاستوديو المدمج"),
     LIVE("البث المباشر"),
     SCHEDULE("جدولة الفقرات"),
     SCRIPT("سكريبت المذيع"),
@@ -37,10 +41,10 @@ enum class Tab(val label: String) {
 
 data class Track(val file: File, val title: String, val durationMs: Long)
 
-/** حالة التطبيق المشتركة بين الأقسام الخمسة: البث، الجدولة، السكريبت، الموسيقى، التسجيلات. */
+/** حالة التطبيق المشتركة بين الصفحات الخمس: البث، الجدولة، السكريبت، الموسيقى، التسجيلات. */
 class AppViewModel {
 
-    private val _tab = MutableStateFlow(Tab.STUDIO)
+    private val _tab = MutableStateFlow(Tab.LIVE)
     val tab: StateFlow<Tab> = _tab.asStateFlow()
 
     val mic = MicLiveEngine()
@@ -96,6 +100,18 @@ class AppViewModel {
 
     fun selectSection(id: Long) {
         _selectedSectionId.value = id
+    }
+
+    /**
+     * تنقّل سلس على لوحة القراءة أثناء البث: الفقرة السابقة/التالية في السكريبت
+     * بضغطة واحدة دون فتح صفحة التحرير. الحدود تُنطّق بأمان (أول/آخر فقرة).
+     */
+    fun selectAdjacentSection(delta: Int) {
+        val list = _script.value
+        if (list.isEmpty()) return
+        val cur = list.indexOfFirst { it.id == _selectedSectionId.value }
+        val idx = if (cur < 0) 0 else (cur + delta).coerceIn(0, list.size - 1)
+        _selectedSectionId.value = list[idx].id
     }
 
     val selectedSection: ScriptSection?
@@ -181,11 +197,11 @@ class AppViewModel {
         beginItem()
     }
 
-    /** إنهاء الفقرة الجارية والانتقال إلى التالية (أو إنهاء الحلقة). */
+    /** إنهاء الفقرة الجارية والانتقال إلى التالية (أو إنهاء الحلقة عند بلوغ النهاية). */
     fun finishCurrentItem() {
         if (!_runActive.value) return
-        val next = _runCurrentIndex.value + 1
-        if (next < _schedule.value.size) {
+        val next = StudioLogic.nextRunIndex(_runCurrentIndex.value, _schedule.value.size)
+        if (next != null) {
             _runCurrentIndex.value = next
             beginItem()
         } else {
