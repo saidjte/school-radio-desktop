@@ -12,6 +12,7 @@ import com.saidjte.schoolradio.desktop.data.ScheduleStore
 import com.saidjte.schoolradio.desktop.data.ScriptSection
 import com.saidjte.schoolradio.desktop.data.ScriptStore
 import com.saidjte.schoolradio.desktop.data.SegmentKind
+import com.saidjte.schoolradio.desktop.data.StudioLogic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,8 +25,9 @@ import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.concurrent.thread
 
-/** أقسام النافذة الواحدة: دمج الشاشات المتفرقة في نسخة الهاتف. */
+/** أقسام النافذة: الاستوديو المدمج أولًا (شاشة واحدة للبث) ثم الأقسام التفصيلية. */
 enum class Tab(val label: String) {
+    STUDIO("الاستوديو المدمج"),
     LIVE("البث المباشر"),
     SCHEDULE("جدولة الفقرات"),
     SCRIPT("سكريبت المذيع"),
@@ -38,7 +40,7 @@ data class Track(val file: File, val title: String, val durationMs: Long)
 /** حالة التطبيق المشتركة بين الأقسام الخمسة: البث، الجدولة، السكريبت، الموسيقى، التسجيلات. */
 class AppViewModel {
 
-    private val _tab = MutableStateFlow(Tab.LIVE)
+    private val _tab = MutableStateFlow(Tab.STUDIO)
     val tab: StateFlow<Tab> = _tab.asStateFlow()
 
     val mic = MicLiveEngine()
@@ -114,13 +116,28 @@ class AppViewModel {
         _episodeStartMinutes.value = minutes
     }
 
-    fun addScheduleItem(title: String, kind: SegmentKind, plannedSeconds: Long, mediaPath: String?, note: String) {
-        scheduleStore.add(title, kind, plannedSeconds, mediaPath, note)
+    fun addScheduleItem(
+        title: String,
+        kind: SegmentKind,
+        plannedSeconds: Long,
+        mediaPath: String?,
+        note: String,
+        scriptSectionId: Long? = null
+    ) {
+        scheduleStore.add(title, kind, plannedSeconds, mediaPath, note, scriptSectionId)
         _schedule.value = scheduleStore.items()
     }
 
-    fun updateScheduleItem(id: Long, title: String, kind: SegmentKind, plannedSeconds: Long, mediaPath: String?, note: String) {
-        scheduleStore.update(id, title, kind, plannedSeconds, mediaPath, note)
+    fun updateScheduleItem(
+        id: Long,
+        title: String,
+        kind: SegmentKind,
+        plannedSeconds: Long,
+        mediaPath: String?,
+        note: String,
+        scriptSectionId: Long? = null
+    ) {
+        scheduleStore.update(id, title, kind, plannedSeconds, mediaPath, note, scriptSectionId)
         _schedule.value = scheduleStore.items()
         clampRun()
     }
@@ -148,6 +165,10 @@ class AppViewModel {
 
     private val _runElapsedMs = MutableStateFlow(0L)
     val runElapsedMs: StateFlow<Long> = _runElapsedMs.asStateFlow()
+
+    /** ساعة الحاسوب الحية (HH:mm:ss) لشريط الاستوديو العلوي. */
+    private val _clockText = MutableStateFlow(StudioLogic.clockText(System.currentTimeMillis()))
+    val clockText: StateFlow<String> = _clockText.asStateFlow()
 
     private var itemStartedAtNanos = 0L
     private var tickerJob: Job? = null
@@ -184,12 +205,26 @@ class AppViewModel {
     private fun beginItem() {
         itemStartedAtNanos = System.nanoTime()
         _runElapsedMs.value = 0L
+        followScriptForCurrent()
         tickerJob?.cancel()
         tickerJob = runScope.launch {
             while (true) {
                 delay(200)
                 _runElapsedMs.value = (System.nanoTime() - itemStartedAtNanos) / 1_000_000L
             }
+        }
+    }
+
+    /**
+     * تكامل الاستوديو المدمج: عند جريان فقرة مرتبطة بفقرة سكريبت،
+     * تنتقل لوحة القراءة إليها آليًا وتخرج من وضع القراءة الكاملة.
+     */
+    private fun followScriptForCurrent() {
+        val sid = _schedule.value.getOrNull(_runCurrentIndex.value)?.scriptSectionId ?: return
+        if (sid <= 0L) return
+        if (_script.value.any { it.id == sid }) {
+            _selectedSectionId.value = sid
+            fullScriptReading.value = false
         }
     }
 
@@ -219,6 +254,12 @@ class AppViewModel {
         refreshRecordings()
         if (_script.value.isNotEmpty()) {
             _selectedSectionId.value = _script.value.first().id
+        }
+        runScope.launch {
+            while (true) {
+                delay(1000)
+                _clockText.value = StudioLogic.clockText(System.currentTimeMillis())
+            }
         }
     }
 

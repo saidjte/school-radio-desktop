@@ -17,7 +17,9 @@ data class ScheduleItem(
     val kind: SegmentKind = SegmentKind.SPEECH,
     val plannedSeconds: Long = 0L,
     val mediaPath: String? = null,
-    val note: String = ""
+    val note: String = "",
+    /** فقرة السكريبت المرتبطة (اختياري) — تُعرض آليًا على لوحة القراءة عند جريان الفقرة. */
+    val scriptSectionId: Long? = null
 )
 
 data class ScheduleDoc(

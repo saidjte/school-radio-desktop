@@ -9,8 +9,12 @@ import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
 import com.saidjte.schoolradio.desktop.data.SegmentKind
 import com.saidjte.schoolradio.desktop.data.SegmentStatus
+import com.saidjte.schoolradio.desktop.data.ScriptSection
 import com.saidjte.schoolradio.desktop.data.ScriptStats
 import com.saidjte.schoolradio.desktop.data.ScriptStore
+import com.saidjte.schoolradio.desktop.data.ScheduleItem
+import com.saidjte.schoolradio.desktop.data.ScriptSource
+import com.saidjte.schoolradio.desktop.data.StudioLogic
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.sin
@@ -103,6 +107,43 @@ object SelfTest {
             check(reloadedSch.items()[1].kind == SegmentKind.RECORDING) { "kind persisted" }
             check(reloadedSch.items()[1].mediaPath == "/x/nashid.wav") { "mediaPath persisted" }
             check(reloadedSch.move(it1.id, +5) == false) { "move bounds" }
+
+            // 7) الاستوديو المدمج: أولوية عرض السكريبت + حالة الهواء + الساعة
+            val secs = listOf(ScriptSection(1, "مقدمة", "نص المقدمة"), ScriptSection(2, "نشرات", "نص النشرات"))
+            val studioItems = listOf(
+                ScheduleItem(10, "افتتاح", SegmentKind.LIVE, 60, null, "", 2L),
+                ScheduleItem(11, "نشيد", SegmentKind.RECORDING, 60)
+            )
+            val r1 = StudioLogic.resolveScriptSection(studioItems, true, 0, secs, 1L)
+                ?: error("resolve r1 null")
+            check(r1.second == ScriptSource.FROM_SCHEDULE && r1.first.id == 2L) { "r1=$r1" }
+            // فقرة بلا ارتباط → تراجع للاختيار اليدوي
+            val r2 = StudioLogic.resolveScriptSection(studioItems, true, 1, secs, 1L)
+                ?: error("resolve r2 null")
+            check(r2.second == ScriptSource.MANUAL && r2.first.id == 1L) { "r2=$r2" }
+            // بلا تشغيل وبلا اختيار → أول فقرة
+            val r3 = StudioLogic.resolveScriptSection(studioItems, false, -1, secs, null)
+                ?: error("resolve r3 null")
+            check(r3.first.id == 1L && r3.second == ScriptSource.MANUAL) { "r3=$r3" }
+            // رابط قديم (فقرة سكريبت محذوفة) → تراجع آمن
+            val stale = listOf(ScheduleItem(10, "افتتاح", SegmentKind.LIVE, 60, null, "", 99L))
+            val r4 = StudioLogic.resolveScriptSection(stale, true, 0, secs, 2L)
+                ?: error("resolve r4 null")
+            check(r4.second == ScriptSource.MANUAL && r4.first.id == 2L) { "r4=$r4" }
+            // سكريبت فارغ → null
+            check(StudioLogic.resolveScriptSection(studioItems, true, 0, emptyList(), 1L) == null) { "empty script" }
+            // حالة الهواء
+            check(StudioLogic.status(true, false, false).onAir) { "onAir mic" }
+            check(StudioLogic.status(false, true, false).onAir) { "onAir rec" }
+            check(StudioLogic.status(false, false, true).onAir) { "onAir music" }
+            check(!StudioLogic.status(false, false, false).onAir) { "off air" }
+            // الساعة
+            val utc = java.util.TimeZone.getTimeZone("UTC")
+            check(StudioLogic.clockText(0L, utc) == "00:00:00") { "clock zero=${StudioLogic.clockText(0L, utc)}" }
+            check(StudioLogic.clockText(3_661_000L, utc) == "01:01:01") { "clock 1h=${StudioLogic.clockText(3_661_000L, utc)}" }
+            // معرف ارتباط سالب يُنقّى من المخزن
+            schStore.add("مربوطة", SegmentKind.LIVE, 30, null, "", -5L)
+            check(schStore.items().last().scriptSectionId == null) { "sanitize negative link" }
 
             println("SELFTEST OK — version $APP_VERSION")
         } finally {

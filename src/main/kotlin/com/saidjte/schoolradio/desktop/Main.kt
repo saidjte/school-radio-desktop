@@ -35,6 +35,7 @@ import com.saidjte.schoolradio.desktop.ui.MusicTab
 import com.saidjte.schoolradio.desktop.ui.RecordingsTab
 import com.saidjte.schoolradio.desktop.ui.ScheduleTab
 import com.saidjte.schoolradio.desktop.ui.ScriptTab
+import com.saidjte.schoolradio.desktop.ui.StudioScreen
 
 fun main(args: Array<String>) {
     // وضع الفحص الذاتي: تشغيل النواة دون واجهة رسومية (للأتمتة والتحقق)
@@ -61,14 +62,20 @@ fun main(args: Array<String>) {
 fun AppRoot(vm: AppViewModel = remember { AppViewModel() }) {
     val tab by vm.tab.collectAsState()
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-        Row(modifier = Modifier.fillMaxSize()) {
-            SideNav(selected = tab, onSelect = vm::selectTab)
-            when (tab) {
-                Tab.LIVE -> LiveTab(vm)
-                Tab.SCHEDULE -> ScheduleTab(vm)
-                Tab.SCRIPT -> ScriptTab(vm)
-                Tab.MUSIC -> MusicTab(vm)
-                Tab.RECORDINGS -> RecordingsTab(vm)
+        if (tab == Tab.STUDIO) {
+            // الاستوديو المدمج: الجدولة + السكريبت + البث في شاشة واحدة بلا قائمة جانبية
+            StudioScreen(vm)
+        } else {
+            Row(modifier = Modifier.fillMaxSize()) {
+                SideNav(selected = tab, onSelect = vm::selectTab)
+                when (tab) {
+                    Tab.STUDIO -> StudioScreen(vm)
+                    Tab.LIVE -> LiveTab(vm)
+                    Tab.SCHEDULE -> ScheduleTab(vm)
+                    Tab.SCRIPT -> ScriptTab(vm)
+                    Tab.MUSIC -> MusicTab(vm)
+                    Tab.RECORDINGS -> RecordingsTab(vm)
+                }
             }
         }
     }

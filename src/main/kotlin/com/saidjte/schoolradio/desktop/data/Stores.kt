@@ -84,7 +84,8 @@ class ScheduleStore(private val file: File) {
                     kind = it.kind ?: SegmentKind.SPEECH,
                     plannedSeconds = (it.plannedSeconds ?: 0L).coerceAtLeast(0L),
                     mediaPath = it.mediaPath,
-                    note = it.note ?: ""
+                    note = it.note ?: "",
+                    scriptSectionId = it.scriptSectionId?.takeIf { id -> id > 0L }
                 )
             }
         )
@@ -100,8 +101,19 @@ class ScheduleStore(private val file: File) {
         persist()
     }
 
-    fun add(title: String, kind: SegmentKind, plannedSeconds: Long, mediaPath: String?, note: String): ScheduleItem {
-        val item = ScheduleItem(nextId++, title.trim(), kind, plannedSeconds.coerceAtLeast(0L), mediaPath, note.trim())
+    fun add(
+        title: String,
+        kind: SegmentKind,
+        plannedSeconds: Long,
+        mediaPath: String?,
+        note: String,
+        scriptSectionId: Long? = null
+    ): ScheduleItem {
+        val item = ScheduleItem(
+            nextId++, title.trim(), kind,
+            plannedSeconds.coerceAtLeast(0L), mediaPath,
+            note.trim(), scriptSectionId?.takeIf { it > 0L }
+        )
         doc = doc.copy(items = doc.items + item)
         persist()
         return item
@@ -113,7 +125,8 @@ class ScheduleStore(private val file: File) {
         kind: SegmentKind,
         plannedSeconds: Long,
         mediaPath: String?,
-        note: String
+        note: String,
+        scriptSectionId: Long? = null
     ): Boolean {
         val i = doc.items.indexOfFirst { it.id == id }
         if (i < 0) return false
@@ -124,7 +137,8 @@ class ScheduleStore(private val file: File) {
                     kind = kind,
                     plannedSeconds = plannedSeconds.coerceAtLeast(0L),
                     mediaPath = mediaPath,
-                    note = note.trim()
+                    note = note.trim(),
+                    scriptSectionId = scriptSectionId?.takeIf { it > 0L }
                 ) else s
             }
         )

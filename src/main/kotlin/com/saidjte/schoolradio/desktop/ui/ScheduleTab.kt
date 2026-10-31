@@ -46,16 +46,8 @@ import com.saidjte.schoolradio.desktop.data.SegmentKind
 import com.saidjte.schoolradio.desktop.data.SegmentStatus
 import java.io.File
 
-/** ألوان أنواع الفقرات — تمييز بصري سريع في القائمة. */
-private fun kindColor(kind: SegmentKind): Color = when (kind) {
-    SegmentKind.LIVE -> Color(0xFFEF5350)
-    SegmentKind.MUSIC -> Color(0xFF4FC3F7)
-    SegmentKind.RECORDING -> Color(0xFF80CBC4)
-    SegmentKind.SPEECH -> Color(0xFFCCC2DC)
-}
-
 /**
- * جدولة الفقرات: قائمة فقرات الحلقة (نوع/مدة/ملف مرتبط) مع ساعة مخططة
+ * جدولة الفقرات: قائمة فقرات الحلقة (نوع/مدة/ملف مرتبط/سكريبت مرتبط) مع ساعة مخططة
  * ولوحة تشغيل حي تُدير الحلقة فقرةً فقرة.
  */
 @Composable
@@ -193,9 +185,17 @@ fun ScheduleTab(vm: AppViewModel) {
                                     Text(
                                         item.kind.label,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = kindColor(item.kind),
+                                        color = segmentKindColor(item.kind),
                                         fontWeight = FontWeight.Bold
                                     )
+                                    if (item.scriptSectionId != null && item.scriptSectionId > 0L) {
+                                        Text(
+                                            "سكريبت ✓",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                     if (runActive) {
                                         Text(
                                             statuses[index].label,
@@ -420,10 +420,14 @@ private fun SegmentEditorDialog(
     var seconds by remember { mutableStateOf(((initial?.plannedSeconds ?: 0L) % 60).toString()) }
     var mediaPath by remember { mutableStateOf(initial?.mediaPath) }
     var note by remember { mutableStateOf(initial?.note ?: "") }
+    var scriptId by remember { mutableStateOf(initial?.scriptSectionId) }
     var kindMenu by remember { mutableStateOf(false) }
     var recMenu by remember { mutableStateOf(false) }
+    var scriptMenu by remember { mutableStateOf(false) }
 
     val recordings by vm.recordings.collectAsState()
+    val scriptSections by vm.script.collectAsState()
+    val scriptLabel = scriptSections.firstOrNull { it.id == scriptId }?.title?.ifEmpty { "بدون عنوان" } ?: "بدون"
 
     fun plannedSeconds(): Long {
         val m = minutes.toLongOrNull() ?: 0L
@@ -526,6 +530,32 @@ private fun SegmentEditorDialog(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                Box {
+                    SecondaryAction(text = "السكريبت المرتبط: $scriptLabel", onClick = { scriptMenu = true })
+                    DropdownMenu(expanded = scriptMenu, onDismissRequest = { scriptMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("بدون سكريبت") },
+                            onClick = {
+                                scriptId = null
+                                scriptMenu = false
+                            }
+                        )
+                        scriptSections.forEach { s ->
+                            DropdownMenuItem(
+                                text = { Text(s.title.ifEmpty { "بدون عنوان" }) },
+                                onClick = {
+                                    scriptId = s.id
+                                    scriptMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+                Text(
+                    "سكريبت مرتبط يظهر آليًا على لوحة القراءة في الاستوديو المدمج عند جريان هذه الفقرة.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 OutlinedTextField(
                     value = note,
                     onValueChange = { note = it },
@@ -538,8 +568,8 @@ private fun SegmentEditorDialog(
         confirmButton = {
             TextButton(onClick = {
                 val ps = plannedSeconds()
-                if (initial == null) vm.addScheduleItem(t, kind, ps, mediaPath, note)
-                else vm.updateScheduleItem(initial.id, t, kind, ps, mediaPath, note)
+                if (initial == null) vm.addScheduleItem(t, kind, ps, mediaPath, note, scriptId)
+                else vm.updateScheduleItem(initial.id, t, kind, ps, mediaPath, note, scriptId)
                 onDismiss()
             }) { Text("حفظ") }
         },
