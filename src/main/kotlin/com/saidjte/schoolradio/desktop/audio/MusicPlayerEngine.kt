@@ -39,7 +39,8 @@ private interface TrackReader : Closeable {
 
 /**
  * قناة الموسيقى في وحدة المزج: معادل الصوت خمس الشرائح + فيدر + كتم جلسي
- * + مقياس حي. حيّة لحظيًا: كل التغييرات تسري على الكتلة التالية (~26ms)
+ * + مقياس حي + الخفض التلقائي (Voice-Over) + إعطاء مرجع إلغاء الصدى.
+ * حيّة لحظيًا: كل التغييرات تسري على الكتلة التالية (~26ms)
  * دون قطع التشغيل ولا إعادة فتح الخط.
  */
 class MusicChannel internal constructor() {
@@ -50,13 +51,17 @@ class MusicChannel internal constructor() {
     @Volatile internal var master = 1.0f
     @Volatile internal var muted = false
 
+    private var channels = 2
+    private var monoBuf = FloatArray(4096)
+    private val shorts = ShortArray(1 shl 15)
+
     /** مستوى الكتلة الأخير (منمّط 0..1) — يُستدعى من خيط التشغيل. */
     var onLevel: ((Float) -> Unit)? = null
 
-    private val shorts = ShortArray(1 shl 15)
-
     internal fun configure(sampleRate: Int, channels: Int) {
         eq.configure(sampleRate, channels)
+        this.channels = channels.coerceIn(1, 2)
+        MusicFarEnd.tap.configure(sampleRate)
     }
 
     /** معالجة بايتات PCM 16-bit في مكانها قبل كتابة الخط. */
@@ -73,9 +78,29 @@ class MusicChannel internal constructor() {
 
     private fun apply(target: ShortArray, count: Int) {
         if (count <= 0) return
-        val gain = if (muted) 0f else fader * master
+        // الخفض التلقائي: كسب الموسيقى يقرأ من ناقل الخفض قبل الفيدر والماستر
+        val duck = if (DuckBus.enabled) DuckBus.musicGain.coerceIn(0f, 1f) else 1f
+        val gain = if (muted) 0f else fader * master * duck
         val level = eq.process(target, count, gain)
+        pushFarEnd(target, count)
         onLevel?.invoke(level)
+    }
+
+    /** إعطاء مرجع إلغاء الصدى: ما سيُكتب فعليًا في السماعة (أحادي متوسط القنوات). */
+    private fun pushFarEnd(target: ShortArray, count: Int) {
+        val frames = count / channels
+        if (frames <= 0) return
+        if (monoBuf.size < frames) monoBuf = FloatArray(frames)
+        if (channels == 1) {
+            for (f in 0 until frames) monoBuf[f] = target[f] / 32768.0f
+        } else {
+            var j = 0
+            for (f in 0 until frames) {
+                monoBuf[f] = (target[j] + target[j + 1]) / 65536.0f
+                j += 2
+            }
+        }
+        MusicFarEnd.tap.push(monoBuf, frames)
     }
 }
 

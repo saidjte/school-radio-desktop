@@ -22,6 +22,9 @@ data class VoiceFxJson(
     val gateOn: Boolean? = null,
     val gateThresholdDb: Float? = null,
     val gateReleaseMs: Float? = null,
+    val agcOn: Boolean? = null,
+    val agcTargetDb: Float? = null,
+    val agcMaxBoostDb: Float? = null,
     val compOn: Boolean? = null,
     val compThresholdDb: Float? = null,
     val compRatio: Float? = null,
@@ -39,13 +42,27 @@ data class MusicEqJson(
     val preset: String? = null
 )
 
+/** حالة الخفض التلقائي المحفوظة (Voice-Over). */
+data class DuckJson(
+    val enabled: Boolean? = null,
+    val duckDb: Float? = null,
+    val holdMs: Float? = null
+)
+
+/** حالة إلغاء الصدى المحفوظة (AEC). */
+data class AecJson(
+    val enabled: Boolean? = null
+)
+
 /** حالة وحدة المزج المحفوظة كاملة. */
 data class MixerJson(
     val micFader: Float? = null,
     val musicFader: Float? = null,
     val masterFader: Float? = null,
     val voice: VoiceFxJson? = null,
-    val musicEq: MusicEqJson? = null
+    val musicEq: MusicEqJson? = null,
+    val duck: DuckJson? = null,
+    val aec: AecJson? = null
 )
 
 // ================= الحالة الجارية (محسومة) =================
@@ -56,6 +73,9 @@ data class VoiceFxState(
     val gateOn: Boolean = false,
     val gateThresholdDb: Float = -45f,
     val gateReleaseMs: Float = 250f,
+    val agcOn: Boolean = true,
+    val agcTargetDb: Float = -18f,
+    val agcMaxBoostDb: Float = 18f,
     val compOn: Boolean = false,
     val compThresholdDb: Float = -20f,
     val compRatio: Float = 3f,
@@ -72,12 +92,26 @@ data class MusicEqState(
     val preset: String? = null
 )
 
+/** الخفض التلقائي: على/مقدار الخفض/زمن التعليق. */
+data class DuckState(
+    val enabled: Boolean = true,
+    val duckDb: Float = -12f,
+    val holdMs: Float = 1200f
+)
+
+/** إلغاء الصدى: مفعّل افتراضيًا (مرور نظيف حين لا موسيقى). */
+data class AecState(
+    val enabled: Boolean = true
+)
+
 data class MixerState(
     val micFader: Float = 1.0f,
     val musicFader: Float = 1.0f,
     val masterFader: Float = 1.0f,
     val voice: VoiceFxState = VoiceFxState(),
-    val musicEq: MusicEqState = MusicEqState()
+    val musicEq: MusicEqState = MusicEqState(),
+    val duck: DuckState = DuckState(),
+    val aec: AecState = AecState()
 )
 
 // ================= المنطق الخالص =================
@@ -129,6 +163,16 @@ object MixerLogic {
 
     fun cleanThreshold(v: Float, minDb: Float, maxDb: Float): Float = v.coerceIn(minDb, maxDb)
 
+    /** حدود AGC: مستوى الهدف بين -30 و -6dBFS، والتعزيز الأقصى بين 6 و 30dB. */
+    fun cleanAgcTarget(v: Float): Float = v.coerceIn(-30f, -6f)
+
+    fun cleanAgcBoost(v: Float): Float = v.coerceIn(6f, 30f)
+
+    /** حدود الخفض التلقائي: -30dB كحد أدنى، -3dB كأخف خفض، والتعليق 100..5000ms. */
+    fun cleanDuckDb(v: Float): Float = v.coerceIn(-30f, -3f)
+
+    fun cleanHoldMs(v: Float): Float = v.coerceIn(100f, 5000f)
+
     /** حسم حالة معالج المذيع المحفوظة — كل حقل غائب يعود لقيمته الافتراضية. */
     fun resolveVoice(j: VoiceFxJson?): VoiceFxState {
         j ?: return VoiceFxState()
@@ -139,6 +183,9 @@ object MixerLogic {
             gateOn = j.gateOn ?: base.gateOn,
             gateThresholdDb = cleanThreshold(j.gateThresholdDb ?: base.gateThresholdDb, -60f, -20f),
             gateReleaseMs = (j.gateReleaseMs ?: base.gateReleaseMs).coerceIn(50f, 1000f),
+            agcOn = j.agcOn ?: base.agcOn,
+            agcTargetDb = cleanAgcTarget(j.agcTargetDb ?: base.agcTargetDb),
+            agcMaxBoostDb = cleanAgcBoost(j.agcMaxBoostDb ?: base.agcMaxBoostDb),
             compOn = j.compOn ?: base.compOn,
             compThresholdDb = cleanThreshold(j.compThresholdDb ?: base.compThresholdDb, -40f, 0f),
             compRatio = cleanRatio(j.compRatio ?: base.compRatio),
@@ -162,6 +209,23 @@ object MixerLogic {
         )
     }
 
+    /** حسم حالة الخفض التلقائي — أي قيمة ناقصة أو مشوهة تعود للافتراضي. */
+    fun resolveDuck(j: DuckJson?): DuckState {
+        j ?: return DuckState()
+        val base = DuckState()
+        return DuckState(
+            enabled = j.enabled ?: base.enabled,
+            duckDb = cleanDuckDb(j.duckDb ?: base.duckDb),
+            holdMs = cleanHoldMs(j.holdMs ?: base.holdMs)
+        )
+    }
+
+    /** حسم حالة إلغاء الصدى. */
+    fun resolveAec(j: AecJson?): AecState {
+        j ?: return AecState()
+        return AecState(enabled = j.enabled ?: true)
+    }
+
     /** حسم حالة الوحدة كاملة من JSON المحفوظ. */
     fun resolve(j: MixerJson?): MixerState {
         j ?: return MixerState()
@@ -170,7 +234,9 @@ object MixerLogic {
             musicFader = cleanFader(j.musicFader ?: 1.0f),
             masterFader = cleanFader(j.masterFader ?: 1.0f),
             voice = resolveVoice(j.voice),
-            musicEq = resolveEq(j.musicEq)
+            musicEq = resolveEq(j.musicEq),
+            duck = resolveDuck(j.duck),
+            aec = resolveAec(j.aec)
         )
     }
 

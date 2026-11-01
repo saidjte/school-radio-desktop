@@ -1,5 +1,6 @@
 package com.saidjte.schoolradio.desktop
 
+import com.saidjte.schoolradio.desktop.audio.DuckBus
 import com.saidjte.schoolradio.desktop.audio.MicLiveEngine
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
@@ -8,6 +9,7 @@ import com.saidjte.schoolradio.desktop.audio.RecordingMeta
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
+import com.saidjte.schoolradio.desktop.data.AecState
 import com.saidjte.schoolradio.desktop.data.Backup
 import com.saidjte.schoolradio.desktop.data.ExecutionsStore
 import com.saidjte.schoolradio.desktop.data.FireStatus
@@ -16,6 +18,7 @@ import com.saidjte.schoolradio.desktop.data.LibraryMath
 import com.saidjte.schoolradio.desktop.data.MixerLogic
 import com.saidjte.schoolradio.desktop.data.MixerState
 import com.saidjte.schoolradio.desktop.data.MusicEqState
+import com.saidjte.schoolradio.desktop.data.DuckState
 import com.saidjte.schoolradio.desktop.data.MusicLibraryStore
 import com.saidjte.schoolradio.desktop.data.PlaylistStore
 import com.saidjte.schoolradio.desktop.data.Role
@@ -166,17 +169,26 @@ class AppViewModel {
 
     private var mixerPersistJob: Job? = null
 
-    /** دفع حالة الوحدة إلى محرّكي القنوات (ميكروفون + موسيقى). */
+    /** دفع حالة الوحدة إلى محرّكي القنوات (ميكروفون + موسيقى) + ناقلات الخفض والصدى. */
     private fun pushMixerToEngines() {
         val m = _mixer.value
         mic.setMicFader(m.micFader)
         mic.setMasterFader(m.masterFader)
         mic.setVoiceFx(m.voice)
+        mic.setAec(m.aec)
         player.setMusicFader(m.musicFader)
         player.setMasterFader(m.masterFader)
         player.setMusicEq(m.musicEq)
         mic.setMicMuted(_micMuted.value)
         player.setMusicMuted(_musicMuted.value)
+        // ناقل الخفض التلقائي: قناة الميكروفون تقوده وقناة الموسيقى تنفّذه
+        DuckBus.enabled = m.duck.enabled
+        DuckBus.duckDb = m.duck.duckDb
+        DuckBus.holdMs = m.duck.holdMs
+        if (!m.duck.enabled) {
+            DuckBus.musicGain = 1f
+            DuckBus.active = false
+        }
     }
 
     private fun updateMixer(transform: (MixerState) -> MixerState) {
@@ -221,6 +233,16 @@ class AppViewModel {
 
     fun applyMusicEqPreset(name: String) =
         updateMixer { it.copy(musicEq = MixerLogic.applyMusicPreset(it.musicEq, name)) }
+
+    // ================= الخفض التلقائي وإلغاء الصدى =================
+
+    /** تحديث حالة الخفض التلقائي (Voice-Over) دفعة واحدة. */
+    fun updateDuck(transform: (DuckState) -> DuckState) =
+        updateMixer { it.copy(duck = transform(it.duck)) }
+
+    /** تحديث حالة إلغاء الصدى (AEC). */
+    fun updateAec(transform: (AecState) -> AecState) =
+        updateMixer { it.copy(aec = transform(it.aec)) }
 
     // ================= سكريبت المذيع =================
 

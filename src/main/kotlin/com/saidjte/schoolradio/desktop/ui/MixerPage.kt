@@ -50,6 +50,9 @@ fun MixerPage(vm: AppViewModel) {
     val musicMuted by vm.musicMuted.collectAsState()
     val gateClosed by vm.mic.gateClosed.collectAsState()
     val micLive by vm.mic.state.collectAsState()
+    val duckActive by vm.mic.duckActive.collectAsState()
+    val aecLocked by vm.mic.aecLocked.collectAsState()
+    val aecDelayMs by vm.mic.aecDelayMs.collectAsState()
 
     Column(
         modifier = Modifier
@@ -122,6 +125,24 @@ fun MixerPage(vm: AppViewModel) {
                 level = musicLevel,
                 modifier = Modifier.weight(1f),
                 extra = {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Dot(
+                            color = when {
+                                duckActive && mixer.duck.enabled -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            size = 8.dp
+                        )
+                        Text(
+                            "الخفض التلقائي: " + when {
+                                !mixer.duck.enabled -> "مطفي"
+                                duckActive -> "الموسيقى منخفضة لحديث المذيع"
+                                else -> "جاهز"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Text(
                         "المعادل: " + if (mixer.musicEq.enabled)
                             (mixer.musicEq.preset ?: "مخصص")
@@ -156,6 +177,12 @@ fun MixerPage(vm: AppViewModel) {
 
         // ================= معادل الصوت =================
         MusicEqCard(vm, mixer.musicEq)
+
+        // ================= الخفض التلقائي (Voice-Over) =================
+        DuckCard(vm, mixer.duck, duckActive)
+
+        // ================= إلغاء صدى الميكروفون (AEC) =================
+        AecCard(vm, mixer.aec, aecLocked, aecDelayMs)
 
         Spacer(Modifier.height(4.dp))
     }
@@ -288,7 +315,7 @@ private fun VoiceProcessorCard(vm: AppViewModel, v: VoiceFxState) {
             Switch(checked = v.enabled, onCheckedChange = { on -> vm.updateVoiceFx { it.copy(enabled = on) } })
         }
         Text(
-            "سلسلة إذاعية كاملة: قناع الرعد (تمرير عالٍ 85هرتز) ← بوابة الضجيج ← منحنى الصوت ← الضاغط ← محدّد الأمان",
+            "سلسلة إذاعية كاملة: قناع الرعد (تمرير عالٍ 85هرتز) ← بوابة الضجيج ← توحيد الكسب AGC ← منحنى الصوت ← الضاغط ← محدّد الأمان",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -322,6 +349,30 @@ private fun VoiceProcessorCard(vm: AppViewModel, v: VoiceFxState) {
                     value = v.gateThresholdDb,
                     range = -60f..-20f,
                     onValue = { vm.updateVoiceFx { s -> s.copy(gateThresholdDb = it, preset = null) } }
+                )
+            }
+
+            // توحيد الكسب الأوتوماتيكي AGC
+            LabeledSwitch("توحيد الكسب الأوتوماتيكي AGC — مستوى نطق ثابت مهما بعدتَ عن الميكروفون", v.agcOn) {
+                vm.updateVoiceFx { it.copy(agcOn = it.agcOn.not()) }
+            }
+            if (v.agcOn) {
+                DbSlider(
+                    label = "مستوى الهدف",
+                    value = v.agcTargetDb,
+                    range = -30f..-6f,
+                    onValue = { vm.updateVoiceFx { s -> s.copy(agcTargetDb = MixerLogic.cleanAgcTarget(it)) } }
+                )
+                DbSlider(
+                    label = "أقصى تعزيز",
+                    value = v.agcMaxBoostDb,
+                    range = 6f..30f,
+                    onValue = { vm.updateVoiceFx { s -> s.copy(agcMaxBoostDb = MixerLogic.cleanAgcBoost(it)) } }
+                )
+                Text(
+                    "الكسب يتحرك ببطء فلا مضخّ ولا قفزات، ويجمّد نفسه عند الصمت كي لا يضخّم الضجيج",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
@@ -435,6 +486,132 @@ private fun MusicEqCard(vm: AppViewModel, eq: com.saidjte.schoolradio.desktop.da
                 )
             }
         }
+    }
+}
+
+// ================= الخفض التلقائي (Voice-Over) =================
+
+@Composable
+private fun DuckCard(vm: AppViewModel, d: com.saidjte.schoolradio.desktop.data.DuckState, duckActive: Boolean) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "الخفض التلقائي للموسيقى (Voice-Over)",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (d.enabled) {
+                    Dot(
+                        color = if (duckActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                        size = 8.dp
+                    )
+                    Text(
+                        if (duckActive) "منخفضة الآن" else "جاهز",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = d.enabled, onCheckedChange = { on -> vm.updateDuck { it.copy(enabled = on) } })
+            }
+        }
+        Text(
+            "سلوك الاستوديو الإذاعي الحقيقي: حين تتكلم على الميكروفون تنخفض الموسيقى آليًا بالمقدار الذي تختاره، " +
+                    "وعند سكوتك تعود تدريجيًا بعد زمن التعليق — بلا أن تلمس أي فيدر",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (d.enabled) {
+            DbSlider(
+                label = "نسبة الخفض",
+                value = d.duckDb,
+                range = -30f..-3f,
+                onValue = { vm.updateDuck { s -> s.copy(duckDb = MixerLogic.cleanDuckDb(it)) } }
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "زمن التعليق",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.width(150.dp)
+                )
+                Slider(
+                    value = d.holdMs,
+                    onValueChange = { vm.updateDuck { s -> s.copy(holdMs = MixerLogic.cleanHoldMs(it)) } },
+                    valueRange = 100f..5000f,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "%.1f".format(d.holdMs / 1000f) + " ث",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.width(62.dp)
+                )
+            }
+            Text(
+                "انتقالات ناعمة: هجوم 150ms كي لا تتقدم الموسيقى على كلمتك، وإفلات ناعم بعد التعليق فلا قفزات",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+// ================= إلغاء صدى الميكروفون (AEC) =================
+
+@Composable
+private fun AecCard(
+    vm: AppViewModel,
+    a: com.saidjte.schoolradio.desktop.data.AecState,
+    locked: Boolean,
+    delayMs: Float
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "إلغاء صدى الميكروفون (AEC)",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (a.enabled) {
+                    Dot(
+                        color = if (locked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                        size = 8.dp
+                    )
+                    Text(
+                        if (locked) "مسار مقفل · تأخير %.0f ملّي".format(delayMs)
+                        else "يبحث عن مسار الصدى…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = a.enabled, onCheckedChange = { on -> vm.updateAec { it.copy(enabled = on) } })
+            }
+        }
+        Text(
+            "محلّ تكيّفي (NLMS) يتعلم مسار الصوت من السماعة إلى الميكروفون ويطرح صدى الموسيقى من صوتك تلقائيًا، " +
+                    "فيبقى هواء البث والتسجيلات صوت مذيع صافيًا. لا أثر له حين لا موسيقى تعمل، " +
+                    "ومن الأفضل أن يكون سماعك المراقب بالسماعات لا بالسماعات المكشوفة",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

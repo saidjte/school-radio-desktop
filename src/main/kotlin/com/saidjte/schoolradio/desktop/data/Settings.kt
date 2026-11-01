@@ -43,6 +43,9 @@ class SettingsStore(private val file: File) {
                     gateOn = state.voice.gateOn,
                     gateThresholdDb = state.voice.gateThresholdDb,
                     gateReleaseMs = state.voice.gateReleaseMs,
+                    agcOn = state.voice.agcOn,
+                    agcTargetDb = state.voice.agcTargetDb,
+                    agcMaxBoostDb = state.voice.agcMaxBoostDb,
                     compOn = state.voice.compOn,
                     compThresholdDb = state.voice.compThresholdDb,
                     compRatio = state.voice.compRatio,
@@ -56,7 +59,13 @@ class SettingsStore(private val file: File) {
                     enabled = state.musicEq.enabled,
                     bands = state.musicEq.bands,
                     preset = state.musicEq.preset
-                )
+                ),
+                duck = DuckJson(
+                    enabled = state.duck.enabled,
+                    duckDb = state.duck.duckDb,
+                    holdMs = state.duck.holdMs
+                ),
+                aec = AecJson(enabled = state.aec.enabled)
             )
         )
         persist()

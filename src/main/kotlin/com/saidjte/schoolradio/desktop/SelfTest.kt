@@ -358,6 +358,109 @@ object SelfTest {
             check(restored.voice.presenceDb == 4.0f && restored.voice.preset == "صوت المذيع") { "mixer roundtrip voice" }
             check(restored.musicEq.bands[0] == 5f && restored.musicEq.preset == "باص دافئ") { "mixer roundtrip eq" }
             check(stReload.schoolName() == "مدرسة الاختبار") { "mixer save keeps school name" }
+            check(restored.voice.agcOn && restored.duck.enabled && restored.aec.enabled) { "mixer defaults new modules" }
+
+            // 14) الإذاعة الاحترافية: AGC + إلغاء الصدى AEC + الخفض التلقائي
+            val fs2 = 44100
+            // AGC: إشارة خافتة يرفعها الكسب نحو الهدف، وقوية يخفضها
+            val agc = com.saidjte.schoolradio.desktop.audio.VoiceProcessor()
+            agc.configure(fs2, 1)
+            agc.setParams(
+                com.saidjte.schoolradio.desktop.audio.VoiceProcessor.Params(
+                    hpfOn = false, gateOn = false, compOn = false,
+                    agcOn = true, agcTargetDb = -18f, agcMaxBoostDb = 24f
+                )
+            )
+            val quietSrc = ShortArray(1024) { ((0.02 * 32767) * kotlin.math.sin(2.0 * Math.PI * 440.0 * it / fs2)).toInt().toShort() }
+            repeat(120) { val blk = quietSrc.copyOf(); agc.process(blk, blk.size, 1.0f) }
+            check(agc.agcCurrentDb > 10f) { "agc boost quiet=${agc.agcCurrentDb}" }
+            val agcLoud = com.saidjte.schoolradio.desktop.audio.VoiceProcessor()
+            agcLoud.configure(fs2, 1)
+            agcLoud.setParams(
+                com.saidjte.schoolradio.desktop.audio.VoiceProcessor.Params(
+                    hpfOn = false, gateOn = false, compOn = false,
+                    agcOn = true, agcTargetDb = -18f, agcMaxBoostDb = 24f
+                )
+            )
+            val loudSrc = ShortArray(1024) { ((0.5 * 32767) * kotlin.math.sin(2.0 * Math.PI * 440.0 * it / fs2)).toInt().toShort() }
+            repeat(120) { val blk = loudSrc.copyOf(); agcLoud.process(blk, blk.size, 1.0f) }
+            check(agcLoud.agcCurrentDb < -5f) { "agc attenuate loud=${agcLoud.agcCurrentDb}" }
+            // تجميد عند الصمت: لا مطاردة ضجيج
+            val agcFrozen = com.saidjte.schoolradio.desktop.audio.VoiceProcessor()
+            agcFrozen.configure(fs2, 1)
+            val silenceBlock = ShortArray(1024)
+            repeat(200) { agcFrozen.process(silenceBlock, silenceBlock.size, 1.0f) }
+            check(kotlin.math.abs(agcFrozen.agcCurrentDb) < 0.01f) { "agc frozen in silence=${agcFrozen.agcCurrentDb}" }
+
+            // AEC: محاكاة زمن حقيقية — المرجع يُدفع أثناء معالجة كل كتلة ميكروفون،
+            // والصدى = مرجع مؤخَّر 120ms بكسب 0.5 (كما يسمعه الميكروفون من السماعة)
+            val refRate = 44100
+            val blockN = 4096
+            val nBlocks = 28
+            val delaySamples = (0.120 * refRate).toInt()
+            val totalRef = delaySamples + blockN * nBlocks
+            val refSignal = DoubleArray(totalRef) {
+                0.6 * kotlin.math.sin(2.0 * Math.PI * 300.0 * it / refRate) *
+                        kotlin.math.sin(2.0 * Math.PI * 0.9 * it / refRate)
+            }
+            val tap = com.saidjte.schoolradio.desktop.audio.FarEndTap(2.5)
+            tap.configure(refRate)
+            val aec = com.saidjte.schoolradio.desktop.audio.EchoCanceller()
+            aec.configure(refRate, 1)
+            var inEnergy = 0.0
+            var outEnergy = 0.0
+            val mic = ShortArray(blockN)
+            var pushed = 0
+            for (b in 0 until nBlocks) {
+                // دفع المرجع حتى لحظة «الآن» (المرجع والميكروفون على الحائط نفسه)
+                val target = (b + 1) * blockN
+                while (pushed < target) {
+                    val n = minOf(512, target - pushed)
+                    tap.push(FloatArray(n) { refSignal[pushed + it].toFloat() }, n)
+                    pushed += n
+                }
+                for (f in 0 until blockN) {
+                    val idx = b * blockN + f - delaySamples
+                    val echo = if (idx >= 0) 0.5 * refSignal[idx] else 0.0
+                    mic[f] = (echo * 32767.0).toInt().toShort()
+                }
+                val pre = mic.copyOf()
+                aec.process(mic, mic.size, tap)
+                if (b >= 20) {
+                    for (f in 0 until blockN) {
+                        inEnergy += (pre[f].toDouble() / 32768.0).let { it * it }
+                        outEnergy += (mic[f].toDouble() / 32768.0).let { it * it }
+                    }
+                }
+            }
+            val cancellationDb = 10.0 * kotlin.math.log10(inEnergy / maxOf(outEnergy, 1e-12))
+            check(cancellationDb > 8.0) { "aec cancellation=$cancellationDb" }
+            check(aec.locked) { "aec locked" }
+            // مرجع راكد (لا موسيقى الآن) = مرور نظيف تام بلا أي مساس
+            val aecIdle = com.saidjte.schoolradio.desktop.audio.EchoCanceller()
+            aecIdle.configure(refRate, 1)
+            val passthrough = ShortArray(1024) { ((0.3 * 32767) * kotlin.math.sin(2.0 * Math.PI * 500.0 * it / refRate)).toInt().toShort() }
+            val passthroughIn = passthrough.copyOf()
+            Thread.sleep(450) // آخر دفع مرجع صار أقدم من 400ms
+            aecIdle.process(passthrough, passthrough.size, tap)
+            check(passthrough.contentEquals(passthroughIn)) { "aec stale passthrough" }
+
+            // الخفض التلقائي: هبوط عند الكلام وعودة بعد التعليق
+            val dk = com.saidjte.schoolradio.desktop.audio.Ducker()
+            var g: Float = dk.process(21.0, micLive = true, voiceActive = true, duckDb = -12.0, holdMs = 1200.0)
+            repeat(69) { g = dk.process(21.0, true, true, -12.0, 1200.0) }
+            check(g in 0.24f..0.27f) { "duck engaged=$g" } // هدف -12dB ≈ 0.251
+            check(dk.active) { "duck active flag" }
+            // سكوت: خلال التعليق يبقى منخفضًا ثم يعود تدريجيًا إلى الوحدة
+            repeat(20) { g = dk.process(21.0, true, false, -12.0, 1200.0) }
+            check(g < 0.4f) { "duck holds=$g" }
+            repeat(250) { g = dk.process(21.0, true, false, -12.0, 1200.0) }
+            check(g > 0.99f) { "duck released=$g" }
+            // بلا بث مباشر: لا خفض أبدًا
+            dk.reset()
+            repeat(50) { g = dk.process(21.0, micLive = false, voiceActive = false, duckDb = -12.0, holdMs = 1200.0) }
+            check(g > 0.99f && !dk.active) { "duck idle=$g" }
+            check(g <= 1.0f) { "duck gain bounded" }
 
             println("SELFTEST OK — version $APP_VERSION")
         } finally {

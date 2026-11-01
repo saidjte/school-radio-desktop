@@ -111,7 +111,7 @@ class MixerDspTest {
     fun `gate closes on signal below threshold`() {
         val vp = VoiceProcessor()
         vp.configure(fs, 1)
-        vp.setParams(VoiceProcessor.Params(gateOn = true, gateThresholdDb = -45f, hpfOn = false, compOn = false))
+        vp.setParams(VoiceProcessor.Params(gateOn = true, gateThresholdDb = -45f, hpfOn = false, compOn = false, agcOn = false))
         val faint = sineShorts(440.0, 0.002, 2048)
         repeat(30) { vp.process(faint, faint.size, 1.0f) }
         assertTrue(vp.gateClosed, "البوابة تُغلق تحت العتبة")
@@ -122,7 +122,7 @@ class MixerDspTest {
     fun `gate stays open on signal above threshold`() {
         val vp = VoiceProcessor()
         vp.configure(fs, 1)
-        vp.setParams(VoiceProcessor.Params(gateOn = true, gateThresholdDb = -45f, hpfOn = false, compOn = false))
+        vp.setParams(VoiceProcessor.Params(gateOn = true, gateThresholdDb = -45f, hpfOn = false, compOn = false, agcOn = false))
         val normal = sineShorts(440.0, 0.2, 2048)
         val originalMax = normal.maxOf { abs(it.toInt()) }
         repeat(10) { vp.process(normal, normal.size, 1.0f) }

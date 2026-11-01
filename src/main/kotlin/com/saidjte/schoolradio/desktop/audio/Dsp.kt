@@ -146,8 +146,10 @@ object Pcm16 {
 /**
  * معالج صوت المذيع — سلسلة إذاعية احترافية كاملة على قناة الميكروفون:
  *
- *   ميكروفون ← مرشح تمرير عالٍ (قناع الرعد واحتكاك الورق)
+ *   ميكروفون ← مانع صدى AEC (يطرح صدى الموسيقى — انظر Aec.kt)
+ *            ← مرشح تمرير عالٍ (قناع الرعد واحتكاك الورق)
  *            ← بوابة ضجيج (صمت المقصلة بين الجمل)
+ *            ← توحيد كسب أوتوماتيكي AGC (مستوى نطق ثابت مهما بعد المذيع)
  *            ← منحنى الصوت (باس 180Hz · حضور 3.2kHz · هواء 8kHz)
  *            ← ضاغط ديناميكي (توحيد مستوى النطق)
  *            ← محدّد أمان بقناع ناعم (لا تشبع أبدًا)
@@ -166,6 +168,9 @@ class VoiceProcessor {
         val gateOn: Boolean = false,
         val gateThresholdDb: Float = -45f,
         val gateReleaseMs: Float = 250f,
+        val agcOn: Boolean = true,
+        val agcTargetDb: Float = -18f,
+        val agcMaxBoostDb: Float = 18f,
         val compOn: Boolean = false,
         val compThresholdDb: Float = -20f,
         val compRatio: Float = 3f,
@@ -199,6 +204,13 @@ class VoiceProcessor {
     private var compEnv = doubleArrayOf()
     private var compGainDb = 0.0
 
+    // حالة توحيد الكسب الأوتوماتيكي AGC
+    private var agcGainDb = 0.0
+
+    /** كسب AGC الجاري بالديسيبل (مؤشر حي للواجهة: +تعزيز / −خفض). */
+    @Volatile var agcCurrentDb = 0.0f
+        private set
+
     // ثابت المغلف المحسوب من معدل العينات (زمن تنعيم 10ms)
     private var envAlpha = 0.02
 
@@ -224,6 +236,8 @@ class VoiceProcessor {
         air = rebuild { it.highShelf(fs, 8000.0, 0.0) }
         gateEnv = DoubleArray(ch); compEnv = DoubleArray(ch)
         gateGain = 1.0; compGainDb = 0.0
+        agcGainDb = 0.0
+        agcCurrentDb = 0.0f
         envAlpha = 1.0 - exp(-1.0 / (0.010 * fs))
         lastBass = Float.NaN; lastPresence = Float.NaN; lastAir = Float.NaN
     }
@@ -272,7 +286,30 @@ class VoiceProcessor {
             } else {
                 gateClosed = false
             }
-            // 3) منحنى الصوت الإذاعي (يُعاد بناؤه فقط عند تغيّر القيم)
+            // 3) توحيد الكسب الأوتوماتيكي AGC: مستوى نطق ثابت مهما بعد المذيع عن
+            //    الميكروفون — هجوم بطيء صعودًا (بلا مضخّ)، وإفلات أسرع نزولًا،
+            //    وتجميد كامل عند الصمت كي لا يطارد الكسب أرضية الضجيج.
+            if (p.agcOn) {
+                var sum = 0.0
+                for (i in 0 until count) { val v = work[i].toDouble(); sum += v * v }
+                val blockRmsDb = Pcm16.ampToDb(sqrt(sum / count))
+                val blockMs = count * 1000.0 / (sampleRate * channels)
+                if (blockRmsDb > -55.0) {
+                    // حدّ الكسب: خفض حتى -12dB وتعزيز حتى السقف المحدد
+                    val target = (p.agcTargetDb - blockRmsDb)
+                        .coerceIn(-12.0, p.agcMaxBoostDb.toDouble())
+                    val tau = if (target > agcGainDb) 1200.0 else 300.0
+                    val alpha = 1.0 - exp(-blockMs / tau)
+                    agcGainDb += (target - agcGainDb) * alpha
+                }
+                agcCurrentDb = agcGainDb.toFloat()
+                val g = Pcm16.dbToAmp(agcGainDb)
+                for (i in 0 until count) work[i] = (work[i] * g).toFloat()
+            } else {
+                agcGainDb = 0.0
+                agcCurrentDb = 0.0f
+            }
+            // 4) منحنى الصوت الإذاعي (يُعاد بناؤه فقط عند تغيّر القيم)
             if (p.bassDb != 0f || p.presenceDb != 0f || p.airDb != 0f) {
                 if (lastBass != p.bassDb || lastPresence != p.presenceDb || lastAir != p.airDb) {
                     val fs = sampleRate.toDouble()
@@ -289,7 +326,7 @@ class VoiceProcessor {
                     }
                 }
             }
-            // 4) الضاغط الديناميكي: مغلف ذروة 10ms + هجوم سريع وإفلات ناعم
+            // 5) الضاغط الديناميكي: مغلف ذروة 10ms + هجوم سريع وإفلات ناعم
             if (p.compOn) {
                 val thrDb = p.compThresholdDb.toDouble()
                 val ratio = p.compRatio.toDouble().coerceAtLeast(1.0)
@@ -312,7 +349,7 @@ class VoiceProcessor {
             } else {
                 compGainDb = 0.0
             }
-            // 5) محدّد الأمان بقناع ناعم متصل: |خروج| <= سقف 0.935 (-0.6dB) دائمًا،
+            // 6) محدّد الأمان بقناع ناعم متصل: |خروج| <= سقف 0.935 (-0.6dB) دائمًا،
             //    بلا تلوين تحت الكتف (0.80×السقف) وبلا انقطاع عند الانتقال.
             val ceiling = 0.935
             val knee = 0.80 * ceiling
@@ -327,7 +364,7 @@ class VoiceProcessor {
             }
         }
 
-        // 6) كسب القناة (فيدر × ماستر × كتم) بانتقال ناعم بلا طقطقة
+        // 7) كسب القناة (فيدر × ماستر × كتم) بانتقال ناعم بلا طقطقة
         val gt = gainTarget.toDouble().coerceIn(0.0, 2.5)
         blockGain += (gt - blockGain) * 0.30
         val g = blockGain
