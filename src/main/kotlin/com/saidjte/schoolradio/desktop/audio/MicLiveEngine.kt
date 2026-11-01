@@ -1,5 +1,6 @@
 package com.saidjte.schoolradio.desktop.audio
 
+import com.saidjte.schoolradio.desktop.data.VoiceFxState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +51,10 @@ class MicLiveEngine {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    /** مؤشر بوابة الضجيج: صحيح = المقصلة صامتة (يعمل عند تفعيل البوابة). */
+    private val _gateClosed = MutableStateFlow(false)
+    val gateClosed: StateFlow<Boolean> = _gateClosed.asStateFlow()
+
     @Volatile private var running = false
     @Volatile private var monitorWanted = false
     @Volatile private var recordWanted = false
@@ -65,6 +70,44 @@ class MicLiveEngine {
     @Volatile private var outMixer: Mixer.Info? = null
     @Volatile private var outMixerDirty = false
     private var worker: Thread? = null
+
+    // ================= وحدة المزج: قناة الميكروفون =================
+
+    /** معالج صوت المذيع (بوابة/ضاغط/منحنى/محدّد) — معاملاته حيةّ. */
+    internal val voice = VoiceProcessor()
+
+    @Volatile private var micFader = 1.0f
+    @Volatile private var masterFader = 1.0f
+    @Volatile private var micMuted = false
+
+    /** فيدر قناة الميكروفون (0..1.5) — يسري أثناء البث فورًا. */
+    fun setMicFader(v: Float) { micFader = MixerLogicFader.clean(v) }
+
+    /** فيدر الماستر (0..1.5) — يسري أثناء البث فورًا. */
+    fun setMasterFader(v: Float) { masterFader = MixerLogicFader.clean(v) }
+
+    /** كتم جلسي: لا يُكتب في المحفوظ، وإلغاؤه يعيد المستوى نفسه. */
+    fun setMicMuted(m: Boolean) { micMuted = m }
+
+    /** تحديث معاملات معالج المذيع دفعة واحدة. */
+    fun setVoiceFx(state: VoiceFxState) {
+        voice.setParams(
+            VoiceProcessor.Params(
+                enabled = state.enabled,
+                hpfOn = state.hpfOn,
+                gateOn = state.gateOn,
+                gateThresholdDb = state.gateThresholdDb,
+                gateReleaseMs = state.gateReleaseMs,
+                compOn = state.compOn,
+                compThresholdDb = state.compThresholdDb,
+                compRatio = state.compRatio,
+                compMakeupDb = state.compMakeupDb,
+                bassDb = state.bassDb,
+                presenceDb = state.presenceDb,
+                airDb = state.airDb
+            )
+        )
+    }
 
     /** تفعيل/تعطيل السماع المباشر (يعمل قبل البدء وأثناءه). */
     fun setMonitoring(on: Boolean) {
@@ -134,6 +177,10 @@ class MicLiveEngine {
             _deviceName.value = mixerInfo?.name?.trim()?.ifEmpty { null } ?: "الميكروفون الافتراضي"
             _activeFormat.value = "${actual.sampleRate.toInt()} هرتز · ${actual.channels} قناة · 16 بت"
 
+            // قناة الميكروفون في وحدة المزج: بناء معاملات المعالج حسب الصيغة المتفاوض عليها
+            voice.configure(actual.sampleRate.toInt(), actual.channels)
+            val shorts = ShortArray(chunk / 2)
+
             val buf = ByteArray(chunk)
             val started = System.nanoTime()
             while (running) {
@@ -141,8 +188,14 @@ class MicLiveEngine {
                 if (n <= 0) continue
                 _liveMs.value = (System.nanoTime() - started) / 1_000_000L
 
-                val rms = LevelMeter.rms(buf, n)
-                _level.value = LevelMeter.normalized(rms).toFloat()
+                // السلسلة الإذاعية الكاملة: معالج المذيع ثم كسب القناة —
+                // المقياس والسماع المراقب والتسجيل كلها على الصوت «على الهواء»
+                val sampleCount = Pcm16.bytesToShorts(buf, n, shorts)
+                val gain = if (micMuted) 0f else micFader * masterFader
+                val level = voice.process(shorts, sampleCount, gain)
+                _level.value = level
+                _gateClosed.value = voice.gateClosed && voice.params().gateOn
+                Pcm16.shortsToBytes(shorts, sampleCount, buf)
 
                 // إعادة فتح السماع المراقب على المخرج الجديد دون قطع البث
                 if (outMixerDirty) {
@@ -204,9 +257,15 @@ class MicLiveEngine {
             try { line?.stop(); line?.close() } catch (_: Exception) { }
             _recording.value = false
             _level.value = 0f
+            _gateClosed.value = false
             _state.value = MicState.IDLE
             running = false
             worker = null
         }
     }
+}
+
+/** تنظيف فيدر داخل الحدود — بوابة واحدة لكل القنوات. */
+internal object MixerLogicFader {
+    fun clean(v: Float): Float = v.coerceIn(0f, 1.5f)
 }

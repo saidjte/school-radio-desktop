@@ -255,6 +255,110 @@ object SelfTest {
                 com.saidjte.schoolradio.desktop.audio.RecordingMeta.sidecarOf(File(tmp, "x.wav"))
             )?.recorderName == "سارة")
 
+            // 13) وحدة المزج: DSP نقي (معالج المذيع + المعادل) + نماذج الحفظ
+            val fs = 44100
+            // تمرير عالٍ: 40هرتز مقصوص بقوة و400هرتز يمر
+            val hpLow = com.saidjte.schoolradio.desktop.audio.DspMeasure.chainDb(40.0, fs) {
+                it.highPass(fs.toDouble(), 85.0)
+            }
+            val hpHigh = com.saidjte.schoolradio.desktop.audio.DspMeasure.chainDb(400.0, fs) {
+                it.highPass(fs.toDouble(), 85.0)
+            }
+            check(hpLow < -12.0) { "hpf low=$hpLow" }
+            check(hpHigh > -1.5 && hpHigh < 1.5) { "hpf high=$hpHigh" }
+            // قمة حضور +6 عند 3.2ك
+            val presence = com.saidjte.schoolradio.desktop.audio.DspMeasure.chainDb(3200.0, fs) {
+                it.peaking(fs.toDouble(), 3200.0, 6.0, 1.0)
+            }
+            check(presence > 4.5 && presence < 7.5) { "peaking=$presence" }
+            // رفّ منخفض +6 عند 80: باس يرتفع والوسط يبقى
+            val shelfLow = com.saidjte.schoolradio.desktop.audio.DspMeasure.chainDb(40.0, fs) {
+                it.lowShelf(fs.toDouble(), 80.0, 6.0)
+            }
+            val shelfMid = com.saidjte.schoolradio.desktop.audio.DspMeasure.chainDb(1000.0, fs) {
+                it.lowShelf(fs.toDouble(), 80.0, 6.0)
+            }
+            check(shelfLow > 4.5) { "lowShelf low=$shelfLow" }
+            check(shelfMid > -1.0 && shelfMid < 1.0) { "lowShelf mid=$shelfMid" }
+
+            // معالج المذيع: الصمت يبقى صمتًا، والمحدّد لا يتجاوز السقف أبدًا
+            val vp = com.saidjte.schoolradio.desktop.audio.VoiceProcessor()
+            vp.configure(fs, 1)
+            val silence = ShortArray(2048)
+            vp.process(silence, silence.size, 1.0f)
+            check(silence.all { it == 0.toShort() }) { "silence out" }
+            val loud = ShortArray(2048) { (0.95 * 32767 * kotlin.math.sin(2.0 * Math.PI * 500.0 * it / fs)).toInt().toShort() }
+            vp.process(loud, loud.size, 1.0f)
+            check(loud.maxOf { kotlin.math.abs(it.toInt()) } <= (0.935 * 32767 + 2).toInt()) { "limiter ceiling" }
+            // معطل = هوية (بلا تلوين)
+            val vp2 = com.saidjte.schoolradio.desktop.audio.VoiceProcessor()
+            vp2.configure(fs, 1)
+            vp2.setParams(com.saidjte.schoolradio.desktop.audio.VoiceProcessor.Params(enabled = false))
+            val clean = ShortArray(2048) { ((0.3 * 32767) * kotlin.math.sin(2.0 * Math.PI * 440.0 * it / fs)).toInt().toShort() }
+            val cleanIn = clean.copyOf()
+            vp2.process(clean, clean.size, 1.0f)
+            check(clean.contentEquals(cleanIn)) { "bypass identity" }
+            // البوابة: نغمة أعمق من العتبة تُقفل تدريجيًا
+            val vp3 = com.saidjte.schoolradio.desktop.audio.VoiceProcessor()
+            vp3.configure(fs, 1)
+            vp3.setParams(
+                com.saidjte.schoolradio.desktop.audio.VoiceProcessor.Params(
+                    gateOn = true, gateThresholdDb = -45f,
+                    hpfOn = false, compOn = false
+                )
+            )
+            val faint = ShortArray(2048) { ((0.002 * 32767) * kotlin.math.sin(2.0 * Math.PI * 440.0 * it / fs)).toInt().toShort() }
+            repeat(30) { vp3.process(faint, faint.size, 1.0f) }
+            check(vp3.gateClosed) { "gate closed flag" }
+            check(faint.maxOf { kotlin.math.abs(it.toInt()) } < 0.05 * 0.002 * 32767) { "gate attenuated" }
+
+            // المعادل: شرائح صفرية = هوية، وباص +12 يرفع فعليًا
+            val eq = com.saidjte.schoolradio.desktop.audio.MusicEq()
+            eq.configure(fs, 1)
+            eq.setEnabled(true)
+            eq.setBands(floatArrayOf(0f, 0f, 0f, 0f, 0f))
+            val tone = ShortArray(4096) { ((0.4 * 32767) * kotlin.math.sin(2.0 * Math.PI * 1000.0 * it / fs)).toInt().toShort() }
+            val toneIn = tone.copyOf()
+            eq.process(tone, tone.size, 1.0f)
+            check(tone.contentEquals(toneIn)) { "eq flat identity" }
+            eq.setBands(floatArrayOf(12f, 0f, 0f, 0f, 0f))
+            val bassy = ShortArray(4096) { ((0.3 * 32767) * kotlin.math.sin(2.0 * Math.PI * 60.0 * it / fs)).toInt().toShort() }
+            val bassyIn = bassy.copyOf()
+            eq.process(bassy, bassy.size, 1.0f)
+            val boost = bassy.maxOf { kotlin.math.abs(it.toInt()) }.toDouble() / bassyIn.maxOf { kotlin.math.abs(it.toInt()) }
+            check(boost > 1.8) { "eq bass boost=$boost" }
+
+            // نماذج المزج: JSON ناقص لا يصمت القناة + القيم المشوهة تُحسم
+            val m = com.saidjte.schoolradio.desktop.data.MixerLogic
+            check(m.resolve(null).micFader == 1.0f) { "resolve null" }
+            val partial = m.resolve(com.saidjte.schoolradio.desktop.data.MixerJson(musicFader = -3f))
+            check(partial.micFader == 1.0f && partial.masterFader == 1.0f) { "partial defaults" }
+            check(partial.musicFader == 0f) { "wild fader coerced" }
+            val partialEq = m.resolve(com.saidjte.schoolradio.desktop.data.MixerJson(
+                musicEq = com.saidjte.schoolradio.desktop.data.MusicEqJson(enabled = true, bands = listOf(4f, 2f))
+            ))
+            check(partialEq.musicEq.bands.size == 5 && partialEq.musicEq.bands[4] == 0f) { "eq padded" }
+            val ghostPreset = m.resolveVoice(com.saidjte.schoolradio.desktop.data.VoiceFxJson(preset = "غير موجود"))
+            check(ghostPreset.preset == null) { "ghost preset" }
+            val announcer = m.applyVoicePreset(com.saidjte.schoolradio.desktop.data.VoiceFxState(), "صوت المذيع")
+            check(announcer.presenceDb == 4.0f && announcer.compOn && announcer.gateOn) { "voice preset" }
+            val warm = m.applyMusicPreset(com.saidjte.schoolradio.desktop.data.MusicEqState(), "باص دافئ")
+            check(warm.bands[0] == 5f && warm.bands.size == 5) { "music preset" }
+
+            // دورة حفظ/استرجاع كاملة عبر SettingsStore
+            val st = com.saidjte.schoolradio.desktop.data.SettingsStore(File(tmp, "settings-mix.json"))
+            st.setSchoolName("مدرسة الاختبار")
+            st.setMixer(com.saidjte.schoolradio.desktop.data.MixerState(
+                micFader = 1.2f, musicFader = 0.8f, masterFader = 1.1f,
+                voice = announcer, musicEq = warm
+            ))
+            val stReload = com.saidjte.schoolradio.desktop.data.SettingsStore(File(tmp, "settings-mix.json"))
+            val restored = stReload.mixer()
+            check(restored.micFader == 1.2f && restored.musicFader == 0.8f && restored.masterFader == 1.1f) { "mixer roundtrip faders" }
+            check(restored.voice.presenceDb == 4.0f && restored.voice.preset == "صوت المذيع") { "mixer roundtrip voice" }
+            check(restored.musicEq.bands[0] == 5f && restored.musicEq.preset == "باص دافئ") { "mixer roundtrip eq" }
+            check(stReload.schoolName() == "مدرسة الاختبار") { "mixer save keeps school name" }
+
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
             tmp.listFiles()?.forEach { it.delete() }

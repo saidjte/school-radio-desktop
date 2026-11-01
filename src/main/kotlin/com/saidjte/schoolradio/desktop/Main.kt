@@ -49,6 +49,7 @@ import com.saidjte.schoolradio.desktop.ui.AppTheme
 import com.saidjte.schoolradio.desktop.ui.LocalStudioColors
 import com.saidjte.schoolradio.desktop.ui.LogoMark
 import com.saidjte.schoolradio.desktop.ui.LivePage
+import com.saidjte.schoolradio.desktop.ui.MixerPage
 import com.saidjte.schoolradio.desktop.ui.MusicTab
 import com.saidjte.schoolradio.desktop.ui.PulsingDot
 import com.saidjte.schoolradio.desktop.ui.RecordingsTab
@@ -125,6 +126,7 @@ fun AppRoot(vm: AppViewModel = remember { AppViewModel() }, startTab: Tab? = nul
                         Tab.SCHEDULE -> ScheduleTab(vm)
                         Tab.SCRIPT -> ScriptTab(vm)
                         Tab.MUSIC -> MusicTab(vm)
+                        Tab.MIXER -> MixerPage(vm)
                         Tab.RECORDINGS -> RecordingsTab(vm)
                     }
                 }
@@ -140,6 +142,7 @@ private fun tabIcon(t: Tab): AppIconKind = when (t) {
     Tab.SCHEDULE -> AppIconKind.SCHEDULE
     Tab.SCRIPT -> AppIconKind.SCRIPT
     Tab.MUSIC -> AppIconKind.MUSIC
+    Tab.MIXER -> AppIconKind.MIXER
     Tab.RECORDINGS -> AppIconKind.RECORDINGS
 }
 

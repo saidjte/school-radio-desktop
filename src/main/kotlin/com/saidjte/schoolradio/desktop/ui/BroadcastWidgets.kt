@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
@@ -54,6 +55,7 @@ import com.saidjte.schoolradio.desktop.audio.AudioDevices
 import com.saidjte.schoolradio.desktop.audio.MicState
 import com.saidjte.schoolradio.desktop.data.MeterLogic
 import com.saidjte.schoolradio.desktop.data.MeterZone
+import com.saidjte.schoolradio.desktop.data.MixerLogic
 import java.io.File
 
 // ================= مقياس البث المقطعي =================
@@ -339,6 +341,31 @@ fun BroadcastMicCard(vm: AppViewModel) {
                 )
             }
         }
+
+        // فيدر قناة الميكروفون + كتم جلسي (وحدة المزج)
+        val micMuted by vm.micMuted.collectAsState()
+        val micFader by vm.mixer.collectAsState()
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "فيدر",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "${MixerLogic.faderPercent(micFader.micFader)}%",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.width(42.dp)
+            )
+            Slider(
+                value = micFader.micFader,
+                onValueChange = { vm.setMicFader(it) },
+                valueRange = 0f..MixerLogic.FADER_MAX,
+                modifier = Modifier.weight(1f)
+            )
+            MuteChip(muted = micMuted, onClick = { vm.setMicMuted(!micMuted) })
+        }
         deviceName?.let {
             Text(
                 it,
@@ -371,7 +398,6 @@ fun BroadcastMusicCard(vm: AppViewModel) {
     val title by player.title.collectAsState()
     val positionMs by player.positionMs.collectAsState()
     val durationMs by player.durationMs.collectAsState()
-    val volume by player.volume.collectAsState()
 
     Column(
         modifier = Modifier
@@ -480,11 +506,31 @@ fun BroadcastMusicCard(vm: AppViewModel) {
             )
         }
 
-        Slider(
-            value = volume,
-            onValueChange = { player.setVolume(it) },
-            valueRange = 0f..1f
-        )
+        // فيدر قناة الموسيقى + كتم جلسي (وحدة المزج) — هو عنصر التحكم الوحيد للمستوى،
+        // مكان منزلق الصوت القديم: عنصران لمستوى واحد كانا يربكان الجلسة
+        val musicMuted by vm.musicMuted.collectAsState()
+        val mixerState by vm.mixer.collectAsState()
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "فيدر",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "${MixerLogic.faderPercent(mixerState.musicFader)}%",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.width(42.dp)
+            )
+            Slider(
+                value = mixerState.musicFader,
+                onValueChange = { vm.setMusicFader(it) },
+                valueRange = 0f..MixerLogic.FADER_MAX,
+                modifier = Modifier.weight(1f)
+            )
+            MuteChip(muted = musicMuted, onClick = { vm.setMusicMuted(!musicMuted) })
+        }
     }
 }
 

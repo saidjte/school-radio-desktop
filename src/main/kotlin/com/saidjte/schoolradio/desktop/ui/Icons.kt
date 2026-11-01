@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.dp
  * أيقونات الواجهة المرسومة متجهيًا داخل التطبيق — بلا اعتماديات خارجية وبثبات كامل
  * على كل الأنظمة. تعمل داخل Canvas فلا تتأثر باتجاه التخطيط RTL.
  */
-enum class AppIconKind { STUDIO, LIVE, SCHEDULE, SCRIPT, MUSIC, RECORDINGS }
+enum class AppIconKind { STUDIO, LIVE, SCHEDULE, SCRIPT, MUSIC, MIXER, RECORDINGS }
 
 @Composable
 fun AppIcon(
@@ -39,6 +39,7 @@ fun AppIcon(
             AppIconKind.SCHEDULE -> drawCalendar(tint)
             AppIconKind.SCRIPT -> drawDocument(tint)
             AppIconKind.MUSIC -> drawNote(tint)
+            AppIconKind.MIXER -> drawMixer(tint)
             AppIconKind.RECORDINGS -> drawDisc(tint)
         }
     }
@@ -147,6 +148,25 @@ private fun DrawScope.drawNote(tint: Color) {
         topLeft = Offset(w * 0.3f, h * 0.62f),
         size = Size(w * 0.32f, h * 0.26f)
     )
+}
+
+/** وحدة المزج: فيدران رأسيان بمقابض + شريحة مستوى بينهما. */
+private fun DrawScope.drawMixer(tint: Color) {
+    val w = size.width
+    val h = size.height
+    val sw = w * 0.055f
+    // فيدران رأسيان (يمين: ميكروفون أعلى، يسار: موسيقى أدنى)
+    val x1 = w * 0.30f
+    val x2 = w * 0.70f
+    val top = h * 0.14f
+    val bottom = h * 0.86f
+    drawLine(tint, Offset(x1, top), Offset(x1, bottom), strokeWidth = sw, cap = StrokeCap.Round)
+    drawLine(tint, Offset(x2, top), Offset(x2, bottom), strokeWidth = sw, cap = StrokeCap.Round)
+    // مقبضان: مستطيلان أفقيان بمواضع مختلفة
+    drawLine(tint, Offset(x1 - w * 0.14f, h * 0.34f), Offset(x1 + w * 0.14f, h * 0.34f), strokeWidth = sw * 1.4f, cap = StrokeCap.Round)
+    drawLine(tint, Offset(x2 - w * 0.14f, h * 0.62f), Offset(x2 + w * 0.14f, h * 0.62f), strokeWidth = sw * 1.4f, cap = StrokeCap.Round)
+    // شريحة مستوى صغيرة بين الفيدرين
+    drawLine(tint.copy(alpha = 0.55f), Offset(w * 0.5f, h * 0.30f), Offset(w * 0.5f, h * 0.46f), strokeWidth = sw * 0.8f, cap = StrokeCap.Round)
 }
 
 /** القرص (التسجيلات): قرص مدمج بثقوب. */

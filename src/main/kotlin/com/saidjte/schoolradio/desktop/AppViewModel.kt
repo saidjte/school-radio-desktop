@@ -13,6 +13,9 @@ import com.saidjte.schoolradio.desktop.data.ExecutionsStore
 import com.saidjte.schoolradio.desktop.data.FireStatus
 import com.saidjte.schoolradio.desktop.data.LibraryEntry
 import com.saidjte.schoolradio.desktop.data.LibraryMath
+import com.saidjte.schoolradio.desktop.data.MixerLogic
+import com.saidjte.schoolradio.desktop.data.MixerState
+import com.saidjte.schoolradio.desktop.data.MusicEqState
 import com.saidjte.schoolradio.desktop.data.MusicLibraryStore
 import com.saidjte.schoolradio.desktop.data.PlaylistStore
 import com.saidjte.schoolradio.desktop.data.Role
@@ -26,6 +29,7 @@ import com.saidjte.schoolradio.desktop.data.SettingsStore
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 import com.saidjte.schoolradio.desktop.data.User
 import com.saidjte.schoolradio.desktop.data.UsersStore
+import com.saidjte.schoolradio.desktop.data.VoiceFxState
 import com.saidjte.schoolradio.desktop.data.WeeklyEvent
 import com.saidjte.schoolradio.desktop.data.WeeklyMath
 import com.saidjte.schoolradio.desktop.data.WeeklyStore
@@ -53,6 +57,7 @@ enum class Tab(val label: String) {
     SCHEDULE("جدولة الفقرات"),
     SCRIPT("سكريبت المذيع"),
     MUSIC("الموسيقى"),
+    MIXER("وحدة المزج"),
     RECORDINGS("التسجيلات")
 }
 
@@ -144,6 +149,78 @@ class AppViewModel {
         settingsStore.setSchoolName(name)
         _schoolName.value = settingsStore.schoolName()
     }
+
+    // ================= وحدة المزج الإذاعية =================
+    // فيدرات القنوات + معالج صوت المذيع + معادل الصوت — تُحفظ في settings.json،
+    // وكل تغيير يسري على القنوات الحية فورًا (كتلة واحدة ~50ms) بلا قطع صوت.
+
+    private val _mixer = MutableStateFlow(settingsStore.mixer())
+    val mixer: StateFlow<MixerState> = _mixer.asStateFlow()
+
+    // الكتم جلسي فقط — درس v0.16.0: لا يلمس القيم المحفوظة إطلاقًا
+    private val _micMuted = MutableStateFlow(false)
+    val micMuted: StateFlow<Boolean> = _micMuted.asStateFlow()
+
+    private val _musicMuted = MutableStateFlow(false)
+    val musicMuted: StateFlow<Boolean> = _musicMuted.asStateFlow()
+
+    private var mixerPersistJob: Job? = null
+
+    /** دفع حالة الوحدة إلى محرّكي القنوات (ميكروفون + موسيقى). */
+    private fun pushMixerToEngines() {
+        val m = _mixer.value
+        mic.setMicFader(m.micFader)
+        mic.setMasterFader(m.masterFader)
+        mic.setVoiceFx(m.voice)
+        player.setMusicFader(m.musicFader)
+        player.setMasterFader(m.masterFader)
+        player.setMusicEq(m.musicEq)
+        mic.setMicMuted(_micMuted.value)
+        player.setMusicMuted(_musicMuted.value)
+    }
+
+    private fun updateMixer(transform: (MixerState) -> MixerState) {
+        _mixer.value = transform(_mixer.value)
+        pushMixerToEngines()
+        scheduleMixerPersist()
+    }
+
+    /** حفظ مؤجّل 300ms: سحب الفيدرات لا يولّد عشرات الكتابات في الثانية. */
+    private fun scheduleMixerPersist() {
+        mixerPersistJob?.cancel()
+        mixerPersistJob = runScope.launch {
+            delay(300)
+            settingsStore.setMixer(_mixer.value)
+        }
+    }
+
+    fun setMicFader(v: Float) = updateMixer { it.copy(micFader = MixerLogic.cleanFader(v)) }
+
+    fun setMusicFader(v: Float) = updateMixer { it.copy(musicFader = MixerLogic.cleanFader(v)) }
+
+    fun setMasterFader(v: Float) = updateMixer { it.copy(masterFader = MixerLogic.cleanFader(v)) }
+
+    fun setMicMuted(m: Boolean) {
+        _micMuted.value = m
+        mic.setMicMuted(m)
+    }
+
+    fun setMusicMuted(m: Boolean) {
+        _musicMuted.value = m
+        player.setMusicMuted(m)
+    }
+
+    fun updateVoiceFx(transform: (VoiceFxState) -> VoiceFxState) =
+        updateMixer { it.copy(voice = transform(it.voice)) }
+
+    fun applyVoicePreset(name: String) =
+        updateMixer { it.copy(voice = MixerLogic.applyVoicePreset(it.voice, name)) }
+
+    fun updateMusicEq(transform: (MusicEqState) -> MusicEqState) =
+        updateMixer { it.copy(musicEq = transform(it.musicEq)) }
+
+    fun applyMusicEqPreset(name: String) =
+        updateMixer { it.copy(musicEq = MixerLogic.applyMusicPreset(it.musicEq, name)) }
 
     // ================= سكريبت المذيع =================
 
@@ -719,6 +796,9 @@ class AppViewModel {
         _users.value = usersStore.users()
         _currentUser.value = usersStore.currentUser()
         _schoolName.value = settingsStore.schoolName()
+        // وحدة المزج: الحالة المستعادة تُدفع للقنوات الحية أيضًا
+        _mixer.value = settingsStore.mixer()
+        pushMixerToEngines()
         _script.value = scriptStore.sections()
         _selectedSectionId.value = _script.value.firstOrNull()?.id
         _schedule.value = scheduleStore.items()
@@ -760,6 +840,8 @@ class AppViewModel {
     init {
         player.onEnded = { next(auto = true) }
         player.onPlayFailed = { skipCorrupt() }
+        // وحدة المزج: الحالة المحفوظة تُدفع إلى القنوات عند الإقلاع
+        pushMixerToEngines()
         _recordingsDir.value.mkdirs()
         refreshRecordings()
         if (_script.value.isNotEmpty()) {

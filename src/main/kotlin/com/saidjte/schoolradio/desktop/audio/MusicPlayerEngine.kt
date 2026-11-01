@@ -1,5 +1,6 @@
 package com.saidjte.schoolradio.desktop.audio
 
+import com.saidjte.schoolradio.desktop.data.MusicEqState
 import javazoom.jl.decoder.Bitstream
 import javazoom.jl.decoder.Decoder
 import javazoom.jl.decoder.SampleBuffer
@@ -36,6 +37,48 @@ private interface TrackReader : Closeable {
     fun readChunk(): Boolean
 }
 
+/**
+ * قناة الموسيقى في وحدة المزج: معادل الصوت خمس الشرائح + فيدر + كتم جلسي
+ * + مقياس حي. حيّة لحظيًا: كل التغييرات تسري على الكتلة التالية (~26ms)
+ * دون قطع التشغيل ولا إعادة فتح الخط.
+ */
+class MusicChannel internal constructor() {
+
+    internal val eq = MusicEq()
+
+    @Volatile internal var fader = 1.0f
+    @Volatile internal var master = 1.0f
+    @Volatile internal var muted = false
+
+    /** مستوى الكتلة الأخير (منمّط 0..1) — يُستدعى من خيط التشغيل. */
+    var onLevel: ((Float) -> Unit)? = null
+
+    private val shorts = ShortArray(1 shl 15)
+
+    internal fun configure(sampleRate: Int, channels: Int) {
+        eq.configure(sampleRate, channels)
+    }
+
+    /** معالجة بايتات PCM 16-bit في مكانها قبل كتابة الخط. */
+    internal fun process(bytes: ByteArray, n: Int) {
+        val count = Pcm16.bytesToShorts(bytes, n, shorts)
+        apply(shorts, count)
+        Pcm16.shortsToBytes(shorts, count, bytes)
+    }
+
+    /** معالجة عينات مفكوكة (MP3) في مكانها قبل التحويل للبايتات. */
+    internal fun processShorts(s: ShortArray, count: Int) {
+        apply(s, count)
+    }
+
+    private fun apply(target: ShortArray, count: Int) {
+        if (count <= 0) return
+        val gain = if (muted) 0f else fader * master
+        val level = eq.process(target, count, gain)
+        onLevel?.invoke(level)
+    }
+}
+
 private fun gainDb(volume: Float): Float =
     if (volume <= 0.01f) -60f else 20f * log10(volume).toFloat()
 
@@ -50,7 +93,8 @@ private fun applyGain(line: SourceDataLine, volume: Float) {
 private class Mp3TrackReader(
     private val file: File,
     outMixer: Mixer.Info?,
-    volume: () -> Float
+    volume: () -> Float,
+    private val channel: MusicChannel
 ) : TrackReader {
 
     private val info = Mp3Info.analyze(file)
@@ -77,6 +121,7 @@ private class Mp3TrackReader(
         line.open(format, 64 * 1024)
         line.start()
         applyGain(line, volume())
+        channel.configure(f.sampleRate, f.channels)
     }
 
     override fun readChunk(): Boolean {
@@ -86,6 +131,8 @@ private class Mp3TrackReader(
             if (out is SampleBuffer) {
                 val shorts = out.buffer
                 if (shorts.isNotEmpty()) {
+                    // قناة المزج: المعادل + الفيدر + المقياس قبل كتابة الخط
+                    channel.processShorts(shorts, shorts.size)
                     val bytes = ByteArray(shorts.size * 2)
                     var bi = 0
                     for (s in shorts) {
@@ -157,7 +204,8 @@ private class Mp3TrackReader(
 private class PcmTrackReader(
     private val file: File,
     outMixer: Mixer.Info?,
-    volume: () -> Float
+    volume: () -> Float,
+    private val channel: MusicChannel
 ) : TrackReader {
 
     private var ais: AudioInputStream
@@ -197,6 +245,7 @@ private class PcmTrackReader(
         line.open(pcmFormat, 64 * 1024)
         line.start()
         applyGain(line, volume())
+        channel.configure(pcmFormat.sampleRate.toInt(), pcmFormat.channels)
     }
 
     override fun readChunk(): Boolean {
@@ -205,6 +254,8 @@ private class PcmTrackReader(
         if (n == 0) return true
         val usable = n - (n % frameSize)
         if (usable > 0) {
+            // قناة المزج: المعادل + الفيدر + المقياس قبل كتابة الخط
+            channel.process(buf, usable)
             line.write(buf, 0, usable)
             framesDone += usable / frameSize
             if (pcmFormat.frameRate > 0) {
@@ -297,6 +348,13 @@ class MusicPlayerEngine {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    /** مقياس قناة الموسيقى الحي (منمّط 0..1) — بعد المعادل والفيدر. */
+    private val _level = MutableStateFlow(0f)
+    val level: StateFlow<Float> = _level.asStateFlow()
+
+    /** قناة الموسيقى في وحدة المزج. */
+    val channel = MusicChannel()
+
     /** يُستدعى من خيط التشغيل عند انتهاء المقطع (للانتقال التلقائي). */
     var onEnded: (() -> Unit)? = null
 
@@ -311,6 +369,27 @@ class MusicPlayerEngine {
     @Volatile private var switchTo: File? = null
     @Volatile private var seekRequest = -1L
     @Volatile private var volumeDirty = false
+
+    init {
+        channel.onLevel = { _level.value = it }
+    }
+
+    // ================= وحدة المزج: قناة الموسيقى =================
+
+    /** فيدر قناة الموسيقى (0..1.5) — يسري أثناء التشغيل فورًا. */
+    fun setMusicFader(v: Float) { channel.fader = v.coerceIn(0f, 1.5f) }
+
+    /** فيدر الماستر — يسري أثناء التشغيل فورًا. */
+    fun setMasterFader(v: Float) { channel.master = v.coerceIn(0f, 1.5f) }
+
+    /** كتم جلسي: لا يُكتب في المحفوظ، وإلغاؤه يعيد المستوى نفسه. */
+    fun setMusicMuted(m: Boolean) { channel.muted = m }
+
+    /** تحديث معادل الصوت دفعة واحدة (تشغيل/شرائح). */
+    fun setMusicEq(state: MusicEqState) {
+        channel.eq.setEnabled(state.enabled)
+        channel.eq.setBands(state.bands.toFloatArray())
+    }
 
     /** مخرج التشغيل المختار (null = السماعة الافتراضية للنظام). */
     @Volatile private var outputMixer: Mixer.Info? = null
@@ -501,7 +580,7 @@ class MusicPlayerEngine {
 
     private fun openReader(file: File): TrackReader {
         val name = file.name.lowercase()
-        return if (name.endsWith(".mp3")) Mp3TrackReader(file, outputMixer) { _volume.value }
-        else PcmTrackReader(file, outputMixer) { _volume.value }
+        return if (name.endsWith(".mp3")) Mp3TrackReader(file, outputMixer, { _volume.value }, channel)
+        else PcmTrackReader(file, outputMixer, { _volume.value }, channel)
     }
 }

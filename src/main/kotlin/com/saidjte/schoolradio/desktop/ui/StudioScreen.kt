@@ -515,6 +515,7 @@ private fun StudioBroadcastPanel(vm: AppViewModel) {
         )
         BroadcastMicCard(vm)
         BroadcastMusicCard(vm)
+        MixerLinkCard(vm)
         StudioRecordingsCard(vm, Modifier.weight(1f))
     }
 }
