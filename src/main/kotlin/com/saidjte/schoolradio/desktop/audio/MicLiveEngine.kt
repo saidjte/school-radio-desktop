@@ -55,6 +55,12 @@ class MicLiveEngine {
     @Volatile private var recordWanted = false
     @Volatile private var recordTarget: File? = null
 
+    /**
+     * يُستدعى مرة واحدة لحظة إغلاق ملف تسجيل اكتمل (بعد كتابة الترويسة النهائية)
+     * — بوابة توقيع المُسجِّل: المتصل يكتب الملف الجانبي بالاسم والدور هنا.
+     */
+    var onRecordingSaved: ((File, Long) -> Unit)? = null
+
     /** مخرج السماع المراقب (السماعة التي يختارها المذيع). */
     @Volatile private var outMixer: Mixer.Info? = null
     @Volatile private var outMixerDirty = false
@@ -173,9 +179,14 @@ class MicLiveEngine {
                     }
                 }
                 if (!recordWanted && wav != null) {
+                    val target = recordTarget
+                    val durMs = wav.durationMs
                     wav.close()
                     wav = null
                     _recording.value = false
+                    // التسجيل اكتمل كتابةً فعلية — الآن فقط يُوقَّع
+                    val cb = onRecordingSaved
+                    if (target != null && cb != null) cb(target, durMs)
                 }
                 if (wav != null) {
                     wav.write(buf, 0, n)

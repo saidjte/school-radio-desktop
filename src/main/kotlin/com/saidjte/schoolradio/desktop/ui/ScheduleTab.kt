@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,9 +20,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -40,11 +43,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.Tab
+import com.saidjte.schoolradio.desktop.data.FireStatus
+import com.saidjte.schoolradio.desktop.data.Role
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.SegmentKind
 import com.saidjte.schoolradio.desktop.data.SegmentStatus
+import com.saidjte.schoolradio.desktop.data.WeeklyMath
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * جدولة الفقرات: قائمة فقرات الحلقة (نوع/مدة/ملف مرتبط/سكريبت مرتبط) مع ساعة مخططة
@@ -65,6 +74,10 @@ fun ScheduleTab(vm: AppViewModel) {
     var showCreate by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<ScheduleItem?>(null) }
     var startText by remember { mutableStateOf("") }
+
+    // بوابة الأدوار: تعديل الجدولة والأحداث لمعلم فأعلى — التشغيل متاح للجميع
+    val me by vm.currentUser.collectAsState()
+    val canManage = me?.let { Role.canManage(it.role ?: Role.STUDENT) } ?: false
 
     val clocks = remember(schedule, episodeStart) {
         ScheduleMath.plannedClocks(schedule, episodeStart)
@@ -92,7 +105,11 @@ fun ScheduleTab(vm: AppViewModel) {
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f)
                 )
-                PrimaryAction(text = "فقرة جديدة", onClick = { showCreate = true })
+                PrimaryAction(
+                    text = "فقرة جديدة",
+                    onClick = { showCreate = true },
+                    enabled = canManage
+                )
             }
 
             Row(
@@ -115,7 +132,8 @@ fun ScheduleTab(vm: AppViewModel) {
                     text = "تعيين",
                     onClick = {
                         parseClock(startText)?.let { vm.setEpisodeStart(it) }
-                    }
+                    },
+                    enabled = canManage
                 )
                 if (episodeStart != null) {
                     SecondaryAction(
@@ -123,7 +141,8 @@ fun ScheduleTab(vm: AppViewModel) {
                         onClick = {
                             vm.setEpisodeStart(null)
                             startText = ""
-                        }
+                        },
+                        enabled = canManage
                     )
                 }
                 Spacer(Modifier.weight(1f))
@@ -141,7 +160,7 @@ fun ScheduleTab(vm: AppViewModel) {
                 )
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     itemsIndexed(schedule) { index, item ->
@@ -239,26 +258,31 @@ fun ScheduleTab(vm: AppViewModel) {
                             }
                             SecondaryAction(
                                 text = "أعلى",
-                                enabled = index > 0,
+                                enabled = index > 0 && canManage,
                                 onClick = { vm.moveScheduleItem(item.id, -1) }
                             )
                             SecondaryAction(
                                 text = "أسفل",
-                                enabled = index < schedule.size - 1,
+                                enabled = index < schedule.size - 1 && canManage,
                                 onClick = { vm.moveScheduleItem(item.id, +1) }
                             )
                             SecondaryAction(
                                 text = "تحرير",
+                                enabled = canManage,
                                 onClick = { editorItem = item }
                             )
                             SecondaryAction(
                                 text = "حذف",
+                                enabled = canManage,
                                 onClick = { deleteTarget = item }
                             )
                         }
                     }
                 }
             }
+
+            // ============ الجدولة الأسبوعية الدقيقة + سجل التنفيذ ============
+            WeeklyScheduleCard(vm = vm, canManage = canManage)
         }
 
         // ============ لوحة التشغيل الحي ============
@@ -572,6 +596,280 @@ private fun SegmentEditorDialog(
                 else vm.updateScheduleItem(initial.id, t, kind, ps, mediaPath, note, scriptId)
                 onDismiss()
             }) { Text("حفظ") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("إلغاء") }
+        }
+    )
+}
+
+// ================= الجدولة الأسبوعية الدقيقة + سجل التنفيذ =================
+
+/**
+ * بطاقة المواعيد الأسبوعية: مواعيد ثابتة تنطلق آليًا أثناء عمل التطبيق
+ * (مكافئ الجدولة الدقيقة في نسخة الهاتف) — وقيد فريد لكل (حدث+تاريخ) في
+ * سجل التنفيذ يمنع التكرار اليومي، والفائت بعد إغلاق التطبيق يُسجَّل عند الفتح.
+ */
+@Composable
+private fun WeeklyScheduleCard(vm: AppViewModel, canManage: Boolean) {
+    val events by vm.weeklyEvents.collectAsState()
+    val executions by vm.executions.collectAsState()
+
+    var showAddEvent by remember { mutableStateOf(false) }
+    var showFullLog by remember { mutableStateOf(false) }
+    var deleteEventTarget by remember { mutableStateOf<com.saidjte.schoolradio.desktop.data.WeeklyEvent?>(null) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                "الجدولة الأسبوعية الدقيقة",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            SecondaryAction(
+                text = "موعد جديد",
+                onClick = { showAddEvent = true },
+                enabled = canManage
+            )
+        }
+
+        if (events.isEmpty()) {
+            Text(
+                "لا مواعيد أسبوعية — أضف موعدًا (مثل: الاثنين 08:15) لينطلق التنبيه والحلقة تلقائيًا في وقته.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 150.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(events.size) { i ->
+                    val e = events[i]
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            "${WeeklyMath.dayName(e.dayOfWeek ?: 1)} ${WeeklyMath.clockOf(e.startMinutes ?: 0)}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            (e.title ?: "") + if (e.autoStartRun == true) " · انطلاق آلي للحلقة" else "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = e.enabled ?: true,
+                            onCheckedChange = { vm.toggleWeeklyEvent(e.id, it) },
+                            enabled = canManage
+                        )
+                        Text(
+                            "حذف",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = canManage) { deleteEventTarget = e }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+        // سجل التنفيذ — آخر 3 قيود + السجل الكامل
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                "سجل التنفيذ",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            SecondaryAction(
+                text = "السجل الكامل",
+                onClick = { showFullLog = true },
+                enabled = executions.isNotEmpty()
+            )
+        }
+        if (executions.isEmpty()) {
+            Text(
+                "لا قيود بعد — كل إطلاق أو فوات يُقيد هنا بالتاريخ والحالة.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            executions.take(3).forEach { entry ->
+                val statusColor = if (entry.status == FireStatus.FIRED) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.error
+                Text(
+                    "• ${entry.title ?: ""} — ${entry.dateKey ?: ""} — ${entry.status?.labelAr ?: ""}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = statusColor
+                )
+            }
+        }
+    }
+
+    // حوار موعد جديد
+    if (showAddEvent) {
+        WeeklyEventDialog(
+            vm = vm,
+            onDismiss = { showAddEvent = false }
+        )
+    }
+
+    // حوار السجل الكامل
+    if (showFullLog) {
+        AlertDialog(
+            onDismissRequest = { showFullLog = false },
+            title = { Text("سجل تنفيذ الجدولة الأسبوعية") },
+            text = {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 380.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(executions.size) { i ->
+                        val entry = executions[i]
+                        val isFired = entry.status == FireStatus.FIRED
+                        val time = entry.atEpochMs?.let {
+                            SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(it))
+                        } ?: ""
+                        Text(
+                            "${entry.dateKey ?: ""} · ${entry.title ?: ""} · " +
+                                    (entry.status?.labelAr ?: "") +
+                                    (if (time.isNotEmpty()) " · $time" else ""),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isFired) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showFullLog = false }) { Text("إغلاق") }
+            }
+        )
+    }
+
+    // تأكيد حذف حدث
+    if (deleteEventTarget != null) {
+        AlertDialog(
+            onDismissRequest = { deleteEventTarget = null },
+            title = { Text("حذف الموعد الأسبوعي") },
+            text = { Text("هل تريد حذف «${deleteEventTarget?.title}» من الجدولة الأسبوعية؟") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val t = deleteEventTarget
+                    deleteEventTarget = null
+                    if (t != null) vm.deleteWeeklyEvent(t.id)
+                }) { Text("حذف", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteEventTarget = null }) { Text("إلغاء") }
+            }
+        )
+    }
+}
+
+/** حوار إنشاء موعد أسبوعي: اليوم + الساعة + الدقيقة + انطلاق آلي للحلقة. */
+@Composable
+private fun WeeklyEventDialog(vm: AppViewModel, onDismiss: () -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var day by remember { mutableStateOf(1) }
+    var hourText by remember { mutableStateOf("08") }
+    var minuteText by remember { mutableStateOf("15") }
+    var autoStart by remember { mutableStateOf(false) }
+    var dayMenuOpen by remember { mutableStateOf(false) }
+
+    val hour = hourText.toIntOrNull()?.coerceIn(0, 23)
+    val minute = minuteText.toIntOrNull()?.coerceIn(0, 59)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("موعد أسبوعي جديد") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("اسم الموعد") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("اليوم:", style = MaterialTheme.typography.bodyMedium)
+                    Box {
+                        TextButton(onClick = { dayMenuOpen = true }) {
+                            Text(WeeklyMath.dayName(day))
+                        }
+                        DropdownMenu(expanded = dayMenuOpen, onDismissRequest = { dayMenuOpen = false }) {
+                            WeeklyMath.dayNames().forEachIndexed { i, name ->
+                                DropdownMenuItem(
+                                    text = { Text(name) },
+                                    onClick = {
+                                        day = i + 1
+                                        dayMenuOpen = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("الساعة:", style = MaterialTheme.typography.bodyMedium)
+                    OutlinedTextField(
+                        value = hourText,
+                        onValueChange = { v -> if (v.length <= 2) hourText = v.filter { it.isDigit() } },
+                        singleLine = true,
+                        modifier = Modifier.width(70.dp)
+                    )
+                    Text(":", style = MaterialTheme.typography.titleMedium)
+                    OutlinedTextField(
+                        value = minuteText,
+                        onValueChange = { v -> if (v.length <= 2) minuteText = v.filter { it.isDigit() } },
+                        singleLine = true,
+                        modifier = Modifier.width(70.dp)
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "انطلاق الحلقة آليًا عند الموعد",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(checked = autoStart, onCheckedChange = { autoStart = it })
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (vm.addWeeklyEvent(title, day, hour ?: 0, minute ?: 0, autoStart)) onDismiss()
+                },
+                enabled = title.isNotBlank() && hour != null && minute != null
+            ) { Text("حفظ") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("إلغاء") }

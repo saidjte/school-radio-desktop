@@ -194,6 +194,67 @@ object SelfTest {
             check(MeterLogic.peakSegment(0.9f) == 21) { "peak segment 0.9=${MeterLogic.peakSegment(0.9f)}" }
             check(MeterLogic.peakSegment(1f) == 23) { "peak segment full" }
 
+            // 10) الأدوار والمستخدمون — مصفوفة النسخة الهاتفية
+            val usersStore = com.saidjte.schoolradio.desktop.data.UsersStore(File(tmp, "users.json"))
+            check(com.saidjte.schoolradio.desktop.data.Role.from("GHOST") == com.saidjte.schoolradio.desktop.data.Role.STUDENT)
+            check(com.saidjte.schoolradio.desktop.data.Role.canManage(com.saidjte.schoolradio.desktop.data.Role.TEACHER))
+            check(!com.saidjte.schoolradio.desktop.data.Role.canManage(com.saidjte.schoolradio.desktop.data.Role.STUDENT))
+            check(com.saidjte.schoolradio.desktop.data.Role.canAdminister(com.saidjte.schoolradio.desktop.data.Role.ADMIN))
+            check(!com.saidjte.schoolradio.desktop.data.Role.canAdminister(com.saidjte.schoolradio.desktop.data.Role.TEACHER))
+            val u1 = usersStore.add("أمين", com.saidjte.schoolradio.desktop.data.Role.ADMIN)
+            check(u1 != null && usersStore.currentUser()?.id == u1.id)
+            check(usersStore.add("أمين", com.saidjte.schoolradio.desktop.data.Role.STUDENT) == null) // فريد
+            check(usersStore.setCurrent(usersStore.add("معلمة", com.saidjte.schoolradio.desktop.data.Role.TEACHER)!!.id))
+            check(usersStore.currentUser()?.role == com.saidjte.schoolradio.desktop.data.Role.TEACHER)
+            check(com.saidjte.schoolradio.desktop.data.UsersStore(File(tmp, "users.json")).users().size == 2)
+
+            // 11) الجدولة الأسبوعية + سجل التنفيذ — قيد فريد حدث+تاريخ
+            val zoneUtc = java.util.TimeZone.getTimeZone("UTC")
+            val cal = java.util.Calendar.getInstance(zoneUtc).apply {
+                set(2026, 0, 5, 8, 17, 0); set(java.util.Calendar.MILLISECOND, 0)
+            }
+            val monday817 = cal.timeInMillis
+            val wEvents = listOf(
+                com.saidjte.schoolradio.desktop.data.WeeklyEvent(
+                    1, "إذاعة الصباح", 1, 8 * 60 + 15, true, false
+                )
+            )
+            val d = com.saidjte.schoolradio.desktop.data.WeeklyMath.decide(wEvents, emptySet(), monday817, zoneUtc)
+            check(d.size == 1 && d[0].status == com.saidjte.schoolradio.desktop.data.FireStatus.FIRED) { "decide=$d" }
+            check(com.saidjte.schoolradio.desktop.data.WeeklyMath.decide(
+                wEvents, setOf("1@2026-01-05"), monday817, zoneUtc
+            ).isEmpty()) { "no duplicate same date" }
+            val exec = com.saidjte.schoolradio.desktop.data.ExecutionsStore(File(tmp, "executions.json"))
+            check(exec.log(1, "إذاعة الصباح", "2026-01-05", monday817, com.saidjte.schoolradio.desktop.data.FireStatus.FIRED))
+            check(!exec.log(1, "إذاعة الصباح", "2026-01-05", monday817, com.saidjte.schoolradio.desktop.data.FireStatus.FIRED)) { "unique" }
+            check(exec.has(1, "2026-01-05"))
+
+            // 12) المكتبة المصنفة + النسخ الاحتياطي + قائمة التشغيل الدائمة
+            val lib = com.saidjte.schoolradio.desktop.data.MusicLibraryStore(File(tmp, "library.json"))
+            check(lib.categories().size == 7) { "seven defaults=${lib.categories()}" }
+            val mediaFile = File(tmp, "media1.wav").apply {
+                writeBytes(byteArrayOf(0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0)) // ملف غير صالح — للمسارات فقط
+            }
+            check(lib.addFiles(listOf(mediaFile), "الأناشيد المدرسية").size == 1)
+            check(lib.addCategory("جينغلات") && lib.categories().size == 8)
+            check(!lib.deleteCategory("القرآن الكريم")) // الافتراضية محمية
+            check(mediaFile.delete())
+            check(lib.missingPaths().size == 1) { "missing detection" }
+            val bak = File(tmp, "backup.schoolradio.json")
+            val exp = com.saidjte.schoolradio.desktop.data.Backup.export(bak, tmp, APP_VERSION)
+            check(exp.ok) { "backup export: ${exp.message}" }
+            check(com.saidjte.schoolradio.desktop.data.Backup.verify(bak)?.containsKey("library.json") == true)
+            val pl = com.saidjte.schoolradio.desktop.data.PlaylistStore(File(tmp, "playlist.json"))
+            pl.set(listOf("/a.mp3", "/b.mp3"), 1)
+            pl.setRepeat(true)
+            val plReload = com.saidjte.schoolradio.desktop.data.PlaylistStore(File(tmp, "playlist.json"))
+            check(plReload.paths() == listOf("/a.mp3", "/b.mp3") && plReload.currentIndex() == 1 && plReload.repeatAll())
+            val meta = com.saidjte.schoolradio.desktop.audio.RecordingMeta("سارة", "معلمة", 5L, 10L)
+            check(meta.save(com.saidjte.schoolradio.desktop.audio.RecordingMeta.sidecarOf(File(tmp, "x.wav"))))
+            check(com.saidjte.schoolradio.desktop.audio.RecordingMeta.load(
+                com.saidjte.schoolradio.desktop.audio.RecordingMeta.sidecarOf(File(tmp, "x.wav"))
+            )?.recorderName == "سارة")
+
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
             tmp.listFiles()?.forEach { it.delete() }

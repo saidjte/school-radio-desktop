@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -27,7 +28,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,6 +54,7 @@ import com.saidjte.schoolradio.desktop.ui.PulsingDot
 import com.saidjte.schoolradio.desktop.ui.RecordingsTab
 import com.saidjte.schoolradio.desktop.ui.ScheduleTab
 import com.saidjte.schoolradio.desktop.ui.ScriptTab
+import com.saidjte.schoolradio.desktop.ui.SettingsDialog
 import com.saidjte.schoolradio.desktop.ui.StudioScreen
 import com.saidjte.schoolradio.desktop.audio.MicState
 import com.saidjte.schoolradio.desktop.data.StudioLogic
@@ -85,6 +89,7 @@ fun AppRoot(vm: AppViewModel = remember { AppViewModel() }, startTab: Tab? = nul
     // الانتقال إلى صفحة البداية إن حُددت من سطر الأوامر (للأتمتة) — غير ذلك تبقى «الاستوديو المدمج»
     LaunchedEffect(startTab) { startTab?.let(vm::selectTab) }
     val tab by vm.tab.collectAsState()
+    var showSettings by remember { mutableStateOf(false) }
     val micState by vm.mic.state.collectAsState()
     val recording by vm.mic.recording.collectAsState()
     val playing by vm.player.isPlaying.collectAsState()
@@ -96,6 +101,10 @@ fun AppRoot(vm: AppViewModel = remember { AppViewModel() }, startTab: Tab? = nul
     ).onAir
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+        // حوار الإعدادات والمستخدمين — يُفتح من القائمة الجانبية في كل الصفحات
+        if (showSettings) {
+            SettingsDialog(vm = vm, onDismiss = { showSettings = false })
+        }
         // انتقال ناعم بين الصفحات يخدم السلاسة دون إبطاء التنقّل
         Crossfade(targetState = tab, animationSpec = tween(160), label = "pages") { t ->
             if (t == Tab.STUDIO) {
@@ -103,7 +112,13 @@ fun AppRoot(vm: AppViewModel = remember { AppViewModel() }, startTab: Tab? = nul
                 StudioScreen(vm)
             } else {
                 Row(modifier = Modifier.fillMaxSize()) {
-                    SideNav(selected = t, onSelect = vm::selectTab, onAir = onAir)
+                    SideNav(
+                        selected = t,
+                        onSelect = vm::selectTab,
+                        onAir = onAir,
+                        vm = vm,
+                        onOpenSettings = { showSettings = true }
+                    )
                     when (t) {
                         Tab.STUDIO -> StudioScreen(vm)
                         Tab.LIVE -> LivePage(vm)
@@ -129,8 +144,16 @@ private fun tabIcon(t: Tab): AppIconKind = when (t) {
 }
 
 @Composable
-private fun SideNav(selected: Tab, onSelect: (Tab) -> Unit, onAir: Boolean) {
+private fun SideNav(
+    selected: Tab,
+    onSelect: (Tab) -> Unit,
+    onAir: Boolean,
+    vm: AppViewModel,
+    onOpenSettings: () -> Unit
+) {
     val sc = LocalStudioColors.current
+    val me by vm.currentUser.collectAsState()
+    val schoolName by vm.schoolName.collectAsState()
     Column(
         modifier = Modifier
             .width(232.dp)
@@ -153,9 +176,10 @@ private fun SideNav(selected: Tab, onSelect: (Tab) -> Unit, onAir: Boolean) {
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    "نسخة الحاسوب",
+                    schoolName ?: "نسخة الحاسوب",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
             }
         }
@@ -172,6 +196,34 @@ private fun SideNav(selected: Tab, onSelect: (Tab) -> Unit, onAir: Boolean) {
         }
 
         Spacer(Modifier.weight(1f))
+
+        // تذييل: المستخدم الحالي + بوابة الإعدادات
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
+                .clickable(onClick = onOpenSettings)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            AppIcon(kind = AppIconKind.RECORDINGS, size = 18.dp, tint = MaterialTheme.colorScheme.primary)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    me?.name ?: "ضبط المستخدمين",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+                Text(
+                    me?.role?.labelAr ?: "اضغط للبدء",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
         Text(
             "v$APP_VERSION",
             style = MaterialTheme.typography.labelSmall,

@@ -47,6 +47,11 @@ import com.saidjte.schoolradio.desktop.data.StudioLogic
 fun LivePage(vm: AppViewModel) {
     Column(modifier = Modifier.fillMaxSize()) {
         LiveTopBar(vm)
+        // شريط الموعد الأسبوعي المنطلق — يظهر لحظة إطلاق أي موعد مجدول
+        WeeklyAlertBanner(
+            vm = vm,
+            modifier = Modifier.padding(horizontal = 12.dp)
+        )
         Row(
             modifier = Modifier
                 .weight(1f)

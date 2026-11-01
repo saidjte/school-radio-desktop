@@ -491,3 +491,60 @@ fun BroadcastMusicCard(vm: AppViewModel) {
 /** تقصير اسم الجهاز في الأزرار الصغيرة للحفاظ على سلاسة العمود. */
 internal fun shortenName(s: String, max: Int = 16): String =
     if (s.length <= max) s else s.take(max - 1) + "…"
+
+// ================= شريط الموعد الأسبوعي المنطلق =================
+
+/**
+ * تنبيه لحظي أعلى صفحات البث عندما ينطلق موعد أسبوعي مجدول:
+ * عنوان الحدث + شارة «الآن» + زر إغلاق. يظهر في الاستوديو المدمج والبث المباشر.
+ */
+@Composable
+fun WeeklyAlertBanner(vm: AppViewModel, modifier: Modifier = Modifier) {
+    val alert by vm.activeAlert.collectAsState()
+    val sc = LocalStudioColors.current
+    alert?.let { ev ->
+        Row(
+            modifier = modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF7A1F1F).copy(alpha = 0.92f))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            PulsingDot(color = Color(0xFFFFCDD2), size = 9.dp)
+            Text(
+                "موعد مجدول",
+                style = MaterialTheme.typography.labelLarge,
+                color = Color(0xFFFFCDD2),
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                ev.title ?: "",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            if (ev.autoStartRun == true) {
+                Text(
+                    "انطلقت الحلقة",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFFFFCDD2)
+                )
+            }
+            Text(
+                "إغلاق",
+                style = MaterialTheme.typography.labelLarge,
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { vm.dismissAlert() }
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+    }
+}

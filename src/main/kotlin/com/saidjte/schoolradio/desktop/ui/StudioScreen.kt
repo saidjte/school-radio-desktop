@@ -57,6 +57,11 @@ import java.io.File
 fun StudioScreen(vm: AppViewModel) {
     Column(modifier = Modifier.fillMaxSize()) {
         StudioTopBar(vm)
+        // شريط الموعد الأسبوعي المنطلق — يظهر أعلاه محتوى الاستوديو لحظة الإطلاق
+        WeeklyAlertBanner(
+            vm = vm,
+            modifier = Modifier.padding(horizontal = 12.dp)
+        )
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -76,6 +81,7 @@ fun StudioScreen(vm: AppViewModel) {
 @Composable
 private fun StudioTopBar(vm: AppViewModel) {
     val clock by vm.clockText.collectAsState()
+    val schoolName by vm.schoolName.collectAsState()
     val micState by vm.mic.state.collectAsState()
     val recording by vm.mic.recording.collectAsState()
     val playing by vm.player.isPlaying.collectAsState()
@@ -95,11 +101,21 @@ private fun StudioTopBar(vm: AppViewModel) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text(
-            "الاستوديو المدمج",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold
-        )
+        Column {
+            Text(
+                "الاستوديو المدمج",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            if (schoolName != null) {
+                Text(
+                    schoolName ?: "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
 
         // مؤشر الهواء الموحد بنبض حي
         OnAirPill(onAir = onAir)

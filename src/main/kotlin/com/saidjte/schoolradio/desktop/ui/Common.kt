@@ -136,10 +136,40 @@ object FilePickers {
         return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFiles.toList() else null
     }
 
+    fun pickSingleAudioFile(): File? {
+        val chooser = JFileChooser()
+        chooser.dialogTitle = "اختر ملفًا صوتيًا"
+        chooser.fileFilter = FileNameExtensionFilter("ملفات صوتية (WAV / MP3)", "wav", "mp3")
+        val result = chooser.showOpenDialog(null)
+        return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+    }
+
     fun pickAudioFolder(): File? {
         val chooser = JFileChooser()
         chooser.dialogTitle = "اختر مجلدًا"
         chooser.fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
+        val result = chooser.showOpenDialog(null)
+        return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+    }
+
+    /** حفظ نسخة احتياطية JSON. */
+    fun pickJsonSave(defaultName: String): File? {
+        val chooser = JFileChooser()
+        chooser.dialogTitle = "حفظ النسخة الاحتياطية"
+        chooser.fileFilter = FileNameExtensionFilter("نسخة احتياطية (JSON)", "json")
+        chooser.selectedFile = File(defaultName)
+        val result = chooser.showSaveDialog(null)
+        if (result != JFileChooser.APPROVE_OPTION) return null
+        var f = chooser.selectedFile
+        if (!f.name.lowercase().endsWith(".json")) f = File(f.parentFile, f.name + ".json")
+        return f
+    }
+
+    /** فتح نسخة احتياطية JSON. */
+    fun pickJsonOpen(): File? {
+        val chooser = JFileChooser()
+        chooser.dialogTitle = "فتح نسخة احتياطية"
+        chooser.fileFilter = FileNameExtensionFilter("نسخة احتياطية (JSON)", "json")
         val result = chooser.showOpenDialog(null)
         return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
     }

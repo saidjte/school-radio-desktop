@@ -300,6 +300,12 @@ class MusicPlayerEngine {
     /** يُستدعى من خيط التشغيل عند انتهاء المقطع (للانتقال التلقائي). */
     var onEnded: (() -> Unit)? = null
 
+    /**
+     * يُستدعى عندما يفشل فتح المقطع (ملف تالف/غير مقروء) — بوابة تخطي الملفات
+     * التالفة آليًا كما في نسخة الهاتف. لا يُستدعى عند الإيقاف اليدوي.
+     */
+    var onPlayFailed: ((File) -> Unit)? = null
+
     @Volatile private var paused = false
     @Volatile private var stopped = true
     @Volatile private var switchTo: File? = null
@@ -398,6 +404,8 @@ class MusicPlayerEngine {
                         _hasTrack.value = false
                         _isPlaying.value = false
                         _error.value = t.message ?: "تعذّر تشغيل الملف"
+                        val failedCb = onPlayFailed
+                        if (failedCb != null) failedCb(sw)
                         break
                     }
                 }

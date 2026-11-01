@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.Tab
 import com.saidjte.schoolradio.desktop.audio.RecordingItem
+import com.saidjte.schoolradio.desktop.data.Role
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -46,6 +47,10 @@ fun RecordingsTab(vm: AppViewModel) {
     var renameTarget by remember { mutableStateOf<RecordingItem?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<RecordingItem?>(null) }
+
+    // بوابة الأدوار: إدارة التسجيلات (تسمية/حذف) لمعلم فأعلى — التشغيل والاستماع للجميع
+    val me by vm.currentUser.collectAsState()
+    val canManage = me?.let { Role.canManage(it.role ?: Role.STUDENT) } ?: false
 
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
@@ -120,20 +125,31 @@ fun RecordingsTab(vm: AppViewModel) {
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            // توقيع المُسجِّل — يُختم آليًا لحظة إتمام التسجيل
+                            if (item.recorderName != null) {
+                                Text(
+                                    "سجّلها: ${item.recorderName}" +
+                                            (item.recorderRole?.let { " ($it)" } ?: ""),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                         if (playingThis) {
                             SecondaryAction(text = "إيقاف", onClick = { vm.player.stop() })
                         } else {
                             SecondaryAction(text = "تشغيل", onClick = { vm.player.play(item.file) })
                         }
-                        SecondaryAction(
-                            text = "إعادة تسمية",
-                            onClick = {
-                                renameTarget = item
-                                renameText = item.displayName
-                            }
-                        )
-                        SecondaryAction(text = "حذف", onClick = { deleteTarget = item })
+                        if (canManage) {
+                            SecondaryAction(
+                                text = "إعادة تسمية",
+                                onClick = {
+                                    renameTarget = item
+                                    renameText = item.displayName
+                                }
+                            )
+                            SecondaryAction(text = "حذف", onClick = { deleteTarget = item })
+                        }
                     }
                 }
             }
