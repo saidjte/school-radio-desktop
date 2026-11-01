@@ -281,7 +281,7 @@ private fun ReadingPane(vm: AppViewModel, modifier: Modifier = Modifier) {
     }
 }
 
-// ================= عمود البث: الميكروفون + الموسيقى =================
+// ================= عمود البث: الميكروفون + مشغل الموسيقى =================
 
 @Composable
 private fun BroadcastColumn(vm: AppViewModel) {
@@ -290,7 +290,7 @@ private fun BroadcastColumn(vm: AppViewModel) {
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         BroadcastMicCard(vm)
-        BroadcastMusicCard(vm)
-        Spacer(Modifier.weight(1f))
+        // مشغل الهواء: قوائم مسماة + مكتبة مصنفة — اختيار وتشغيل دون مغادرة صفحة البث
+        BroadcastMusicCard(vm, paneHeight = 160.dp, modifier = Modifier.weight(1f))
     }
 }

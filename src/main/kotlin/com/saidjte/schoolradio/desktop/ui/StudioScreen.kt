@@ -504,8 +504,12 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
 
 @Composable
 private fun StudioBroadcastPanel(vm: AppViewModel) {
+    // تمرير عمودي رشيق حين تكون النافذة قصيرة — كل المحتوى يبقى قابلًا للوصول
     Column(
-        modifier = Modifier.width(330.dp).fillMaxHeight(),
+        modifier = Modifier
+            .width(330.dp)
+            .fillMaxHeight()
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
@@ -514,9 +518,10 @@ private fun StudioBroadcastPanel(vm: AppViewModel) {
             fontWeight = FontWeight.Bold
         )
         BroadcastMicCard(vm)
-        BroadcastMusicCard(vm)
+        // مشغل الهواء: قوائم مسماة + مكتبة مصنفة + تحكم نقل — اختيار وبث من الاستوديو مباشرة
+        BroadcastMusicCard(vm, paneHeight = 88.dp)
         MixerLinkCard(vm)
-        StudioRecordingsCard(vm, Modifier.weight(1f))
+        StudioRecordingsCard(vm, Modifier.height(170.dp))
     }
 }
 

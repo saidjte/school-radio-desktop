@@ -17,6 +17,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -46,10 +48,12 @@ private enum class MusicMode(val label: String) {
 }
 
 /**
- * قسم الموسيقى: نمطان في صفحة واحدة —
- * قائمة تشغيل دائمة (ترتيب/تكرار/حفظ بعد إعادة التشغيل) ومكتبة صوتية مصنفة
- * (تصنيفات افتراضية سبع + مخصصة، بحث، كشف المفقود وإعادة ربطه).
- * عمود التحكم في التشغيل مشترك بين النمطين.
+ * صفحة الموسيقى — مشغل احترافي بنمط استوديو:
+ * عمود المشغل (يمين): بطاقة «قيد التشغيل الآن» بعنوان كبير وشارة تصنيف وموضع في
+ * القائمة، بحث زمني بالسحب، تحكم نقل كامل، تكرار، ومستوى صوت مع كتم جلسي.
+ * عمود المحتوى: قوائم تشغيل مسماة (إنشاء/تسمية/حذف/تبديل) بقائمة حية قابلة
+ * للترتيب والإزالة، ومكتبة صوتية مصنفة بأرقام على رقائق التصنيف ونقل مقطع
+ * بين التصنيفات — مع البحث وكشف المفقود وإعادة ربطه.
  */
 @Composable
 fun MusicTab(vm: AppViewModel) {
@@ -64,6 +68,9 @@ fun MusicTab(vm: AppViewModel) {
     val durationMs by player.durationMs.collectAsState()
     val volume by player.volume.collectAsState()
     val repeatAll by vm.repeatAll.collectAsState()
+    val playlists by vm.playlists.collectAsState()
+    val activeId by vm.activePlaylistId.collectAsState()
+    val activeName = playlists.firstOrNull { it.id == activeId }?.name ?: ""
 
     var mode by remember { mutableStateOf(MusicMode.PLAYLIST) }
 
@@ -113,27 +120,80 @@ fun MusicTab(vm: AppViewModel) {
             }
 
             when (mode) {
-                MusicMode.PLAYLIST -> PlaylistPane(vm, playlist, currentIndex, isPlaying, isPaused)
+                MusicMode.PLAYLIST -> PlaylistPane(vm)
                 MusicMode.LIBRARY -> LibraryPane(vm)
             }
         }
 
-        // ============ عمود التحكم المشترك ============
+        // ============ عمود المشغل: قيد التشغيل الآن ============
         Column(
-            modifier = Modifier.width(340.dp),
+            modifier = Modifier.width(360.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text(
-                "قيد التشغيل الآن",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // شارة القائمة الجارية
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "قيد التشغيل الآن",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                if (activeName.isNotEmpty()) {
+                    Text(
+                        shortenName(activeName, 18),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
             Text(
                 title ?: "لا شيء",
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
+
+            // شارة التصنيف + موضع المقطع في القائمة
+            val currentTrack = playlist.getOrNull(currentIndex)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                currentTrack?.category?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+                if (playlist.isNotEmpty()) {
+                    Text(
+                        "المقطع ${currentIndex + 1} من ${playlist.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (isPlaying && !isPaused) {
+                    Text(
+                        "قيد التشغيل",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
 
             if (hasTrack && durationMs > 0) {
                 val pos = if (seekDragging) seekValue else positionMs.toFloat()
@@ -159,38 +219,13 @@ fun MusicTab(vm: AppViewModel) {
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
-                    formatMs(durationMs),
+                    "-" + formatMs((durationMs - positionMs).coerceAtLeast(0L)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            // شبكة أزرار 2×2 — منع انضغاط أي زر وتكسّر نصه رأسيًا في العمود الضيق
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                if (isPlaying && !isPaused) {
-                    PrimaryAction(
-                        text = "إيقاف مؤقت",
-                        onClick = { player.pause() },
-                        modifier = Modifier.weight(1f)
-                    )
-                } else {
-                    PrimaryAction(
-                        text = "تشغيل",
-                        onClick = { vm.togglePlay() },
-                        enabled = playlist.isNotEmpty(),
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                SecondaryAction(
-                    text = "إيقاف",
-                    onClick = { player.stop() },
-                    enabled = hasTrack,
-                    modifier = Modifier.weight(1f)
-                )
-            }
+            // التحكم بالنقل: صف رئيس ثم صف ثانٍ للإيقاف والتكرار
             Row(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth()
@@ -201,6 +236,20 @@ fun MusicTab(vm: AppViewModel) {
                     enabled = playlist.isNotEmpty(),
                     modifier = Modifier.weight(1f)
                 )
+                if (isPlaying && !isPaused) {
+                    PrimaryAction(
+                        text = "إيقاف مؤقت",
+                        onClick = { player.pause() },
+                        modifier = Modifier.weight(1.4f)
+                    )
+                } else {
+                    PrimaryAction(
+                        text = "تشغيل",
+                        onClick = { vm.togglePlay() },
+                        enabled = playlist.isNotEmpty(),
+                        modifier = Modifier.weight(1.4f)
+                    )
+                }
                 SecondaryAction(
                     text = "التالي",
                     onClick = { vm.next() },
@@ -208,18 +257,20 @@ fun MusicTab(vm: AppViewModel) {
                     modifier = Modifier.weight(1f)
                 )
             }
-
-            // تكرار القائمة — نظير ميزة «تكرار» قوائم نسخة الهاتف
             Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Text(
-                    "تكرار القائمة",
-                    style = MaterialTheme.typography.bodyMedium,
+                SecondaryAction(
+                    text = "إيقاف",
+                    onClick = { player.stop() },
+                    enabled = hasTrack,
                     modifier = Modifier.weight(1f)
                 )
+                Text("تكرار القائمة", style = MaterialTheme.typography.bodyMedium)
                 Switch(checked = repeatAll, onCheckedChange = { vm.toggleRepeat() })
+                Spacer(Modifier.weight(1f))
             }
 
             Text(
@@ -227,25 +278,91 @@ fun MusicTab(vm: AppViewModel) {
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Slider(
-                value = volume,
-                onValueChange = { player.setVolume(it) },
-                valueRange = 0f..1f
-            )
+            val musicMuted by vm.musicMuted.collectAsState()
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Slider(
+                    value = volume,
+                    onValueChange = { player.setVolume(it) },
+                    valueRange = 0f..1f,
+                    modifier = Modifier.weight(1f)
+                )
+                MuteChip(muted = musicMuted, onClick = { vm.setMusicMuted(!musicMuted) })
+            }
         }
     }
 }
 
-// ================= نمط قائمة التشغيل =================
+// ================= نمط قائمة التشغيل: قوائم مسماة + قائمة حية =================
 
 @Composable
-private fun PlaylistPane(
-    vm: AppViewModel,
-    playlist: List<com.saidjte.schoolradio.desktop.Track>,
-    currentIndex: Int,
-    isPlaying: Boolean,
-    isPaused: Boolean
-) {
+private fun PlaylistPane(vm: AppViewModel) {
+    val playlist by vm.playlist.collectAsState()
+    val currentIndex by vm.currentIndex.collectAsState()
+    val isPlaying by vm.player.isPlaying.collectAsState()
+    val isPaused by vm.player.isPaused.collectAsState()
+    val playlists by vm.playlists.collectAsState()
+    val activeId by vm.activePlaylistId.collectAsState()
+    val activeName = playlists.firstOrNull { it.id == activeId }?.name ?: ""
+
+    var playlistsMenu by remember { mutableStateOf(false) }
+    var showNewPlaylist by remember { mutableStateOf(false) }
+    var showRenamePlaylist by remember { mutableStateOf(false) }
+    var showDeletePlaylist by remember { mutableStateOf(false) }
+    var nameText by remember { mutableStateOf("") }
+
+    // شريط إدارة القوائم المسماة
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Box {
+            SecondaryAction(text = "القوائم ▾", onClick = { playlistsMenu = true })
+            DropdownMenu(expanded = playlistsMenu, onDismissRequest = { playlistsMenu = false }) {
+                playlists.forEach { p ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                (if (p.id == activeId) "● " else "") + "${p.name} (${p.paths.size})",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        onClick = {
+                            vm.selectPlaylist(p.id)
+                            playlistsMenu = false
+                        }
+                    )
+                }
+            }
+        }
+        SecondaryAction(
+            text = "قائمة جديدة",
+            onClick = {
+                nameText = ""
+                showNewPlaylist = true
+            }
+        )
+        SecondaryAction(
+            text = "تسمية",
+            onClick = {
+                nameText = activeName
+                showRenamePlaylist = true
+            }
+        )
+        SecondaryAction(text = "حذف", onClick = { showDeletePlaylist = true })
+        Spacer(Modifier.weight(1f))
+        Text(
+            shortenName(activeName, 16) + " · ${playlist.size} مقطعًا",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    // شريط تعبئة القائمة
     Row(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -274,8 +391,8 @@ private fun PlaylistPane(
     if (playlist.isEmpty()) {
         EmptyState(
             icon = AppIconKind.MUSIC,
-            title = "القائمة فارغة",
-            hint = "أضف ملفات WAV أو MP3 من الأعلى — القائمة تُحفظ تلقائيًا وتبقى بعد إعادة التشغيل."
+            title = "القائمة «${activeName}» فارغة",
+            hint = "أضف ملفات WAV أو MP3 من الأعلى، أو انقل مقاطعًا من المكتبة — القائمة تُحفظ باسمها وتبقى بعد إعادة التشغيل."
         )
     } else {
         LazyColumn(
@@ -310,11 +427,20 @@ private fun PlaylistPane(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Text(
-                            formatMs(track.durationMs),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                formatMs(track.durationMs),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            track.category?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
                     }
                     if (isCurrent && isPlaying && !isPaused) {
                         Text(
@@ -323,7 +449,7 @@ private fun PlaylistPane(
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
-                    // إعادة الترتيب — نظير ميزة «إعادة الترتيب» في نسخة الهاتف
+                    // إعادة الترتيب والإزالة — القائمة الحية قابلة للتشكيل أثناء العمل
                     SecondaryAction(
                         text = "أعلى",
                         enabled = index > 0,
@@ -334,9 +460,59 @@ private fun PlaylistPane(
                         enabled = index < playlist.size - 1,
                         onClick = { vm.moveTrack(index, +1) }
                     )
+                    SecondaryAction(
+                        text = "إزالة",
+                        onClick = { vm.removeTrackAt(index) }
+                    )
                 }
             }
         }
+    }
+
+    // حوار قائمة جديدة
+    if (showNewPlaylist) {
+        NameDialog(
+            title = "قائمة تشغيل جديدة",
+            placeholder = "اسم القائمة — مثل: فقرة الصباح",
+            value = nameText,
+            onValueChange = { nameText = it },
+            confirmLabel = "إنشاء",
+            onConfirm = {
+                if (vm.createPlaylist(nameText)) showNewPlaylist = false
+            },
+            onDismiss = { showNewPlaylist = false }
+        )
+    }
+    // حوار تسمية القائمة الجارية
+    if (showRenamePlaylist) {
+        NameDialog(
+            title = "تسمية القائمة",
+            placeholder = "الاسم الجديد",
+            value = nameText,
+            onValueChange = { nameText = it },
+            confirmLabel = "حفظ",
+            onConfirm = {
+                if (vm.renamePlaylist(activeId, nameText)) showRenamePlaylist = false
+            },
+            onDismiss = { showRenamePlaylist = false }
+        )
+    }
+    // حوار حذف القائمة الجارية
+    if (showDeletePlaylist) {
+        AlertDialog(
+            onDismissRequest = { showDeletePlaylist = false },
+            title = { Text("حذف القائمة") },
+            text = { Text("حذف قائمة «$activeName» (${playlist.size} مقطعًا)؟ مقاطع المكتبة نفسها لا تُحذف.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deletePlaylist(activeId)
+                    showDeletePlaylist = false
+                }) { Text("حذف", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeletePlaylist = false }) { Text("إلغاء") }
+            }
+        )
     }
 }
 
@@ -346,6 +522,7 @@ private fun PlaylistPane(
 private fun LibraryPane(vm: AppViewModel) {
     val categories by vm.libraryCategories.collectAsState()
     val entries by vm.libraryEntries.collectAsState()
+    val counts by vm.categoryCounts.collectAsState()
     val query by vm.libraryQuery.collectAsState()
     val missingIds by vm.missingLibraryIds.collectAsState()
     val message by vm.lastLibraryMessage.collectAsState()
@@ -355,7 +532,8 @@ private fun LibraryPane(vm: AppViewModel) {
     var importFiles by remember { mutableStateOf<List<java.io.File>?>(null) }
     var showNewCategory by remember { mutableStateOf(false) }
     var newCategoryText by remember { mutableStateOf("") }
-    var relinkTarget by remember { mutableStateOf<LibraryEntry?>(null) }
+    var moveTarget by remember { mutableStateOf<LibraryEntry?>(null) }
+    var moveMenu by remember { mutableStateOf(false) }
 
     val visible = remember(entries, query, selectedCategory) {
         vm.visibleLibraryEntries(selectedCategory)
@@ -414,7 +592,7 @@ private fun LibraryPane(vm: AppViewModel) {
         modifier = Modifier.fillMaxWidth()
     )
 
-    // رقائق التصنيفات
+    // رقائق التصنيفات بعدد مقاطع كل تصنيف
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -424,13 +602,13 @@ private fun LibraryPane(vm: AppViewModel) {
         FilterChip(
             selected = selectedCategory == null,
             onClick = { selectedCategory = null },
-            label = { Text("الكل") }
+            label = { Text("الكل (${entries.size})") }
         )
         categories.forEach { c ->
             FilterChip(
                 selected = selectedCategory == c,
                 onClick = { selectedCategory = if (selectedCategory == c) null else c },
-                label = { Text(c) }
+                label = { Text("$c (${counts[c] ?: 0})") }
             )
         }
     }
@@ -494,15 +672,37 @@ private fun LibraryPane(vm: AppViewModel) {
                     } else {
                         SecondaryAction(
                             text = "تشغيل",
-                            onClick = {
-                                val f = entry.path?.let { p -> java.io.File(p) }
-                                if (f != null && f.isFile) vm.player.play(f)
-                            }
+                            onClick = { vm.playNow(entry) }
                         )
                         SecondaryAction(
                             text = "إلى القائمة",
                             onClick = { vm.addLibraryToPlaylist(entry) }
                         )
+                        // نقل المقطع إلى تصنيف آخر
+                        Box {
+                            SecondaryAction(
+                                text = "نقل إلى ▾",
+                                onClick = {
+                                    moveTarget = entry
+                                    moveMenu = true
+                                }
+                            )
+                            DropdownMenu(
+                                expanded = moveMenu && moveTarget?.id == entry.id,
+                                onDismissRequest = { moveMenu = false }
+                            ) {
+                                categories.filter { it != entry.category }.forEach { c ->
+                                    DropdownMenuItem(
+                                        text = { Text(c, maxLines = 1) },
+                                        onClick = {
+                                            vm.moveLibraryEntry(entry.id, c)
+                                            moveMenu = false
+                                            moveTarget = null
+                                        }
+                                    )
+                                }
+                            }
+                        }
                         SecondaryAction(
                             text = "حذف",
                             onClick = { vm.removeLibraryEntry(entry.id) }
@@ -555,26 +755,6 @@ private fun LibraryPane(vm: AppViewModel) {
             }
         )
     }
-
-    // حوار إعادة الربط اليدوي (احتياط لو أُغلق منتقي الملف)
-    if (relinkTarget != null) {
-        AlertDialog(
-            onDismissRequest = { relinkTarget = null },
-            title = { Text("إعادة ربط الملف") },
-            text = { Text("اختر الملف البديل من القرص لعنوان «${relinkTarget?.title}».") },
-            confirmButton = {
-                TextButton(onClick = {
-                    val f = FilePickers.pickSingleAudioFile()
-                    val t = relinkTarget
-                    if (f != null && t != null) vm.relinkLibraryEntry(t.id, f)
-                    relinkTarget = null
-                }) { Text("اختيار") }
-            },
-            dismissButton = {
-                TextButton(onClick = { relinkTarget = null }) { Text("إلغاء") }
-            }
-        )
-    }
 }
 
 /** حوار اختيار التصنيف عند الاستيراد — التصنيفات الافتراضية السبع + المخصصة. */
@@ -619,6 +799,37 @@ private fun ImportCategoryDialog(
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(chosen) }) { Text("استيراد") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("إلغاء") }
+        }
+    )
+}
+
+/** حوار إدخال اسم عام (قائمة جديدة / تسمية). */
+@Composable
+private fun NameDialog(
+    title: String,
+    placeholder: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                placeholder = { Text(placeholder) },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, enabled = value.isNotBlank()) { Text(confirmLabel) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("إلغاء") }

@@ -144,6 +144,25 @@ class MusicLibraryStore(private val file: File) {
         return true
     }
 
+    /** نقل مقطع إلى تصنيف آخر — التصنيف يجب أن يكون موجودًا. */
+    fun moveEntry(id: Long, category: String): Boolean {
+        if (category !in doc.categories) return false
+        val i = doc.entries.indexOfFirst { it.id == id }
+        if (i < 0) return false
+        if (doc.entries[i].category == category) return true
+        doc = doc.copy(
+            entries = doc.entries.mapIndexed { k, e ->
+                if (k == i) e.copy(category = category) else e
+            }
+        )
+        persist()
+        return true
+    }
+
+    /** عدد المقاطع في كل تصنيف — لعرض الشارات على رقائق التصفية. */
+    fun countByCategory(): Map<String, Int> =
+        doc.entries.groupingBy { it.category ?: LibraryDefaults.FALLBACK_CATEGORY }.eachCount()
+
     private fun persist() {
         Json.save(file, doc)
     }

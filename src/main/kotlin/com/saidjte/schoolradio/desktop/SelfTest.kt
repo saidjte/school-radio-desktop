@@ -245,10 +245,25 @@ object SelfTest {
             check(exp.ok) { "backup export: ${exp.message}" }
             check(com.saidjte.schoolradio.desktop.data.Backup.verify(bak)?.containsKey("library.json") == true)
             val pl = com.saidjte.schoolradio.desktop.data.PlaylistStore(File(tmp, "playlist.json"))
-            pl.set(listOf("/a.mp3", "/b.mp3"), 1)
+            pl.setPaths(pl.activeId(), listOf("/a.mp3", "/b.mp3"), 1)
             pl.setRepeat(true)
+            pl.create("فقرة الصباح")
+            check(pl.playlists().size == 2) { "playlist create" }
+            check(pl.active().name == "فقرة الصباح") { "playlist create activates" }
+            check(pl.create("فقرة الصباح") == null) { "playlist duplicate rejected" }
+            check(pl.setActive(pl.doc().playlists[0].id)) { "playlist setActive" }
+            check(pl.paths() == listOf("/a.mp3", "/b.mp3") && pl.currentIndex() == 1) { "playlist active content" }
             val plReload = com.saidjte.schoolradio.desktop.data.PlaylistStore(File(tmp, "playlist.json"))
-            check(plReload.paths() == listOf("/a.mp3", "/b.mp3") && plReload.currentIndex() == 1 && plReload.repeatAll())
+            check(plReload.playlists().size == 2) { "playlists persisted" }
+            check(plReload.paths() == listOf("/a.mp3", "/b.mp3") && plReload.currentIndex() == 1 && plReload.repeatAll()) { "playlist content persisted" }
+            check(plReload.delete(plReload.activeId()) && plReload.playlists().size == 1) { "playlist delete" }
+            check(!plReload.delete(plReload.activeId())) { "playlist min-one invariant" }
+            // ترحيل النسخة السابقة (قائمة وحيدة بلا أسماء) إلى قائمة مسماة
+            val legacy = File(tmp, "legacy-playlist.json")
+            legacy.writeText("""{"paths": ["/x.mp3", "/y.mp3"], "currentIndex": 1, "repeatAll": false}""")
+            val migrated = com.saidjte.schoolradio.desktop.data.PlaylistStore(legacy)
+            check(migrated.playlists().size == 1 && migrated.active().name == "القائمة الرئيسية") { "playlist migration name" }
+            check(migrated.paths() == listOf("/x.mp3", "/y.mp3") && migrated.currentIndex() == 1) { "playlist migration content" }
             val meta = com.saidjte.schoolradio.desktop.audio.RecordingMeta("سارة", "معلمة", 5L, 10L)
             check(meta.save(com.saidjte.schoolradio.desktop.audio.RecordingMeta.sidecarOf(File(tmp, "x.wav"))))
             check(com.saidjte.schoolradio.desktop.audio.RecordingMeta.load(

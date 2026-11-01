@@ -20,6 +20,7 @@ import com.saidjte.schoolradio.desktop.data.MixerState
 import com.saidjte.schoolradio.desktop.data.MusicEqState
 import com.saidjte.schoolradio.desktop.data.DuckState
 import com.saidjte.schoolradio.desktop.data.MusicLibraryStore
+import com.saidjte.schoolradio.desktop.data.NamedPlaylist
 import com.saidjte.schoolradio.desktop.data.PlaylistStore
 import com.saidjte.schoolradio.desktop.data.Role
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
@@ -64,7 +65,7 @@ enum class Tab(val label: String) {
     RECORDINGS("التسجيلات")
 }
 
-data class Track(val file: File, val title: String, val durationMs: Long)
+data class Track(val file: File, val title: String, val durationMs: Long, val category: String? = null)
 
 /** حالة التطبيق المشتركة بين الصفحات: البث، الجدولة، السكريبت، الموسيقى، التسجيلات، المستخدمون. */
 class AppViewModel {
@@ -525,20 +526,87 @@ class AppViewModel {
         if (f.isFile) player.play(f)
     }
 
-    // ================= قائمة التشغيل الدائمة =================
-    // تُحفظ في playlist.json: المسارات + الجاري + تكرار القائمة (مثل النسخة الهاتفية)
+    // ================= قوائم التشغيل المسماة الدائمة =================
+    // عدة قوائم باسم المستخدم يختارها، واحدة منها «الجارية» في المشغل —
+    // تُحفظ في playlist.json: كل قائمة مساراتها + الجاري، وتكرار القائمة الجارية.
 
     private var playlistStore = PlaylistStore(File(dataDir(), "playlist.json"))
     private val _repeatAll = MutableStateFlow(playlistStore.repeatAll())
     val repeatAll: StateFlow<Boolean> = _repeatAll.asStateFlow()
 
-    /** تكرار القائمة: عند انتهاء الأخير يعود للأول بدل التوقف. */
+    /** كل القوائم المسماة + هوية القائمة الجارية — تُعرض للاختيار في الاستوديو والمشغل. */
+    private val _playlists = MutableStateFlow(playlistStore.playlists())
+    val playlists: StateFlow<List<NamedPlaylist>> = _playlists.asStateFlow()
+
+    private val _activePlaylistId = MutableStateFlow(playlistStore.activeId())
+    val activePlaylistId: StateFlow<Long> = _activePlaylistId.asStateFlow()
+
+    /** اسم القائمة الجارية — شارة العرض في بطاقات البث. */
+    val activePlaylistName: String
+        get() = playlistStore.playlists().firstOrNull { it.id == _activePlaylistId.value }?.name ?: ""
+
+    /** تكرار القائمة الجارية: عند انتهاء الأخير يعود للأول بدل التوقف. */
     fun toggleRepeat() {
         _repeatAll.value = !_repeatAll.value
         playlistStore.setRepeat(_repeatAll.value)
     }
 
-    /** نقل مسار داخل قائمة التشغيل مع الحفاظ على تشغيل المسار الحالي. */
+    /** إنشاء قائمة جديدة وتفعيلها (تفريغ المشغل عن القائمة السابقة). */
+    fun createPlaylist(name: String): Boolean {
+        val p = playlistStore.create(name) ?: return false
+        player.stop()
+        refreshPlaylistState(loadTracks = true)
+        return true
+    }
+
+    fun renamePlaylist(id: Long, name: String): Boolean {
+        val ok = playlistStore.rename(id, name)
+        if (ok) refreshPlaylistState()
+        return ok
+    }
+
+    /** حذف قائمة — تبقى واحدة على الأقل؛ وحذف الجارية يحمل الأولى إلى المشغل. */
+    fun deletePlaylist(id: Long): Boolean {
+        val wasActive = id == _activePlaylistId.value
+        val ok = playlistStore.delete(id)
+        if (!ok) return false
+        if (wasActive) {
+            player.stop()
+            player.awaitIdle(1500)
+        }
+        refreshPlaylistState(loadTracks = wasActive)
+        return true
+    }
+
+    /** اختيار قائمة لتصبح الجارية — إيقاف ما يشتغل الآن وتحميل مقاطعها. */
+    fun selectPlaylist(id: Long): Boolean {
+        if (id == _activePlaylistId.value) return true
+        val ok = playlistStore.setActive(id)
+        if (!ok) return false
+        player.stop()
+        player.awaitIdle(1500)
+        refreshPlaylistState(loadTracks = true)
+        return true
+    }
+
+    /** اختيار قائمة وتشغيلها فورًا من أول مقطع — من الاستوديو والبث المباشر. */
+    fun playPlaylist(id: Long): Boolean {
+        val alreadyActive = id == _activePlaylistId.value
+        if (!alreadyActive && !selectPlaylist(id)) return false
+        if (_playlist.value.isEmpty()) return false
+        playAt(0)
+        return true
+    }
+
+    /** مزامنة حالة القوائم من المخزن (+ تحميل مقاطع الجارية عند الطلب). */
+    private fun refreshPlaylistState(loadTracks: Boolean = false) {
+        _playlists.value = playlistStore.playlists()
+        _activePlaylistId.value = playlistStore.activeId()
+        _repeatAll.value = playlistStore.repeatAll()
+        if (loadTracks) loadActivePlaylistTracks()
+    }
+
+    /** نقل مسار داخل القائمة الجارية مع الحفاظ على تشغيل المسار الحالي. */
     fun moveTrack(index: Int, delta: Int) {
         val list = _playlist.value
         val moved = ScheduleMath.moved(list, index, delta)
@@ -548,7 +616,7 @@ class AppViewModel {
         val newCur = moved.indexOfFirst { it.file == curFile }
         _playlist.value = moved
         _currentIndex.value = if (curFile != null && newCur >= 0) newCur else -1
-        playlistStore.set(moved.map { it.file.path }, _currentIndex.value)
+        playlistStore.setPaths(_activePlaylistId.value, moved.map { it.file.path }, _currentIndex.value)
     }
 
     fun addFiles(files: List<File>) {
@@ -556,11 +624,11 @@ class AppViewModel {
         val existing = _playlist.value.map { it.file }.toSet()
         val newTracks = files
             .filter { it.isFile && it.extension.lowercase() in RecordingsScanner.AUDIO_EXTENSIONS && it !in existing }
-            .map { Track(it, it.nameWithoutExtension, durationOf(it)) }
+            .map { trackFor(it) }
         if (newTracks.isEmpty()) return
         val wasIdle = _playlist.value.isEmpty() || _currentIndex.value < 0
         _playlist.value = _playlist.value + newTracks
-        playlistStore.set(_playlist.value.map { it.file.path }, _currentIndex.value)
+        playlistStore.setPaths(_activePlaylistId.value, _playlist.value.map { it.file.path }, _currentIndex.value)
         if (wasIdle) playAt(_playlist.value.indexOf(newTracks.first()))
     }
 
@@ -575,17 +643,43 @@ class AppViewModel {
         player.awaitIdle(1500)
         _playlist.value = emptyList()
         _currentIndex.value = -1
-        playlistStore.clear()
+        playlistStore.clear(_activePlaylistId.value)
     }
 
     fun playAt(index: Int) {
         val list = _playlist.value
         if (index < 0 || index >= list.size) return
         _currentIndex.value = index
-        playlistStore.setIndex(index)
+        playlistStore.setIndex(_activePlaylistId.value, index)
         consecutiveFailures = 0
         player.play(list[index].file)
     }
+
+    /** إزالة مقطع واحد من القائمة الجارية — إزالة الجاري يوقف التشغيل. */
+    fun removeTrackAt(index: Int) {
+        val list = _playlist.value
+        if (index < 0 || index >= list.size) return
+        val wasCurrent = index == _currentIndex.value
+        val curFile = list.getOrNull(_currentIndex.value)?.file
+        val newList = list.filterIndexed { i, _ -> i != index }
+        _playlist.value = newList
+        val newCur = if (newList.isEmpty()) -1
+        else newList.indexOfFirst { it.file == curFile }.takeIf { it >= 0 } ?: -1
+        _currentIndex.value = newCur
+        playlistStore.setPaths(_activePlaylistId.value, newList.map { it.file.path }, newCur)
+        if (wasCurrent) {
+            player.stop()
+            player.awaitIdle(1500)
+        }
+    }
+
+    /** بناء مقطع من ملف: العنوان من اسم الملف والتصنيف من ربط المكتبة إن وُجد. */
+    private fun trackFor(f: File, title: String? = null): Track = Track(
+        file = f,
+        title = title ?: f.nameWithoutExtension,
+        durationMs = durationOf(f),
+        category = libraryStore.entries().firstOrNull { it.path == f.path }?.category
+    )
 
     /**
      * تخطي الملفات التالفة آليًا (نظير ميزة نسخة الهاتف): عند فشل فتح مقطع
@@ -633,6 +727,14 @@ class AppViewModel {
         if (list.isEmpty()) return
         val p = if (_currentIndex.value <= 0) list.size - 1 else _currentIndex.value - 1
         playAt(p)
+    }
+
+    /** تشغيل فوري لمقطع من المكتبة على الهواء دون تعديل القائمة. */
+    fun playNow(entry: LibraryEntry) {
+        val f = File(entry.path ?: return)
+        if (!f.isFile) return
+        consecutiveFailures = 0
+        player.play(f)
     }
 
     // ================= المكتبة الصوتية المصنفة =================
@@ -689,6 +791,13 @@ class AppViewModel {
         if (libraryStore.remove(id)) refreshLibraryState()
     }
 
+    /** نقل مقطع إلى تصنيف آخر — تعديل تصنيف مقطع بعد استيراده. */
+    fun moveLibraryEntry(id: Long, category: String): Boolean {
+        val ok = libraryStore.moveEntry(id, category)
+        if (ok) refreshLibraryState()
+        return ok
+    }
+
     /** إعادة ربط ملف مفقود بمسار جديد (نفس ميزة «إعادة التوصيل» في نسخة الهاتف). */
     fun relinkLibraryEntry(id: Long, newFile: File): Boolean {
         val ok = libraryStore.relink(id, newFile)
@@ -699,22 +808,26 @@ class AppViewModel {
         return ok
     }
 
-    /** إضافة عنصر مكتبة إلى قائمة التشغيل (وفق ميزة «ربط» نسخة الهاتف). */
+    /** إضافة عنصر مكتبة إلى القائمة الجارية (وفق ميزة «ربط» نسخة الهاتف). */
     fun addLibraryToPlaylist(entry: LibraryEntry) {
         val f = File(entry.path ?: return)
         if (!f.isFile) return
         val existing = _playlist.value.map { it.file }.toSet()
         if (f in existing) return
         val wasIdle = _playlist.value.isEmpty() || _currentIndex.value < 0
-        val track = Track(f, entry.title ?: f.nameWithoutExtension, durationOf(f))
+        val track = Track(f, entry.title ?: f.nameWithoutExtension, durationOf(f), entry.category)
         _playlist.value = _playlist.value + track
-        playlistStore.set(_playlist.value.map { it.file.path }, _currentIndex.value)
+        playlistStore.setPaths(_activePlaylistId.value, _playlist.value.map { it.file.path }, _currentIndex.value)
         if (wasIdle) playAt(_playlist.value.indexOf(track))
     }
+
+    private val _categoryCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val categoryCounts: StateFlow<Map<String, Int>> = _categoryCounts.asStateFlow()
 
     private fun refreshLibraryState() {
         _libraryEntries.value = libraryStore.entries()
         _libraryCategories.value = libraryStore.categories()
+        _categoryCounts.value = libraryStore.countByCategory()
         _missingLibraryIds.value = _libraryEntries.value
             .filter { it.path != null && !File(it.path).isFile }
             .mapNotNull { it.id }
@@ -752,7 +865,7 @@ class AppViewModel {
             _playlist.value = _playlist.value.map {
                 if (it.file == item.file) it.copy(file = target, title = clean) else it
             }
-            playlistStore.set(_playlist.value.map { it.file.path }, _currentIndex.value)
+            playlistStore.setPaths(_activePlaylistId.value, _playlist.value.map { it.file.path }, _currentIndex.value)
         }
     }
 
@@ -814,6 +927,7 @@ class AppViewModel {
         executionsStore = ExecutionsStore(File(dataDir(), "executions.json"))
         libraryStore = MusicLibraryStore(File(dataDir(), "library.json"))
         playlistStore = PlaylistStore(File(dataDir(), "playlist.json"))
+        refreshPlaylistState(loadTracks = true)
 
         _users.value = usersStore.users()
         _currentUser.value = usersStore.currentUser()
@@ -829,25 +943,29 @@ class AppViewModel {
         _executions.value = executionsStore.entries()
         firedThisSession.clear()
         refreshLibraryState()
-        loadPersistedPlaylist()
         clampRun()
     }
 
-    /** بناء القائمة من المسارات المحفوظة — الأمداد تُحسب في الخلفية. */
-    private fun loadPersistedPlaylist() {
-        val doc = playlistStore.doc()
-        val files = doc.paths.map { File(it) }.filter { it.isFile }
+    /** تحميل مقاطع القائمة الجارية من المخزن — الأمداد تُحسب في الخلفية. */
+    private fun loadActivePlaylistTracks() {
+        val active = playlistStore.active()
+        val files = active.paths.map { File(it) }.filter { it.isFile }
         if (files.isEmpty()) {
             _playlist.value = emptyList()
             _currentIndex.value = -1
             return
         }
-        _playlist.value = files.map { Track(it, it.nameWithoutExtension, 0L) }
-        val idx = doc.currentIndex ?: -1
+        _playlist.value = files.map { trackFor(it) }
+        val idx = active.currentIndex ?: -1
         _currentIndex.value = if (idx in files.indices) idx else -1
+        val activeId = _activePlaylistId.value
         thread(name = "playlist-durations", isDaemon = true) {
-            val withDur = files.map { Track(it, it.nameWithoutExtension, durationOf(it)) }
-            _playlist.value = withDur
+            val withDur = files.map { f ->
+                val t = trackFor(f)
+                t.copy(durationMs = if (t.durationMs == 0L) durationOf(f) else t.durationMs)
+            }
+            // قد تكون القائمة الجارية تغيّرت أثناء الحساب — لا نطغى عليها
+            if (_activePlaylistId.value == activeId) _playlist.value = withDur
         }
     }
 
@@ -871,8 +989,8 @@ class AppViewModel {
         }
         // توقيع المُسجِّل: كل تسجيل مكتمل يُختم باسم المستخدم ودوره (مثل النسخة الهاتفية)
         mic.onRecordingSaved = { file, durMs -> signRecording(file, durMs) }
-        // قائمة التشغيل الدائمة: تُستعاد عند الإقلاع
-        loadPersistedPlaylist()
+        // قوائم التشغيل المسماة: تُستعاد عند الإقلاع وتُحمل مقاطع الجارية
+        refreshPlaylistState(loadTracks = true)
         // فحص الفائت بعد انقطاع: من آخر نبضة محفوظة إلى الآن
         val lastRun = weeklyStore.lastRunAt()
         if (lastRun != null) {

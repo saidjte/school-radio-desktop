@@ -264,22 +264,22 @@ class FeaturesParityTest {
         assertEquals(setOf(f1.path), store.missingPaths())
     }
 
-    // ================= قائمة التشغيل الدائمة =================
+    // ================= قائمة التشغيل الدائمة (مسماة) =================
 
     @Test
     fun `playlist store persists paths index repeat`() {
         val dir = tmp()
         val store = PlaylistStore(File(dir, "playlist.json"))
         assertFalse(store.repeatAll())
-        store.set(listOf("/a.mp3", "/b.mp3"), 1)
+        store.setPaths(store.activeId(), listOf("/a.mp3", "/b.mp3"), 1)
         store.setRepeat(true)
         val reloaded = PlaylistStore(File(dir, "playlist.json"))
         assertEquals(listOf("/a.mp3", "/b.mp3"), reloaded.paths())
         assertEquals(1, reloaded.currentIndex())
         assertTrue(reloaded.repeatAll())
-        reloaded.setIndex(-1)
+        reloaded.setIndex(reloaded.activeId(), -1)
         assertEquals(-1, reloaded.currentIndex())
-        reloaded.clear()
+        reloaded.clear(reloaded.activeId())
         assertEquals(0, reloaded.paths().size)
         assertTrue(reloaded.repeatAll()) // التكرار يبقى بعد المسح
     }

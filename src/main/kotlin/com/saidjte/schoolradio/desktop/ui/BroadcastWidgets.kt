@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
@@ -385,129 +387,336 @@ fun BroadcastMicCard(vm: AppViewModel) {
     }
 }
 
-// ================= بطاقة الموسيقى المشتركة =================
+// ================= بطاقة الموسيقى المشتركة (مشغل الهواء) =================
 
-/** بطاقة الموسيقى المشتركة: تحكم كامل بشبكة أزرار مريحة + خط تقدم تحت العنوان. */
+/** مصدر اختيار المقطع في بطاقة الموسيقى: قائمة التشغيل الجارية أو المكتبة المصنفة. */
+private enum class MusicSource(val label: String) {
+    QUEUE("القائمة"),
+    LIBRARY("المكتبة")
+}
+
+/**
+ * مشغل الهواء المشترك بين الاستوديو المدمج والبث المباشر:
+ * اختيار القائمة وتشغيلها، اختيار مقاطع من المكتبة المصنفة والبث فورًا،
+ * تحكم نقل كامل، فيدر وكتم — كل ما يلزم المذيع أثناء الهواء في بطاقة واحدة.
+ */
 @Composable
-fun BroadcastMusicCard(vm: AppViewModel) {
+fun BroadcastMusicCard(
+    vm: AppViewModel,
+    modifier: Modifier = Modifier,
+    paneHeight: Dp = 170.dp
+) {
     val player = vm.player
     val playlist by vm.playlist.collectAsState()
+    val currentIndex by vm.currentIndex.collectAsState()
     val isPlaying by player.isPlaying.collectAsState()
     val isPaused by player.isPaused.collectAsState()
     val hasTrack by player.hasTrack.collectAsState()
     val title by player.title.collectAsState()
     val positionMs by player.positionMs.collectAsState()
     val durationMs by player.durationMs.collectAsState()
+    val playlists by vm.playlists.collectAsState()
+    val activeId by vm.activePlaylistId.collectAsState()
+    val activeName = playlists.firstOrNull { it.id == activeId }?.name ?: ""
+    val repeatAll by vm.repeatAll.collectAsState()
+
+    var source by remember { mutableStateOf(MusicSource.QUEUE) }
+    var playlistsMenu by remember { mutableStateOf(false) }
+    var categoryMenu by remember { mutableStateOf(false) }
+    var selectedCategory by remember { mutableStateOf<String?>(null) }
+    val categories by vm.libraryCategories.collectAsState()
+    val libraryEntries by vm.libraryEntries.collectAsState()
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surface)
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // الرأس: العنوان + مفتاحا المصدر
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
                 "الموسيقى",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
-            SecondaryAction(
-                text = "ملفات",
-                onClick = {
-                    val files = FilePickers.pickAudioFiles()
-                    if (files != null) vm.addFiles(files)
-                }
-            )
-            SecondaryAction(
-                text = "مجلد",
-                onClick = {
-                    val dir = FilePickers.pickAudioFolder()
-                    if (dir != null) vm.addFolder(dir)
-                }
-            )
+            SourceChip(label = MusicSource.QUEUE.label, selected = source == MusicSource.QUEUE) { source = MusicSource.QUEUE }
+            SourceChip(label = MusicSource.LIBRARY.label, selected = source == MusicSource.LIBRARY) { source = MusicSource.LIBRARY }
         }
 
-        Text(
-            title ?: "لا شيء قيد التشغيل",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            "${formatMs(positionMs)} / ${formatMs(durationMs)}${if (playlist.isEmpty()) "" else " · القائمة: ${playlist.size}"}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        when (source) {
+            MusicSource.QUEUE -> {
+                // شريط القوائم المسماة: اختيار القائمة + تشغيلها فورًا + إضافة ملفات
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box {
+                        SecondaryAction(
+                            text = "القائمة: ${shortenName(activeName, 12)} ▾",
+                            onClick = { playlistsMenu = true }
+                        )
+                        DropdownMenu(expanded = playlistsMenu, onDismissRequest = { playlistsMenu = false }) {
+                            playlists.forEach { p ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            (if (p.id == activeId) "● " else "") + "${p.name} (${p.paths.size})",
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    },
+                                    onClick = {
+                                        vm.selectPlaylist(p.id)
+                                        playlistsMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    SecondaryAction(
+                        text = "تشغيل القائمة",
+                        onClick = { vm.playPlaylist(activeId) },
+                        enabled = playlist.isNotEmpty()
+                    )
+                    Spacer(Modifier.weight(1f))
+                }
 
-        if (hasTrack && durationMs > 0) {
-            val frac = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(LocalStudioColors.current.meterTrack)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(frac)
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(MaterialTheme.colorScheme.primary)
+                Text(
+                    title ?: "لا شيء قيد التشغيل",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
+                Text(
+                    "${formatMs(positionMs)} / ${formatMs(durationMs)}" +
+                            if (playlist.isEmpty()) "" else " · الجاري ${currentIndex + 1} من ${playlist.size}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (hasTrack && durationMs > 0) {
+                    val frac = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(LocalStudioColors.current.meterTrack)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(frac)
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                    }
+                }
+
+                // شبكة النقل: السابق / تشغيل-إيقاف / التالي ثم إيقاف + تكرار
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    SecondaryAction(
+                        text = "السابق",
+                        onClick = { vm.previous() },
+                        enabled = playlist.isNotEmpty(),
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (isPlaying && !isPaused) {
+                        PrimaryAction(text = "إيقاف مؤقت", onClick = { player.pause() }, modifier = Modifier.weight(1f))
+                    } else {
+                        PrimaryAction(
+                            text = "تشغيل",
+                            onClick = { vm.togglePlay() },
+                            enabled = playlist.isNotEmpty(),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    SecondaryAction(
+                        text = "التالي",
+                        onClick = { vm.next() },
+                        enabled = playlist.isNotEmpty(),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SecondaryAction(
+                        text = "إيقاف",
+                        onClick = { player.stop() },
+                        enabled = hasTrack,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("تكرار", style = MaterialTheme.typography.bodySmall)
+                    Switch(checked = repeatAll, onCheckedChange = { vm.toggleRepeat() })
+                    Spacer(Modifier.weight(1f))
+                }
+
+                // مقدمة من القائمة: الصفوف قابلة للنقر = تشغيل فوري
+                if (playlist.isEmpty()) {
+                    Text(
+                        "القائمة فارغة — أضف ملفات من صفحة «الموسيقى» أو اختر قائمة أخرى من الأعلى.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                    )
+                } else {
+                    Text(
+                        "مقاطع القائمة — انقر مقطعًا لبثه",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().height(paneHeight),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        itemsIndexed(playlist) { index, track ->
+                            val isCurrent = index == currentIndex
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (isCurrent) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                    .clickable { vm.playAt(index) }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    "${index + 1}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.width(20.dp)
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        track.title,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    track.category?.let {
+                                        Text(
+                                            it,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                Text(
+                                    formatMs(track.durationMs),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            MusicSource.LIBRARY -> {
+                // اختيار مقطع من المكتبة المصنفة وبثه فورًا
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box {
+                        SecondaryAction(
+                            text = shortenName(selectedCategory ?: "كل التصنيفات", 16) + " ▾",
+                            onClick = { categoryMenu = true }
+                        )
+                        DropdownMenu(expanded = categoryMenu, onDismissRequest = { categoryMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("كل التصنيفات") },
+                                onClick = {
+                                    selectedCategory = null
+                                    categoryMenu = false
+                                }
+                            )
+                            categories.forEach { c ->
+                                DropdownMenuItem(
+                                    text = { Text((if (c == selectedCategory) "● " else "") + c, maxLines = 1) },
+                                    onClick = {
+                                        selectedCategory = c
+                                        categoryMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "انقر مقطعًا لبثه فورًا",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                val visible = libraryEntries
+                    .filter { selectedCategory == null || it.category == selectedCategory }
+                    .filter { it.path != null && java.io.File(it.path).isFile }
+                if (visible.isEmpty()) {
+                    Text(
+                        "لا مقاطع في هذا التصنيف — استورد ملفاتك وسرّها في تصنيفات من صفحة «الموسيقى».",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().height(paneHeight),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        itemsIndexed(visible, key = { _, e -> e.id }) { _, entry ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { vm.playNow(entry) }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        entry.title ?: "",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        entry.category ?: "",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Text(
+                                    "بث ▸",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // شبكة أزرار 2×2 — أهداف كبيرة مريحة دون أي قصّ داخل عمود ضيق
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            if (isPlaying && !isPaused) {
-                PrimaryAction(
-                    text = "إيقاف مؤقت",
-                    onClick = { player.pause() },
-                    modifier = Modifier.weight(1f)
-                )
-            } else {
-                PrimaryAction(
-                    text = "تشغيل",
-                    onClick = { vm.togglePlay() },
-                    enabled = playlist.isNotEmpty(),
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            SecondaryAction(
-                text = "إيقاف",
-                onClick = { player.stop() },
-                enabled = hasTrack,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            SecondaryAction(
-                text = "السابق",
-                onClick = { vm.previous() },
-                enabled = playlist.isNotEmpty(),
-                modifier = Modifier.weight(1f)
-            )
-            SecondaryAction(
-                text = "التالي",
-                onClick = { vm.next() },
-                enabled = playlist.isNotEmpty(),
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        // فيدر قناة الموسيقى + كتم جلسي (وحدة المزج) — هو عنصر التحكم الوحيد للمستوى،
-        // مكان منزلق الصوت القديم: عنصران لمستوى واحد كانا يربكان الجلسة
+        // فيدر قناة الموسيقى + كتم جلسي (وحدة المزج) — عنصر التحكم الوحيد للمستوى
         val musicMuted by vm.musicMuted.collectAsState()
         val mixerState by vm.mixer.collectAsState()
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -532,6 +741,26 @@ fun BroadcastMusicCard(vm: AppViewModel) {
             MuteChip(muted = musicMuted, onClick = { vm.setMusicMuted(!musicMuted) })
         }
     }
+}
+
+/** كبسولة مصدر صغيرة — قائمة/مكتبة. */
+@Composable
+private fun SourceChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+        color = if (selected) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+    )
 }
 
 /** تقصير اسم الجهاز في الأزرار الصغيرة للحفاظ على سلاسة العمود. */
