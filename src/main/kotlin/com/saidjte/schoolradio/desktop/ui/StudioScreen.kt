@@ -51,9 +51,9 @@ import java.io.File
  * الاستوديو المدمج: الجدولة + السكريبت + البث في شاشة واحدة للإذاعة.
  * (يمين) فقرات الحلقة ولوحة تشغيلها الحي،
  * (وسط) لوحة قراءة السكريبت بخط كبير تنتقل آليًا مع الفقرة الجارية،
- * (يسار) البث: الميكروفون ووحدة المزج،
- * وأسفل شاشة السكريبت مباشرة منطقة الموسيقى المستقلة — مشغل هواء عريض كامل
- * (طلب المستخدم) بقوائم مسماة ومكتبة مصنفة وتحكم نقل، بلا تنقّل بين الأقسام.
+ *       وأسفلها مباشرة مشغل الموسيقى المستقل بنفس عرض شاشة السكريبت (طلب المستخدم)
+ *       — مظهر مشغل حقيقي: شريط سعي وأزرار أيقونية بلا نصوص كبيرة،
+ * (يسار) البث: الميكروفون وحيز الموسيقى (المكتبة والقوائم كما كان) ووحدة المزج.
  */
 @Composable
 fun StudioScreen(vm: AppViewModel) {
@@ -73,21 +73,17 @@ fun StudioScreen(vm: AppViewModel) {
         ) {
             // العمود الأيمن: حيز التسجيلات أعلى ثم الجدولة تحته (طلب المستخدم)
             StudioRightColumn(vm)
-            // المنطقة الوسطى: شاشة السكريبت + عمود البث أعلاه، ومنطقة الموسيقى
-            // المستقلة أسفل شاشة السكريبت مباشرة (طلب المستخدم)
+            // المنطقة الوسطى: شاشة السكريبت وأسفلها مباشرة مشغل الموسيقى المستقل
+            // بنفس عرض الشاشة (طلب المستخدم)
             Column(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Row(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    StudioScriptPanel(vm, Modifier.weight(1f))
-                    StudioBroadcastPanel(vm)
-                }
-                StudioMusicArea(vm)
+                StudioScriptPanel(vm, Modifier.weight(1f))
+                StudioPlayerArea(vm)
             }
+            // عمود البث: الميكروفون + حيز الموسيقى كما كان + رابط المزج
+            StudioBroadcastPanel(vm)
         }
     }
 }
@@ -549,22 +545,20 @@ private fun StudioBroadcastPanel(vm: AppViewModel) {
             fontWeight = FontWeight.Bold
         )
         BroadcastMicCard(vm)
+        // حيز الموسيقى كما كان: القوائم المسمّاة والمكتبة المصنفة (توضيح المستخدم)
+        BroadcastMusicCard(vm, paneHeight = 110.dp)
         MixerLinkCard(vm)
     }
 }
 
 /**
- * منطقة الموسيقى المستقلة (طلب المستخدم): شريط عريض أسفل شاشة السكريبت مباشرة،
- * يستضيف مشغل الهواء بالوضع العريض — تحكم النقل يمينًا وقائمة المقاطع تملأ
- * الارتفاع يسارًا — فتظل الموسيقى جاهزة للبث بنقرة أثناء قراءة السكريبت.
+ * مشغل الموسيقى المستقل (طلب المستخدم): منطقة تحت شاشة السكريبت مباشرة وبنفس
+ * عرضها، بمظهر مشغل موسيقى حقيقي — شريط تقدم قابل للسعي وأزرار نقل بأيقونات
+ * مرسومة بدل الأزرار النصية الكبيرة — والحيز ذو المكتبة والقوائم يبقى في عمود البث.
  */
 @Composable
-private fun StudioMusicArea(vm: AppViewModel) {
-    BroadcastMusicCard(
-        vm = vm,
-        modifier = Modifier.fillMaxWidth().height(300.dp),
-        wide = true
-    )
+private fun StudioPlayerArea(vm: AppViewModel) {
+    BroadcastPlayerCard(vm = vm, modifier = Modifier.fillMaxWidth())
 }
 
 @Composable
