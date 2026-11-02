@@ -49,9 +49,11 @@ import java.io.File
 
 /**
  * الاستوديو المدمج: الجدولة + السكريبت + البث في شاشة واحدة للإذاعة.
- * ثلاثة أعمدة متزامنة: (يمين) فقرات الحلقة ولوحة تشغيلها الحي،
+ * (يمين) فقرات الحلقة ولوحة تشغيلها الحي،
  * (وسط) لوحة قراءة السكريبت بخط كبير تنتقل آليًا مع الفقرة الجارية،
- * (يسار) البث: الميكروفون والموسيقى والتسجيلات — بلا تنقّل بين الأقسام.
+ * (يسار) البث: الميكروفون ووحدة المزج،
+ * وأسفل شاشة السكريبت مباشرة منطقة الموسيقى المستقلة — مشغل هواء عريض كامل
+ * (طلب المستخدم) بقوائم مسماة ومكتبة مصنفة وتحكم نقل، بلا تنقّل بين الأقسام.
  */
 @Composable
 fun StudioScreen(vm: AppViewModel) {
@@ -71,8 +73,21 @@ fun StudioScreen(vm: AppViewModel) {
         ) {
             // العمود الأيمن: حيز التسجيلات أعلى ثم الجدولة تحته (طلب المستخدم)
             StudioRightColumn(vm)
-            StudioScriptPanel(vm, Modifier.weight(1f))
-            StudioBroadcastPanel(vm)
+            // المنطقة الوسطى: شاشة السكريبت + عمود البث أعلاه، ومنطقة الموسيقى
+            // المستقلة أسفل شاشة السكريبت مباشرة (طلب المستخدم)
+            Column(
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    StudioScriptPanel(vm, Modifier.weight(1f))
+                    StudioBroadcastPanel(vm)
+                }
+                StudioMusicArea(vm)
+            }
         }
     }
 }
@@ -534,10 +549,22 @@ private fun StudioBroadcastPanel(vm: AppViewModel) {
             fontWeight = FontWeight.Bold
         )
         BroadcastMicCard(vm)
-        // مشغل الهواء: قوائم مسماة + مكتبة مصنفة + تحكم نقل — اختيار وبث من الاستوديو مباشرة
-        BroadcastMusicCard(vm, paneHeight = 110.dp)
         MixerLinkCard(vm)
     }
+}
+
+/**
+ * منطقة الموسيقى المستقلة (طلب المستخدم): شريط عريض أسفل شاشة السكريبت مباشرة،
+ * يستضيف مشغل الهواء بالوضع العريض — تحكم النقل يمينًا وقائمة المقاطع تملأ
+ * الارتفاع يسارًا — فتظل الموسيقى جاهزة للبث بنقرة أثناء قراءة السكريبت.
+ */
+@Composable
+private fun StudioMusicArea(vm: AppViewModel) {
+    BroadcastMusicCard(
+        vm = vm,
+        modifier = Modifier.fillMaxWidth().height(300.dp),
+        wide = true
+    )
 }
 
 @Composable

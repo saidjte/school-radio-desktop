@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -55,6 +56,10 @@ import androidx.compose.ui.unit.dp
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.audio.AudioDevices
 import com.saidjte.schoolradio.desktop.audio.MicState
+import com.saidjte.schoolradio.desktop.data.LibraryEntry
+import com.saidjte.schoolradio.desktop.data.NamedPlaylist
+import com.saidjte.schoolradio.desktop.data.RepeatMode as PlaylistRepeatMode
+import com.saidjte.schoolradio.desktop.Track
 import com.saidjte.schoolradio.desktop.data.MeterLogic
 import com.saidjte.schoolradio.desktop.data.MeterZone
 import com.saidjte.schoolradio.desktop.data.MixerLogic
@@ -399,12 +404,19 @@ private enum class MusicSource(val label: String) {
  * مشغل الهواء المشترك بين الاستوديو المدمج والبث المباشر:
  * اختيار القائمة وتشغيلها، اختيار مقاطع من المكتبة المصنفة والبث فورًا،
  * تحكم نقل كامل، فيدر وكتم — كل ما يلزم المذيع أثناء الهواء في بطاقة واحدة.
+ *
+ * وضعان للعرض:
+ * - عادي (wide = false): بطاقة رأسية ضيقة لأعمدة البث الجانبية (البث المباشر).
+ * - عريض (wide = true): منطقة الموسيقى المستقلة تحت شاشة السكريبت في الاستوديو
+ *   المدمج — تحكم النقل على اليمين وقائمة المقاطع تملأ الارتفاع على اليسار،
+ *   فتُشاهَد عشرات المقاطع دفعة واحدة دون تمرير الوحة كله.
  */
 @Composable
 fun BroadcastMusicCard(
     vm: AppViewModel,
     modifier: Modifier = Modifier,
-    paneHeight: Dp = 170.dp
+    paneHeight: Dp = 170.dp,
+    wide: Boolean = false
 ) {
     val player = vm.player
     val playlist by vm.playlist.collectAsState()
@@ -423,11 +435,11 @@ fun BroadcastMusicCard(
     val playerError by player.error.collectAsState()
 
     var source by remember { mutableStateOf(MusicSource.QUEUE) }
-    var playlistsMenu by remember { mutableStateOf(false) }
-    var categoryMenu by remember { mutableStateOf(false) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
     val categories by vm.libraryCategories.collectAsState()
     val libraryEntries by vm.libraryEntries.collectAsState()
+    val onAir = isPlaying && !isPaused
+    val queueInfo = if (playlist.isEmpty()) "" else " · الجاري ${currentIndex + 1} من ${playlist.size}"
 
     Column(
         modifier = modifier
@@ -437,7 +449,7 @@ fun BroadcastMusicCard(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // الرأس: العنوان + مفتاحا المصدر
+        // الرأس: العنوان + شارة الهواء الحية + مفتاحا المصدر
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
                 "الموسيقى",
@@ -445,330 +457,539 @@ fun BroadcastMusicCard(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
+            if (onAir) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    PulsingDot(color = MaterialTheme.colorScheme.primary, size = 8.dp)
+                    Text(
+                        "على الهواء",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
             SourceChip(label = MusicSource.QUEUE.label, selected = source == MusicSource.QUEUE) { source = MusicSource.QUEUE }
             SourceChip(label = MusicSource.LIBRARY.label, selected = source == MusicSource.LIBRARY) { source = MusicSource.LIBRARY }
         }
 
-        when (source) {
-            MusicSource.QUEUE -> {
-                // شريط القوائم المسماة: اختيار القائمة + تشغيلها فورًا + إضافة ملفات
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Box {
-                        SecondaryAction(
-                            text = "القائمة: ${shortenName(activeName, 12)} ▾",
-                            onClick = { playlistsMenu = true }
-                        )
-                        DropdownMenu(expanded = playlistsMenu, onDismissRequest = { playlistsMenu = false }) {
-                            playlists.forEach { p ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            (if (p.id == activeId) "● " else "") + "${p.name} (${p.paths.size})",
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    },
-                                    onClick = {
-                                        vm.selectPlaylist(p.id)
-                                        playlistsMenu = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    SecondaryAction(
-                        text = "تشغيل القائمة",
-                        onClick = { vm.playPlaylist(activeId) },
-                        enabled = playlist.isNotEmpty()
+        if (wide) {
+            // المنطقة العريضة (الاستوديو المدمج): تحكم على اليمين وقائمة المقاطع تملأ الارتفاع
+            Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier.width(320.dp).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    MusicSourceControls(
+                        vm = vm,
+                        source = source,
+                        playlists = playlists,
+                        activeId = activeId,
+                        activeName = activeName,
+                        playlistCount = playlist.size,
+                        categories = categories,
+                        selectedCategory = selectedCategory,
+                        onSelectCategory = { selectedCategory = it },
+                        inlineLibraryHint = false
                     )
+                    MusicNowPlayingBlock(
+                        title = title,
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        hasTrack = hasTrack,
+                        queueInfo = queueInfo,
+                        big = true
+                    )
+                    MusicTransportRows(vm, playlist, isPlaying, isPaused, hasTrack, repeatMode, shuffle)
+                    MusicErrorLine(playerError) { player.clearError() }
                     Spacer(Modifier.weight(1f))
+                    MusicFaderRow(vm)
                 }
-
-                Text(
-                    title ?: "لا شيء قيد التشغيل",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                MusicTrackPane(
+                    vm = vm,
+                    source = source,
+                    playlist = playlist,
+                    currentIndex = currentIndex,
+                    selectedCategory = selectedCategory,
+                    libraryEntries = libraryEntries,
+                    showLibraryCaption = true,
+                    modifier = Modifier.weight(1f).fillMaxHeight()
                 )
-                Text(
-                    "${formatMs(positionMs)} / ${formatMs(durationMs)}" +
-                            if (playlist.isEmpty()) "" else " · الجاري ${currentIndex + 1} من ${playlist.size}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                if (hasTrack && durationMs > 0) {
-                    val frac = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(LocalStudioColors.current.meterTrack)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(frac)
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(MaterialTheme.colorScheme.primary)
-                        )
-                    }
-                }
-
-                // شبكة النقل: السابق / تشغيل-إيقاف / التالي ثم إيقاف + تكرار
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                    SecondaryAction(
-                        text = "السابق",
-                        onClick = { vm.previous() },
-                        enabled = playlist.isNotEmpty(),
-                        modifier = Modifier.weight(1f)
+            }
+        } else {
+            when (source) {
+                MusicSource.QUEUE -> {
+                    MusicSourceControls(
+                        vm = vm,
+                        source = source,
+                        playlists = playlists,
+                        activeId = activeId,
+                        activeName = activeName,
+                        playlistCount = playlist.size,
+                        categories = categories,
+                        selectedCategory = selectedCategory,
+                        onSelectCategory = { selectedCategory = it },
+                        inlineLibraryHint = true
                     )
-                    if (isPlaying && !isPaused) {
-                        PrimaryAction(text = "إيقاف مؤقت", onClick = { player.pause() }, modifier = Modifier.weight(1f))
-                    } else {
-                        PrimaryAction(
-                            text = "تشغيل",
-                            onClick = { vm.togglePlay() },
-                            enabled = playlist.isNotEmpty(),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    SecondaryAction(
-                        text = "التالي",
-                        onClick = { vm.next() },
-                        enabled = playlist.isNotEmpty(),
-                        modifier = Modifier.weight(1f)
+                    MusicNowPlayingBlock(
+                        title = title,
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        hasTrack = hasTrack,
+                        queueInfo = queueInfo,
+                        big = false
+                    )
+                    MusicTransportRows(vm, playlist, isPlaying, isPaused, hasTrack, repeatMode, shuffle)
+                    MusicErrorLine(playerError) { player.clearError() }
+                    MusicTrackPane(
+                        vm = vm,
+                        source = source,
+                        playlist = playlist,
+                        currentIndex = currentIndex,
+                        selectedCategory = selectedCategory,
+                        libraryEntries = libraryEntries,
+                        showLibraryCaption = false,
+                        modifier = Modifier.fillMaxWidth().height(paneHeight + 24.dp)
                     )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    SecondaryAction(
-                        text = "إيقاف",
-                        onClick = { player.stop() },
-                        enabled = hasTrack,
-                        modifier = Modifier.weight(1f)
+                MusicSource.LIBRARY -> {
+                    MusicSourceControls(
+                        vm = vm,
+                        source = source,
+                        playlists = playlists,
+                        activeId = activeId,
+                        activeName = activeName,
+                        playlistCount = playlist.size,
+                        categories = categories,
+                        selectedCategory = selectedCategory,
+                        onSelectCategory = { selectedCategory = it },
+                        inlineLibraryHint = true
                     )
-                    SecondaryAction(
-                        text = if (shuffle) "عشوائي ✓" else "عشوائي",
-                        onClick = { vm.toggleShuffle() },
-                        modifier = Modifier.weight(1f)
-                    )
-                    SecondaryAction(
-                        text = "تكرار: ${repeatMode.label}",
-                        onClick = { vm.cycleRepeat() },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                // سطر الخطأ — لا فشل صامت أبدًا (يبثّ من المكتبة أو القائمة بوضوح)
-                playerError?.let { msg ->
-                    Text(
-                        msg,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f))
-                            .clickable { player.clearError() }
-                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                    MusicTrackPane(
+                        vm = vm,
+                        source = source,
+                        playlist = playlist,
+                        currentIndex = currentIndex,
+                        selectedCategory = selectedCategory,
+                        libraryEntries = libraryEntries,
+                        showLibraryCaption = false,
+                        modifier = Modifier.fillMaxWidth().height(paneHeight + 24.dp)
                     )
                 }
+            }
+            // فيدر قناة الموسيقى + كتم جلسي (وحدة المزج) — عنصر التحكم الوحيد للمستوى
+            MusicFaderRow(vm)
+        }
+    }
+}
 
-                // مقدمة من القائمة: الصفوف قابلة للنقر = تشغيل فوري
-                if (playlist.isEmpty()) {
-                    Text(
-                        "القائمة فارغة — أضف ملفات من صفحة «الموسيقى» أو اختر قائمة أخرى من الأعلى.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
+/** صفوف اختيار المصدر: القائمة المسماة مع زر تشغيلها، أو تصنيف المكتبة. */
+@Composable
+private fun MusicSourceControls(
+    vm: AppViewModel,
+    source: MusicSource,
+    playlists: List<NamedPlaylist>,
+    activeId: Long,
+    activeName: String,
+    playlistCount: Int,
+    categories: List<String>,
+    selectedCategory: String?,
+    onSelectCategory: (String?) -> Unit,
+    inlineLibraryHint: Boolean
+) {
+    var playlistsMenu by remember { mutableStateOf(false) }
+    var categoryMenu by remember { mutableStateOf(false) }
+    when (source) {
+        MusicSource.QUEUE -> {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box {
+                    SecondaryAction(
+                        text = "القائمة: ${shortenName(activeName, 12)} ▾",
+                        onClick = { playlistsMenu = true }
                     )
-                } else {
-                    Text(
-                        "مقاطع القائمة — انقر مقطعًا لبثه",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height(paneHeight),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        itemsIndexed(playlist) { index, track ->
-                            val isCurrent = index == currentIndex
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        if (isCurrent) MaterialTheme.colorScheme.primaryContainer
-                                        else MaterialTheme.colorScheme.surfaceVariant
-                                    )
-                                    .clickable { vm.playAt(index) }
-                                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    "${index + 1}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.width(20.dp)
-                                )
-                                Column(modifier = Modifier.weight(1f)) {
+                    DropdownMenu(expanded = playlistsMenu, onDismissRequest = { playlistsMenu = false }) {
+                        playlists.forEach { p ->
+                            DropdownMenuItem(
+                                text = {
                                     Text(
-                                        track.title,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                        (if (p.id == activeId) "● " else "") + "${p.name} (${p.paths.size})",
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    track.category?.let {
-                                        Text(
-                                            it,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
+                                },
+                                onClick = {
+                                    vm.selectPlaylist(p.id)
+                                    playlistsMenu = false
                                 }
-                                Text(
-                                    formatMs(track.durationMs),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                            )
                         }
                     }
                 }
+                SecondaryAction(
+                    text = "تشغيل القائمة",
+                    onClick = { vm.playPlaylist(activeId) },
+                    enabled = playlistCount > 0
+                )
+                Spacer(Modifier.weight(1f))
             }
-
-            MusicSource.LIBRARY -> {
-                // اختيار مقطع من المكتبة المصنفة وبثه فورًا
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Box {
-                        SecondaryAction(
-                            text = shortenName(selectedCategory ?: "كل التصنيفات", 16) + " ▾",
-                            onClick = { categoryMenu = true }
+        }
+        MusicSource.LIBRARY -> {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box {
+                    SecondaryAction(
+                        text = shortenName(selectedCategory ?: "كل التصنيفات", 16) + " ▾",
+                        onClick = { categoryMenu = true }
+                    )
+                    DropdownMenu(expanded = categoryMenu, onDismissRequest = { categoryMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("كل التصنيفات") },
+                            onClick = {
+                                onSelectCategory(null)
+                                categoryMenu = false
+                            }
                         )
-                        DropdownMenu(expanded = categoryMenu, onDismissRequest = { categoryMenu = false }) {
+                        categories.forEach { c ->
                             DropdownMenuItem(
-                                text = { Text("كل التصنيفات") },
+                                text = { Text((if (c == selectedCategory) "● " else "") + c, maxLines = 1) },
                                 onClick = {
-                                    selectedCategory = null
+                                    onSelectCategory(c)
                                     categoryMenu = false
                                 }
                             )
-                            categories.forEach { c ->
-                                DropdownMenuItem(
-                                    text = { Text((if (c == selectedCategory) "● " else "") + c, maxLines = 1) },
-                                    onClick = {
-                                        selectedCategory = c
-                                        categoryMenu = false
-                                    }
-                                )
-                            }
                         }
                     }
-                    Spacer(Modifier.weight(1f))
+                }
+                Spacer(Modifier.weight(1f))
+                if (inlineLibraryHint) {
                     Text(
                         "انقر مقطعًا لبثه فورًا",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                val visible = libraryEntries
-                    .filter { selectedCategory == null || it.category == selectedCategory }
-                    .filter { it.path != null && java.io.File(it.path).isFile }
-                if (visible.isEmpty()) {
+            }
+        }
+    }
+}
+
+/** كتلة «قيد التشغيل الآن»: العنوان + الزمن + شريط التقدم. */
+@Composable
+private fun MusicNowPlayingBlock(
+    title: String?,
+    positionMs: Long,
+    durationMs: Long,
+    hasTrack: Boolean,
+    queueInfo: String,
+    big: Boolean
+) {
+    Text(
+        title ?: "لا شيء قيد التشغيل",
+        style = if (big) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+    )
+    Text(
+        "${formatMs(positionMs)} / ${formatMs(durationMs)}" + queueInfo,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    if (hasTrack && durationMs > 0) {
+        val frac = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(LocalStudioColors.current.meterTrack)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(frac)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+        }
+    }
+}
+
+/** شبكة النقل: السابق/تشغيل/التالي ثم إيقاف + عشوائي + تكرار. */
+@Composable
+private fun MusicTransportRows(
+    vm: AppViewModel,
+    playlist: List<Track>,
+    isPlaying: Boolean,
+    isPaused: Boolean,
+    hasTrack: Boolean,
+    repeatMode: PlaylistRepeatMode,
+    shuffle: Boolean
+) {
+    val player = vm.player
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        SecondaryAction(
+            text = "السابق",
+            onClick = { vm.previous() },
+            enabled = playlist.isNotEmpty(),
+            modifier = Modifier.weight(1f)
+        )
+        if (isPlaying && !isPaused) {
+            PrimaryAction(text = "إيقاف مؤقت", onClick = { player.pause() }, modifier = Modifier.weight(1f))
+        } else {
+            PrimaryAction(
+                text = "تشغيل",
+                onClick = { vm.togglePlay() },
+                enabled = playlist.isNotEmpty(),
+                modifier = Modifier.weight(1f)
+            )
+        }
+        SecondaryAction(
+            text = "التالي",
+            onClick = { vm.next() },
+            enabled = playlist.isNotEmpty(),
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        SecondaryAction(
+            text = "إيقاف",
+            onClick = { player.stop() },
+            enabled = hasTrack,
+            modifier = Modifier.weight(1f)
+        )
+        SecondaryAction(
+            text = if (shuffle) "عشوائي ✓" else "عشوائي",
+            onClick = { vm.toggleShuffle() },
+            modifier = Modifier.weight(1f)
+        )
+        SecondaryAction(
+            text = "تكرار: ${repeatMode.label}",
+            onClick = { vm.cycleRepeat() },
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+/** سطر الخطأ المرئي — لا فشل صامت أبدًا (نقرة تمسحه). */
+@Composable
+private fun MusicErrorLine(message: String?, onDismiss: () -> Unit) {
+    message?.let { msg ->
+        Text(
+            msg,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f))
+                .clickable(onClick = onDismiss)
+                .padding(horizontal = 8.dp, vertical = 5.dp)
+        )
+    }
+}
+
+/** فيدر قناة الموسيقى + كتم الجلسة — عنصر التحكم الوحيد للمستوى (وحدة المزج). */
+@Composable
+private fun MusicFaderRow(vm: AppViewModel) {
+    val musicMuted by vm.musicMuted.collectAsState()
+    val mixerState by vm.mixer.collectAsState()
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "فيدر",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            "${MixerLogic.faderPercent(mixerState.musicFader)}%",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(42.dp)
+        )
+        Slider(
+            value = mixerState.musicFader,
+            onValueChange = { vm.setMusicFader(it) },
+            valueRange = 0f..MixerLogic.FADER_MAX,
+            modifier = Modifier.weight(1f)
+        )
+        MuteChip(muted = musicMuted, onClick = { vm.setMusicMuted(!musicMuted) })
+    }
+}
+
+/** لوحة المقاطع: قائمة التشغيل الجارية أو مقاطع المكتبة حسب التصنيف المختار. */
+@Composable
+private fun MusicTrackPane(
+    vm: AppViewModel,
+    source: MusicSource,
+    playlist: List<Track>,
+    currentIndex: Int,
+    selectedCategory: String?,
+    libraryEntries: List<LibraryEntry>,
+    showLibraryCaption: Boolean,
+    modifier: Modifier = Modifier
+) {
+    when (source) {
+        MusicSource.QUEUE -> {
+            if (playlist.isEmpty()) {
+                MusicPaneHint(
+                    text = "القائمة فارغة — أضف ملفات من صفحة «الموسيقى» أو اختر قائمة أخرى من الأعلى.",
+                    modifier = modifier
+                )
+            } else {
+                Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
-                        "لا مقاطع في هذا التصنيف — استورد ملفاتك وسرّها في تصنيفات من صفحة «الموسيقى».",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                        "مقاطع القائمة — انقر مقطعًا لبثه",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                } else {
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height(paneHeight),
+                        modifier = Modifier.fillMaxWidth().weight(1f),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        itemsIndexed(visible, key = { _, e -> e.id }) { _, entry ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                                    .clickable { vm.playNow(entry) }
-                                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        entry.title ?: "",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        entry.category ?: "",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                Text(
-                                    "بث ▸",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+                        itemsIndexed(playlist) { index, track ->
+                            val isCurrent = index == currentIndex
+                            PlaylistTrackRow(
+                                index = index,
+                                track = track,
+                                isCurrent = isCurrent,
+                                onClick = { vm.playAt(index) }
+                            )
                         }
                     }
                 }
             }
         }
-
-        // فيدر قناة الموسيقى + كتم جلسي (وحدة المزج) — عنصر التحكم الوحيد للمستوى
-        val musicMuted by vm.musicMuted.collectAsState()
-        val mixerState by vm.mixer.collectAsState()
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "فيدر",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                "${MixerLogic.faderPercent(mixerState.musicFader)}%",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.width(42.dp)
-            )
-            Slider(
-                value = mixerState.musicFader,
-                onValueChange = { vm.setMusicFader(it) },
-                valueRange = 0f..MixerLogic.FADER_MAX,
-                modifier = Modifier.weight(1f)
-            )
-            MuteChip(muted = musicMuted, onClick = { vm.setMusicMuted(!musicMuted) })
+        MusicSource.LIBRARY -> {
+            val visible = libraryEntries
+                .filter { selectedCategory == null || it.category == selectedCategory }
+                .filter { it.path != null && File(it.path).isFile }
+            if (visible.isEmpty()) {
+                MusicPaneHint(
+                    text = "لا مقاطع في هذا التصنيف — استورد ملفاتك وسرّها في تصنيفات من صفحة «الموسيقى».",
+                    modifier = modifier
+                )
+            } else {
+                Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (showLibraryCaption) {
+                        Text(
+                            "مقاطع المكتبة — انقر مقطعًا لبثه فورًا",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        itemsIndexed(visible, key = { _, e -> e.id }) { _, entry ->
+                            LibraryTrackRow(entry) { vm.playNow(entry) }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
+/** تنبيه داخلي حين تكون اللوحة فارغة. */
+@Composable
+private fun MusicPaneHint(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    )
+}
+
+/** صف مقطع من القائمة الجارية — النقر يبثه فورًا. */
+@Composable
+private fun PlaylistTrackRow(index: Int, track: Track, isCurrent: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (isCurrent) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            "${index + 1}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(20.dp)
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                track.title,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            track.category?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Text(
+            formatMs(track.durationMs),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** صف مقطع من المكتبة المصنفة — النقر يبثه فورًا. */
+@Composable
+private fun LibraryTrackRow(entry: LibraryEntry, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                entry.title ?: "",
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                entry.category ?: "",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Text(
+            "بث ▸",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
 /** كبسولة مصدر صغيرة — قائمة/مكتبة. */
 @Composable
 private fun SourceChip(label: String, selected: Boolean, onClick: () -> Unit) {
