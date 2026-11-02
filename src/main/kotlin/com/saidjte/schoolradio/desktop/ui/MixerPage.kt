@@ -54,6 +54,8 @@ fun MixerPage(vm: AppViewModel) {
     val aecLocked by vm.mic.aecLocked.collectAsState()
     val aecDelayMs by vm.mic.aecDelayMs.collectAsState()
     val aecErleDb by vm.mic.aecErleDb.collectAsState()
+    val aecMonitorLocked by vm.mic.aecMonitorLocked.collectAsState()
+    val aecMonitorErleDb by vm.mic.aecMonitorErleDb.collectAsState()
 
     Column(
         modifier = Modifier
@@ -183,7 +185,10 @@ fun MixerPage(vm: AppViewModel) {
         DuckCard(vm, mixer.duck, duckActive)
 
         // ================= إلغاء صدى الميكروفون (AEC) =================
-        AecCard(vm, mixer.aec, aecLocked, aecDelayMs, aecErleDb)
+        AecCard(
+            vm, mixer.aec, aecLocked, aecDelayMs, aecErleDb,
+            aecMonitorLocked, aecMonitorErleDb
+        )
 
         Spacer(Modifier.height(4.dp))
     }
@@ -574,7 +579,9 @@ private fun AecCard(
     a: com.saidjte.schoolradio.desktop.data.AecState,
     locked: Boolean,
     delayMs: Float,
-    erleDb: Float
+    erleDb: Float,
+    monitorLocked: Boolean,
+    monitorErleDb: Float
 ) {
     Column(
         modifier = Modifier
@@ -607,11 +614,26 @@ private fun AecCard(
                 Switch(checked = a.enabled, onCheckedChange = { on -> vm.updateAec { it.copy(enabled = on) } })
             }
         }
+        // مانع صدى المراقبة — مكافئ مانع النظام في الهاتف لصوت المذيع العائد من السماعة
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Dot(
+                color = if (a.enabled && monitorLocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                size = 8.dp
+            )
+            Text(
+                if (!a.enabled) "المانعان معطّلان — صدى السماعة يصل الهواء كما هو"
+                else if (monitorLocked) "صدى مراقبتك مقفل وكُبح %.0f دب — الميكروفون قرب السماعة آمن كال هاتف".format(monitorErleDb)
+                else "مانع صدى المراقبة جاهز — يشتغل تلقائيًا مع سماع المراقبة فيُلغي عودة صوتك من السماعة",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         Text(
-            "محلّ تكيّفي مجزّأ في المجال الترددي (PBFDAF) بطول فعّال ~170ms يتعلم مسار الصوت كاملًا من السماعة " +
-                    "إلى الميكروفون — الصدى المباشر وذيل الارتداد معًا — ويطرحه من صوتك، مع كشف الحديث المزدوج " +
-                    "يكفّ التعلّم وأنت تتكلم وكابح بقايا يلطف ما تبقّى. لا أثر له حين لا موسيقى تعمل، " +
-                    "ومن الأفضل أن يكون سماعك المراقب بالسماعات لا بالسماعات المكشوفة",
+            "مانعان تكيّفيان متتاليان يرآن مسار الصوت من السماعة إلى الميكروفون ويطرحانه من صوتك: " +
+                    "الأول لصدى الموسيقى والثاني لعودة صوتك من سماعة المراقبة — وهذا ما يفعله النظام " +
+                    "في الهاتف تلقائيًا، لذلك لا صدى هناك مهما قرب الميكروفون من مكبر الصوت. مع كشف " +
+                    "لحظي للحديث المزدوج يحمي صوتك أثناء كلامك، وكابح بقايا يخفي ما تبقّى من صدى " +
+                    "بعد الطرح. لا أثر لهما حين لا موسيقى ولا سماع مراقبة تعملان",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

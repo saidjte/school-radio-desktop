@@ -454,6 +454,53 @@ object SelfTest {
             check(cancellationDb > 8.0) { "aec cancellation=$cancellationDb" }
             check(aec.locked) { "aec locked" }
             check(aec.erleDb > 6f) { "aec erle=${aec.erleDb}" }
+            // AEC المراقبة (الجيل الثالث — تكافؤ الهاتف): صوت المذيع يعود من سماعة
+            // المراقبة نسخة مؤخّرة 90ms بكسب 0.35 — المانع الثاني بلا كشف حديث مزدوج
+            // (المرجع نسخة من الصوت نفسه فجيلجل يخطئ فيه بالضرورة) يقفل ويكبح العائد
+            run {
+                val fsM = 48000
+                val blockM = 2048
+                val nBlocksM = 64 // ~2.7 ثانية — تكفي لبحث التأخير الأول (كتل 46) وإعادة التقارب
+                val dMon = (0.090 * fsM).toInt()
+                val sigM = DoubleArray(dMon + blockM * nBlocksM) {
+                    val t = it.toDouble() / fsM
+                    val freq = 250.0 + 1900.0 * ((t % 1.6) / 1.6)
+                    0.5 * kotlin.math.sin(2.0 * Math.PI * freq * t)
+                }
+                val tapM = com.saidjte.schoolradio.desktop.audio.FarEndTap(2.5)
+                tapM.configure(fsM)
+                val aecM = com.saidjte.schoolradio.desktop.audio.EchoCanceller()
+                aecM.doubleTalkGuard = false
+                aecM.configure(fsM, 1)
+                val micM = ShortArray(blockM)
+                var pushedM = 0
+                var inEM = 0.0
+                var outEM = 0.0
+                for (b in 0 until nBlocksM) {
+                    val targetM = (b + 1) * blockM
+                    while (pushedM < targetM) {
+                        val k = minOf(512, targetM - pushedM)
+                        tapM.push(FloatArray(k) { sigM[pushedM + it].toFloat() }, k)
+                        pushedM += k
+                    }
+                    for (f in 0 until blockM) {
+                        val idx = b * blockM + f - dMon
+                        val v = if (idx >= 0) 0.35 * sigM[idx] else 0.0
+                        micM[f] = (v * 32767.0).toInt().toShort()
+                    }
+                    val preM = micM.copyOf()
+                    aecM.process(micM, micM.size, tapM)
+                    if (b >= nBlocksM - 10) {
+                        for (f in 0 until blockM) {
+                            inEM += (preM[f].toDouble() / 32768.0).let { it * it }
+                            outEM += (micM[f].toDouble() / 32768.0).let { it * it }
+                        }
+                    }
+                }
+                val cancM = 10.0 * kotlin.math.log10(inEM / maxOf(outEM, 1e-12))
+                check(cancM > 8.0) { "monitor aec cancellation=$cancM" }
+                check(aecM.locked) { "monitor aec locked" }
+            }
             // FFT نقي: دورة كاملة + التفاف خطي يطابق المباشر
             run {
                 val n = 64

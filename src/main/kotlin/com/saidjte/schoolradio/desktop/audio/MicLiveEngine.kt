@@ -15,6 +15,8 @@ enum class MicState { IDLE, LIVE }
 /**
  * محرّك البث المباشر للميكروفون (نسخة الحاسوب):
  * - التقاط من جهاز الإدخال المختار عبر TargetDataLine.
+ * - مانعا صدى متسلسلان (صدى الموسيقى + صدى سماع المراقبة) — تكافؤ مصدر
+ *   VOICE_COMMUNICATION في نسخة الهاتف: مرجع الإلغاء = كل ما يخرج من السماعة.
  * - مقياس مستوى حي (RMS).
  * - سماع مراقبة اختياري عبر SourceDataLine (نفس مسار الحلقة الآمن في نسخة الهاتف).
  * - تسجيل WAV متزامن مع البث (كتابة متدفقة).
@@ -68,6 +70,14 @@ class MicLiveEngine {
     private val _aecErleDb = MutableStateFlow(0f)
     val aecErleDb: StateFlow<Float> = _aecErleDb.asStateFlow()
 
+    /** مؤشر مانع صدى المراقبة: هل مسار صوت المذيع العائد من السماعة مقفل؟ */
+    private val _aecMonitorLocked = MutableStateFlow(false)
+    val aecMonitorLocked: StateFlow<Boolean> = _aecMonitorLocked.asStateFlow()
+
+    /** تحسّن إرجاع مانع صدى المراقبة بالديسيبل. */
+    private val _aecMonitorErleDb = MutableStateFlow(0f)
+    val aecMonitorErleDb: StateFlow<Float> = _aecMonitorErleDb.asStateFlow()
+
     /** مؤشر الخفض التلقائي: هل الموسيقى منخفضة الآن لحديث المذيع؟ */
     private val _duckActive = MutableStateFlow(false)
     val duckActive: StateFlow<Boolean> = _duckActive.asStateFlow()
@@ -95,6 +105,14 @@ class MicLiveEngine {
 
     /** مانع صدى الميكروفون (NLMS) — يطرح صدى الموسيقى قبل بقية السلسلة. */
     internal val aec = EchoCanceller()
+
+    /**
+     * مانع صدى سماع المراقبة — مكافئ مانع النظام في الهاتف: يطرح صوت المذيع العائد
+     * من سماعة المراقبة من الالتقاط، فيعيش الميكروفون قرب مكبر الصوت بلا صدى كما
+     * في النسخة الهاتفية. بلا كشف حديث مزدوج لأن مرجعه نسخة مؤخّرة من الصوت نفسه
+     * — الاشتباه فيه بالضرورة يشلّ التعلّم والكبح معًا.
+     */
+    internal val aecMonitor = EchoCanceller().apply { doubleTalkGuard = false }
 
     /** قائد الخفض التلقائي: يقود ناقل DuckBus كل كتلة. */
     private val ducker = Ducker()
@@ -135,13 +153,16 @@ class MicLiveEngine {
         )
     }
 
-    /** تفعيل/تعطيل إلغاء الصدى (يعمل قبل البدء وأثناءه). */
+    /** تفعيل/تعطيل إلغاء الصدى (يعمل قبل البدء وأثناءه) — للمانعين معًا كالنسخة الهاتفية. */
     fun setAec(state: AecState) {
         aec.enabled = state.enabled
+        aecMonitor.enabled = state.enabled
         if (!state.enabled) {
             _aecLocked.value = false
             _aecDelayMs.value = 0f
             _aecErleDb.value = 0f
+            _aecMonitorLocked.value = false
+            _aecMonitorErleDb.value = 0f
         }
     }
 
@@ -217,6 +238,8 @@ class MicLiveEngine {
             voice.configure(actual.sampleRate.toInt(), actual.channels)
             aec.configure(actual.sampleRate.toInt(), actual.channels)
             aec.reset()
+            aecMonitor.configure(actual.sampleRate.toInt(), actual.channels)
+            aecMonitor.reset()
             ducker.reset()
             val shorts = ShortArray(chunk / 2)
 
@@ -231,10 +254,15 @@ class MicLiveEngine {
                 // معالجة لاحية) ثم معالج المذيع وكسب القناة — المقياس والسماع المراقب
                 // والتسجيل كلها على الصوت «على الهواء»
                 val sampleCount = Pcm16.bytesToShorts(buf, n, shorts)
+                // السلسلة كنسخة الهاتف: طرح صدى الموسيقى ثم صدى صوت المذيع العائد
+                // من سماعة المراقبة — مانعان متتاليان يغطيان كل ما تسمعه الغرفة
                 aec.process(shorts, sampleCount, MusicFarEnd.tap)
+                aecMonitor.process(shorts, sampleCount, MonitorFarEnd.tap)
                 _aecLocked.value = aec.locked
                 _aecDelayMs.value = aec.delayMs
                 _aecErleDb.value = aec.erleDb
+                _aecMonitorLocked.value = aecMonitor.locked
+                _aecMonitorErleDb.value = aecMonitor.erleDb
                 val gain = if (micMuted) 0f else micFader * masterFader
                 val level = voice.process(shorts, sampleCount, gain)
                 _level.value = level
@@ -276,6 +304,9 @@ class MicLiveEngine {
                         }
                     }
                     out?.let { o ->
+                        // مرجع مانع صدى المراقبة: ما يُكتب فعليًا في السماعة يُدفع كمرجع
+                        // قبل كتابته — فيُطرح عائده من الالتقاط كالمانع النظامي في الهاتف
+                        pushMonitorFarEnd(shorts, sampleCount, actual.channels)
                         try { o.write(buf, 0, n) } catch (_: Exception) { }
                     }
                 }
@@ -317,6 +348,8 @@ class MicLiveEngine {
             _aecLocked.value = false
             _aecDelayMs.value = 0f
             _aecErleDb.value = 0f
+            _aecMonitorLocked.value = false
+            _aecMonitorErleDb.value = 0f
             _duckActive.value = false
             DuckBus.musicGain = 1f
             DuckBus.active = false
@@ -330,4 +363,28 @@ class MicLiveEngine {
 /** تنظيف فيدر داخل الحدود — بوابة واحدة لكل القنوات. */
 internal object MixerLogicFader {
     fun clean(v: Float): Float = v.coerceIn(0f, 1.5f)
+}
+
+/** مخزن أحادي لمرجع مانع صدى المراقبة داخل المحرك. */
+private var monitorMonoBuf = FloatArray(4096)
+
+/**
+ * دفع ما يُكتب في سماعة المراقبة كمرجع لمانع صدى المراقبة (أحادي متوسط القنوات)
+ * — البديل البرمحي لمصدر VOICE_COMMUNICATION في نسخة الهاتف: مانع النظام هناك
+ * يرى خرج السماعة كاملًا، وهنا نراه بيدنا ونقدمه للمانع الثاني.
+ */
+private fun pushMonitorFarEnd(shorts: ShortArray, count: Int, channels: Int) {
+    val frames = count / channels
+    if (frames <= 0) return
+    if (monitorMonoBuf.size < frames) monitorMonoBuf = FloatArray(frames)
+    if (channels == 1) {
+        for (f in 0 until frames) monitorMonoBuf[f] = shorts[f] / 32768.0f
+    } else {
+        var j = 0
+        for (f in 0 until frames) {
+            monitorMonoBuf[f] = (shorts[j] + shorts[j + 1]) / 65536.0f
+            j += 2
+        }
+    }
+    MonitorFarEnd.tap.push(monitorMonoBuf, frames)
 }

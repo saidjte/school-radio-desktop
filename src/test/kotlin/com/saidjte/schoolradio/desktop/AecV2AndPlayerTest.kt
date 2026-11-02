@@ -219,6 +219,110 @@ class AecV2AndPlayerTest {
         assertTrue(worstGain < 4.0, "حارس الانحراف يمنع تضخم الخرج: أسوأ كسب $worstGain")
     }
 
+    // ================= الجيل الثالث: تكافؤ الهاتف =================
+
+    @Test
+    fun `monitor echo canceller cancels returned monitor voice like the phone`() {
+        // مشهد رسالة المستخدم: صوت المذيع يعود من سماعة المراقبة نسخة مؤخّرة 90ms
+        // بكسب 0.35 — المانع الثاني بلا كشف حديث مزدوج (مرجعه نسخة من الصوت نفسه
+        // فجيلجل يخطئ فيه بالضرورة) يقفل المسار ويكبح العائد كالمانع النظامي في الهاتف
+        val fs = 48000
+        val blockN = 2048
+        val nBlocks = 70 // ~3 ثوان — تكفي لبحث التأخير الأول (كتل 46) وإعادة التقارب
+        val dMon = (0.090 * fs).toInt()
+        val nSamples = dMon + blockN * nBlocks
+        val voiceSig = DoubleArray(nSamples) {
+            val t = it.toDouble() / fs
+            val freq = 250.0 + 1900.0 * ((t % 1.6) / 1.6)
+            0.5 * sin(2.0 * PI * freq * t)
+        }
+        val tap = FarEndTap(2.5)
+        tap.configure(fs)
+        val aecM = EchoCanceller()
+        aecM.doubleTalkGuard = false
+        aecM.configure(fs, 1)
+        val mic = ShortArray(blockN)
+        var pushed = 0
+        var inEnergy = 0.0
+        var outEnergy = 0.0
+        for (b in 0 until nBlocks) {
+            val target = (b + 1) * blockN
+            while (pushed < target) {
+                val k = minOf(512, target - pushed)
+                tap.push(FloatArray(k) { voiceSig[pushed + it].toFloat() }, k)
+                pushed += k
+            }
+            for (f in 0 until blockN) {
+                val idx = b * blockN + f - dMon
+                val v = if (idx >= 0) 0.35 * voiceSig[idx] else 0.0
+                mic[f] = (v * 32767.0).toInt().coerceIn(-32768, 32767).toShort()
+            }
+            val pre = mic.copyOf()
+            aecM.process(mic, mic.size, tap)
+            if (b >= nBlocks - 10) {
+                for (f in 0 until blockN) {
+                    inEnergy += (pre[f].toDouble() / 32768.0).let { it * it }
+                    outEnergy += (mic[f].toDouble() / 32768.0).let { it * it }
+                }
+            }
+        }
+        val canc = 10.0 * log10(inEnergy / max(outEnergy, 1e-12))
+        assertTrue(canc > 10.0, "مانع المراقبة يكبح عودة صوت المذيع: $canc dB")
+        assertTrue(aecM.locked, "مسار المراقبة مقفل")
+        assertTrue(abs(aecM.delayMs - 90.0f) < 45.0f, "تأخير المراقبة ${aecM.delayMs} يقارب 90")
+    }
+
+    @Test
+    fun `near speaker echo with high gain locks instead of sticking the detector`() {
+        // درس رسالة المستخدم: الميكروفون قرب سماعة مرتفعة = كسب صدى 0.7 — جيلجل
+        // الخام كان يُطلق دائمًا (0.7 > عتبته 0.5) فيُبطئ التعلّم ويوقف كابح البقايا
+        // بالضبط حيث يجب أن يكون أقوى. كشف بمعرفة المسار يعرف أن البقايا صدى وحده
+        // فيواصل التعلّم ثم يكبح بعمق كالمانع النظامي في الهاتف
+        val fs = 48000
+        val blockN = 2048
+        val nBlocks = 72 // ~3.1 ثانية
+        val d0 = (0.110 * fs).toInt()
+        val nSamples = d0 + blockN * nBlocks
+        val ref = DoubleArray(nSamples) {
+            val t = it.toDouble() / fs
+            val freq = 200.0 + 2600.0 * ((t % 2.0) / 2.0)
+            0.6 * sin(2.0 * PI * freq * t)
+        }
+        val tap = FarEndTap(2.5)
+        tap.configure(fs)
+        val aec = EchoCanceller()
+        aec.configure(fs, 1)
+        val mic = ShortArray(blockN)
+        var pushed = 0
+        var inEnergy = 0.0
+        var outEnergy = 0.0
+        for (b in 0 until nBlocks) {
+            val target = (b + 1) * blockN
+            while (pushed < target) {
+                val k = minOf(1152, target - pushed)
+                tap.push(FloatArray(k) { ref[pushed + it].toFloat() }, k)
+                pushed += k
+            }
+            for (f in 0 until blockN) {
+                val idx = b * blockN + f - d0
+                val v = if (idx >= 0) 0.7 * ref[idx] else 0.0
+                mic[f] = (v * 32767.0).toInt().coerceIn(-32768, 32767).toShort()
+            }
+            val pre = mic.copyOf()
+            aec.process(mic, mic.size, tap)
+            if (b >= nBlocks - 20) { // آخر ثانية — بعد القفل والكبح العميق
+                for (f in 0 until blockN) {
+                    inEnergy += (pre[f].toDouble() / 32768.0).let { it * it }
+                    outEnergy += (mic[f].toDouble() / 32768.0).let { it * it }
+                }
+            }
+        }
+        val canc = 10.0 * log10(inEnergy / max(outEnergy, 1e-12))
+        assertTrue(aec.locked, "المسار مقفل رغم كسب الصدى العالي (سماعة قريبة)")
+        assertTrue(canc > 12.0, "كبح الصدى القريب القوي (خطي + كابح عميق): $canc dB")
+        assertTrue(aec.erleDb > 8f, "مؤشر ERLE يعكس الكبح: ${aec.erleDb}")
+    }
+
     // ================= التكرار الثلاثي والعشوائية =================
 
     @Test
