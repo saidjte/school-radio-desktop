@@ -59,7 +59,16 @@ fun LivePage(vm: AppViewModel) {
                 .padding(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            ReadingPane(vm, Modifier.weight(1f))
+            Column(
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ReadingPane(vm, Modifier.weight(1f))
+                // مشغل الموسيقى المستقل أسفل لوحة القراءة (نمط صفحة الاستوديو) —
+                // كل أزرار النقل هنا منذ v0.17.0، ومنطقة الموسيقى في العمود
+                // الجانبي قائمة اختيار نقية بلا أزرار
+                BroadcastPlayerCard(vm = vm, modifier = Modifier.fillMaxWidth())
+            }
             BroadcastColumn(vm)
         }
     }
@@ -281,7 +290,7 @@ private fun ReadingPane(vm: AppViewModel, modifier: Modifier = Modifier) {
     }
 }
 
-// ================= عمود البث: الميكروفون + مشغل الموسيقى =================
+// ================= عمود البث: الميكروفون + منطقة الموسيقى (اختيار فقط) =================
 
 @Composable
 private fun BroadcastColumn(vm: AppViewModel) {
@@ -290,7 +299,9 @@ private fun BroadcastColumn(vm: AppViewModel) {
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         BroadcastMicCard(vm)
-        // مشغل الهواء: قوائم مسماة + مكتبة مصنفة — اختيار وتشغيل دون مغادرة صفحة البث
+        // منطقة الموسيقى: قوائم مسماة + مكتبة مصنفة — قائمة اختيار نقية بلا
+        // أزرار نقل (طلب المستخدم v0.17.0) — النقر على مقطع يبثه فورًا دون
+        // مغادرة صفحة البث، والنقل كله في المشغل المستقل أسفل لوحة القراءة
         BroadcastMusicCard(vm, paneHeight = 160.dp, modifier = Modifier.weight(1f))
     }
 }

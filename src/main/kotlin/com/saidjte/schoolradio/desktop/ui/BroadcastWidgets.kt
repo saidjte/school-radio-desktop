@@ -398,7 +398,7 @@ fun BroadcastMicCard(vm: AppViewModel) {
     }
 }
 
-// ================= بطاقة الموسيقى المشتركة (مشغل الهواء) =================
+// ================= بطاقة الموسيقى المشتركة (منطقة الاختيار) =================
 
 /** مصدر اختيار المقطع في بطاقة الموسيقى: قائمة التشغيل الجارية أو المكتبة المصنفة. */
 private enum class MusicSource(val label: String) {
@@ -407,9 +407,11 @@ private enum class MusicSource(val label: String) {
 }
 
 /**
- * حيز الموسيقى في عمود البث (كما كان): القوائم المسمّاة والمكتبة المصنفة
- * لاختيار المقاطع وبثها — بينما المشغل المستقل بأزرار الأيقونات انفصل إلى
- * BroadcastPlayerCard أسفل شاشة السكريبت (توضيح المستخدم في v0.15.0).
+ * حيز الموسيقى في عمود البث — منطقة اختيار فقط: القائمة والمكتبة كلتاهما قائمة
+ * نقية بلا أي أزرار نقل، على غرار بعضهما (طلب المستخدم v0.17.0: «أزل أزرار
+ * التحكم بمشغل الموسيقى من منطقة الموسيقى لتكون مخصصة القائمة على غرار
+ * المكتبة») — النقر على مقطع يبثه فورًا، وكل أزرار النقل في المشغل المستقل
+ * BroadcastPlayerCard أسفل شاشة السكريبت.
  */
 @Composable
 fun BroadcastMusicCard(
@@ -422,15 +424,9 @@ fun BroadcastMusicCard(
     val currentIndex by vm.currentIndex.collectAsState()
     val isPlaying by player.isPlaying.collectAsState()
     val isPaused by player.isPaused.collectAsState()
-    val hasTrack by player.hasTrack.collectAsState()
-    val title by player.title.collectAsState()
-    val positionMs by player.positionMs.collectAsState()
-    val durationMs by player.durationMs.collectAsState()
     val playlists by vm.playlists.collectAsState()
     val activeId by vm.activePlaylistId.collectAsState()
     val activeName = playlists.firstOrNull { it.id == activeId }?.name ?: ""
-    val repeatMode by vm.repeatMode.collectAsState()
-    val shuffle by vm.shuffle.collectAsState()
     val playerError by player.error.collectAsState()
 
     var source by remember { mutableStateOf(MusicSource.QUEUE) }
@@ -438,7 +434,6 @@ fun BroadcastMusicCard(
     val categories by vm.libraryCategories.collectAsState()
     val libraryEntries by vm.libraryEntries.collectAsState()
     val onAir = isPlaying && !isPaused
-    val queueInfo = if (playlist.isEmpty()) "" else " · الجاري ${currentIndex + 1} من ${playlist.size}"
 
     Column(
         modifier = modifier
@@ -479,20 +474,10 @@ fun BroadcastMusicCard(
                     playlists = playlists,
                     activeId = activeId,
                     activeName = activeName,
-                    playlistCount = playlist.size,
                     categories = categories,
                     selectedCategory = selectedCategory,
                     onSelectCategory = { selectedCategory = it }
                 )
-                MusicNowPlayingBlock(
-                    title = title,
-                    positionMs = positionMs,
-                    durationMs = durationMs,
-                    hasTrack = hasTrack,
-                    queueInfo = queueInfo,
-                    big = false
-                )
-                MusicTransportRows(vm, playlist, isPlaying, isPaused, hasTrack, repeatMode, shuffle)
                 MusicErrorLine(playerError) { player.clearError() }
                 MusicTrackPane(
                     vm = vm,
@@ -511,7 +496,6 @@ fun BroadcastMusicCard(
                     playlists = playlists,
                     activeId = activeId,
                     activeName = activeName,
-                    playlistCount = playlist.size,
                     categories = categories,
                     selectedCategory = selectedCategory,
                     onSelectCategory = { selectedCategory = it }
@@ -820,7 +804,7 @@ private fun PlayerIconButton(
     }
 }
 
-/** صفوف اختيار المصدر: القائمة المسماة مع زر تشغيلها، أو تصنيف المكتبة. */
+/** صفوف اختيار المصدر: القائمة المسماة أو تصنيف المكتبة — اختيار فقط بلا أزرار نقل. */
 @Composable
 private fun MusicSourceControls(
     vm: AppViewModel,
@@ -828,7 +812,6 @@ private fun MusicSourceControls(
     playlists: List<NamedPlaylist>,
     activeId: Long,
     activeName: String,
-    playlistCount: Int,
     categories: List<String>,
     selectedCategory: String?,
     onSelectCategory: (String?) -> Unit
@@ -861,12 +844,12 @@ private fun MusicSourceControls(
                         }
                     }
                 }
-                SecondaryAction(
-                    text = "تشغيل القائمة",
-                    onClick = { vm.playPlaylist(activeId) },
-                    enabled = playlistCount > 0
-                )
                 Spacer(Modifier.weight(1f))
+                Text(
+                    "انقر مقطعًا لبثه فورًا",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
         MusicSource.LIBRARY -> {
@@ -903,104 +886,6 @@ private fun MusicSourceControls(
                 )
             }
         }
-    }
-}
-
-/** كتلة «قيد التشغيل الآن»: العنوان + الزمن + شريط التقدم. */
-@Composable
-private fun MusicNowPlayingBlock(
-    title: String?,
-    positionMs: Long,
-    durationMs: Long,
-    hasTrack: Boolean,
-    queueInfo: String,
-    big: Boolean
-) {
-    Text(
-        title ?: "لا شيء قيد التشغيل",
-        style = if (big) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
-        fontWeight = FontWeight.SemiBold,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis
-    )
-    Text(
-        "${formatMs(positionMs)} / ${formatMs(durationMs)}" + queueInfo,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
-    if (hasTrack && durationMs > 0) {
-        val frac = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(4.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(LocalStudioColors.current.meterTrack)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(frac)
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(MaterialTheme.colorScheme.primary)
-            )
-        }
-    }
-}
-
-/** شبكة النقل: السابق/تشغيل/التالي ثم إيقاف + عشوائي + تكرار. */
-@Composable
-private fun MusicTransportRows(
-    vm: AppViewModel,
-    playlist: List<Track>,
-    isPlaying: Boolean,
-    isPaused: Boolean,
-    hasTrack: Boolean,
-    repeatMode: PlaylistRepeatMode,
-    shuffle: Boolean
-) {
-    val player = vm.player
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-        SecondaryAction(
-            text = "السابق",
-            onClick = { vm.previous() },
-            enabled = playlist.isNotEmpty(),
-            modifier = Modifier.weight(1f)
-        )
-        if (isPlaying && !isPaused) {
-            PrimaryAction(text = "إيقاف مؤقت", onClick = { player.pause() }, modifier = Modifier.weight(1f))
-        } else {
-            PrimaryAction(
-                text = "تشغيل",
-                onClick = { vm.togglePlay() },
-                enabled = playlist.isNotEmpty(),
-                modifier = Modifier.weight(1f)
-            )
-        }
-        SecondaryAction(
-            text = "التالي",
-            onClick = { vm.next() },
-            enabled = playlist.isNotEmpty(),
-            modifier = Modifier.weight(1f)
-        )
-    }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        SecondaryAction(
-            text = "إيقاف",
-            onClick = { player.stop() },
-            enabled = hasTrack,
-            modifier = Modifier.weight(1f)
-        )
-        SecondaryAction(
-            text = if (shuffle) "عشوائي ✓" else "عشوائي",
-            onClick = { vm.toggleShuffle() },
-            modifier = Modifier.weight(1f)
-        )
-        SecondaryAction(
-            text = "تكرار: ${repeatMode.label}",
-            onClick = { vm.cycleRepeat() },
-            modifier = Modifier.weight(1f)
-        )
     }
 }
 
@@ -1071,12 +956,8 @@ private fun MusicTrackPane(
                     modifier = modifier
                 )
             } else {
+                // قائمة نقية كما لوحة المكتبة تمامًا — بلا رأس ولا أزرار
                 Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        "مقاطع القائمة — انقر مقطعًا لبثه",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                     LazyColumn(
                         modifier = Modifier.fillMaxWidth().weight(1f),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
