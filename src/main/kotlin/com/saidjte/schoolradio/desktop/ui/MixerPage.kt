@@ -53,6 +53,7 @@ fun MixerPage(vm: AppViewModel) {
     val duckActive by vm.mic.duckActive.collectAsState()
     val aecLocked by vm.mic.aecLocked.collectAsState()
     val aecDelayMs by vm.mic.aecDelayMs.collectAsState()
+    val aecErleDb by vm.mic.aecErleDb.collectAsState()
 
     Column(
         modifier = Modifier
@@ -182,7 +183,7 @@ fun MixerPage(vm: AppViewModel) {
         DuckCard(vm, mixer.duck, duckActive)
 
         // ================= إلغاء صدى الميكروفون (AEC) =================
-        AecCard(vm, mixer.aec, aecLocked, aecDelayMs)
+        AecCard(vm, mixer.aec, aecLocked, aecDelayMs, aecErleDb)
 
         Spacer(Modifier.height(4.dp))
     }
@@ -572,7 +573,8 @@ private fun AecCard(
     vm: AppViewModel,
     a: com.saidjte.schoolradio.desktop.data.AecState,
     locked: Boolean,
-    delayMs: Float
+    delayMs: Float,
+    erleDb: Float
 ) {
     Column(
         modifier = Modifier
@@ -596,7 +598,7 @@ private fun AecCard(
                         size = 8.dp
                     )
                     Text(
-                        if (locked) "مسار مقفل · تأخير %.0f ملّي".format(delayMs)
+                        if (locked) "مسار مقفل · تأخير %.0f ملّي · كبح %.0f دب".format(delayMs, erleDb)
                         else "يبحث عن مسار الصدى…",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -606,8 +608,9 @@ private fun AecCard(
             }
         }
         Text(
-            "محلّ تكيّفي (NLMS) يتعلم مسار الصوت من السماعة إلى الميكروفون ويطرح صدى الموسيقى من صوتك تلقائيًا، " +
-                    "فيبقى هواء البث والتسجيلات صوت مذيع صافيًا. لا أثر له حين لا موسيقى تعمل، " +
+            "محلّ تكيّفي مجزّأ في المجال الترددي (PBFDAF) بطول فعّال ~170ms يتعلم مسار الصوت كاملًا من السماعة " +
+                    "إلى الميكروفون — الصدى المباشر وذيل الارتداد معًا — ويطرحه من صوتك، مع كشف الحديث المزدوج " +
+                    "يكفّ التعلّم وأنت تتكلم وكابح بقايا يلطف ما تبقّى. لا أثر له حين لا موسيقى تعمل، " +
                     "ومن الأفضل أن يكون سماعك المراقب بالسماعات لا بالسماعات المكشوفة",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant

@@ -24,8 +24,38 @@ data class PlaylistDoc(
     // حقول v2: القوائم المسماة + الهوية القارية + عدّاد الهويات
     val playlists: List<NamedPlaylist> = emptyList(),
     val activeId: Long? = null,
-    val nextId: Long? = null
+    val nextId: Long? = null,
+    // حقول v3: نظام التكرار الثلاثي + العشوائية (null = ملفات النسخ السابقة)
+    val repeatMode: Int? = null,
+    val shuffle: Boolean? = null
 )
+
+/** نظام التكرار الثلاثي كما في المشغلات الاحترافية. */
+enum class RepeatMode(val label: String) {
+    OFF("لا"),
+    ALL("الكل"),
+    ONE("المقطع");
+
+    fun next(): RepeatMode = when (this) {
+        OFF -> ALL
+        ALL -> ONE
+        ONE -> OFF
+    }
+
+    val code: Int get() = when (this) {
+        OFF -> 0
+        ALL -> 1
+        ONE -> 2
+    }
+
+    companion object {
+        fun fromCode(c: Int?): RepeatMode = when (c) {
+            1 -> ALL
+            2 -> ONE
+            else -> OFF
+        }
+    }
+}
 
 /** منطق خالص حتمي — ترحيل النسخة القديمة وضمان تماسك الوثيقة (قابل للاختبار بلا ملفات). */
 object PlaylistMath {
@@ -68,7 +98,10 @@ object PlaylistMath {
             repeatAll = d.repeatAll ?: false,
             playlists = playlists,
             activeId = active,
-            nextId = next
+            nextId = next,
+            // حقول v3 تُحمل كما هي — بلاها يفقد المستخدم نظام التكرار والعشوائية كل إعادة فتح
+            repeatMode = d.repeatMode,
+            shuffle = d.shuffle
         )
     }
 
@@ -84,6 +117,52 @@ object PlaylistMath {
         val clean = name.trim()
         if (clean.isEmpty()) return false
         return d.playlists.none { it.id != exceptId && it.name == clean }
+    }
+
+    /** نظام التكرار: الرمز المحفوظ يُطهّر، والملفات القديمة ترث حقل «تكرار الكل» القديم. */
+    fun resolveRepeat(rawMode: Int?, legacyRepeatAll: Boolean?): RepeatMode {
+        if (rawMode != null) return RepeatMode.fromCode(rawMode)
+        return if (legacyRepeatAll == true) RepeatMode.ALL else RepeatMode.OFF
+    }
+
+    /**
+     * مؤشر التالي — منطق خالص حتمي قابل للاختبار:
+     * عشوائي يخير مقطعًا غير الجاري، «المقطع» يعيد الجاري نفسه (إعادة)،
+     * «الكل» يلفّ، «لا» يتوقف عند النهاية (auto) أو يعود لأول مقطع (يدوي).
+     */
+    fun nextIndex(
+        size: Int,
+        current: Int,
+        mode: RepeatMode,
+        shuffle: Boolean,
+        auto: Boolean,
+        rng: kotlin.random.Random
+    ): Int {
+        if (size <= 0) return -1
+        if (shuffle) {
+            // مقطع وحيد مع عشوائية = إعادة نفس المقطع لا توقف
+            if (size == 1) return 0
+            var n = rng.nextInt(size)
+            if (n == current) n = (n + 1) % size
+            return n
+        }
+        return when (mode) {
+            RepeatMode.ONE -> current.coerceIn(0, size - 1)
+            RepeatMode.ALL -> if (current + 1 < size) current + 1 else 0
+            RepeatMode.OFF -> if (current + 1 < size) current + 1 else if (auto) -1 else 0
+        }
+    }
+
+    /** مؤشر السابق: عشوائي يخير مقطعًا غير الجاري، وإلا لفّ عكسي. */
+    fun prevIndex(size: Int, current: Int, shuffle: Boolean, rng: kotlin.random.Random): Int {
+        if (size <= 0) return -1
+        if (shuffle) {
+            if (size == 1) return 0
+            var p = rng.nextInt(size)
+            if (p == current) p = (p + 1) % size
+            return p
+        }
+        return if (current - 1 >= 0) current - 1 else size - 1
     }
 }
 
@@ -108,6 +187,8 @@ class PlaylistStore(private val file: File) {
     fun paths(): List<String> = active().paths
     fun currentIndex(): Int = active().currentIndex ?: -1
     fun repeatAll(): Boolean = doc.repeatAll ?: false
+    fun repeatMode(): RepeatMode = PlaylistMath.resolveRepeat(doc.repeatMode, doc.repeatAll)
+    fun shuffle(): Boolean = doc.shuffle ?: false
 
     // ================= إدارة القوائم المسماة =================
 
@@ -184,7 +265,19 @@ class PlaylistStore(private val file: File) {
     }
 
     fun setRepeat(on: Boolean) {
-        doc = doc.copy(repeatAll = on)
+        doc = doc.copy(repeatAll = on, repeatMode = if (on) RepeatMode.ALL.code else RepeatMode.OFF.code)
+        persist()
+    }
+
+    /** نظام التكرار الثلاثي: لا / الكل / المقطع — يُكتب مع حقل التوافق القديم معًا. */
+    fun setRepeatMode(mode: RepeatMode) {
+        doc = doc.copy(repeatMode = mode.code, repeatAll = mode == RepeatMode.ALL)
+        persist()
+    }
+
+    /** العشوائية: التالي السابق يُخيَّر من غير الجاري. */
+    fun setShuffle(on: Boolean) {
+        doc = doc.copy(shuffle = on)
         persist()
     }
 

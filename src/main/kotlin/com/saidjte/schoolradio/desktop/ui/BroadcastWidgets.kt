@@ -418,7 +418,9 @@ fun BroadcastMusicCard(
     val playlists by vm.playlists.collectAsState()
     val activeId by vm.activePlaylistId.collectAsState()
     val activeName = playlists.firstOrNull { it.id == activeId }?.name ?: ""
-    val repeatAll by vm.repeatAll.collectAsState()
+    val repeatMode by vm.repeatMode.collectAsState()
+    val shuffle by vm.shuffle.collectAsState()
+    val playerError by player.error.collectAsState()
 
     var source by remember { mutableStateOf(MusicSource.QUEUE) }
     var playlistsMenu by remember { mutableStateOf(false) }
@@ -547,9 +549,33 @@ fun BroadcastMusicCard(
                         enabled = hasTrack,
                         modifier = Modifier.weight(1f)
                     )
-                    Text("تكرار", style = MaterialTheme.typography.bodySmall)
-                    Switch(checked = repeatAll, onCheckedChange = { vm.toggleRepeat() })
-                    Spacer(Modifier.weight(1f))
+                    SecondaryAction(
+                        text = if (shuffle) "عشوائي ✓" else "عشوائي",
+                        onClick = { vm.toggleShuffle() },
+                        modifier = Modifier.weight(1f)
+                    )
+                    SecondaryAction(
+                        text = "تكرار: ${repeatMode.label}",
+                        onClick = { vm.cycleRepeat() },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                // سطر الخطأ — لا فشل صامت أبدًا (يبثّ من المكتبة أو القائمة بوضوح)
+                playerError?.let { msg ->
+                    Text(
+                        msg,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f))
+                            .clickable { player.clearError() }
+                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                    )
                 }
 
                 // مقدمة من القائمة: الصفوف قابلة للنقر = تشغيل فوري

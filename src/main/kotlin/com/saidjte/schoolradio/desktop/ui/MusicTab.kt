@@ -67,7 +67,10 @@ fun MusicTab(vm: AppViewModel) {
     val positionMs by player.positionMs.collectAsState()
     val durationMs by player.durationMs.collectAsState()
     val volume by player.volume.collectAsState()
-    val repeatAll by vm.repeatAll.collectAsState()
+    val repeatMode by vm.repeatMode.collectAsState()
+    val shuffle by vm.shuffle.collectAsState()
+    val playerError by player.error.collectAsState()
+    val playingFromLibrary by vm.playingFromLibrary.collectAsState()
     val playlists by vm.playlists.collectAsState()
     val activeId by vm.activePlaylistId.collectAsState()
     val activeName = playlists.firstOrNull { it.id == activeId }?.name ?: ""
@@ -160,6 +163,20 @@ fun MusicTab(vm: AppViewModel) {
                 overflow = TextOverflow.Ellipsis
             )
 
+            // شارات الحالة: بث من المكتبة + قيد التشغيل
+            if (playingFromLibrary) {
+                Text(
+                    "بث مباشر من المكتبة — القائمة لم تتغيّر",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.secondaryContainer)
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
+
             // شارة التصنيف + موضع المقطع في القائمة
             val currentTrack = playlist.getOrNull(currentIndex)
             Row(
@@ -191,6 +208,54 @@ fun MusicTab(vm: AppViewModel) {
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // سطر «التالي» كما في المشغلات الاحترافية
+            if (playlist.isNotEmpty()) {
+                val nextTitle = if (shuffle) "ترتيب عشوائي" else {
+                    playlist.getOrNull(currentIndex + 1)?.title
+                        ?: (if (repeatMode == com.saidjte.schoolradio.desktop.data.RepeatMode.ALL)
+                            playlist.first().title else null)
+                }
+                Text(
+                    "التالي: ${nextTitle ?: "نهاية القائمة"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // شريط الخطأ — لا فشل صامت أبدًا
+            playerError?.let { msg ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        msg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        "إخفاء",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { player.clearError() }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
             }
@@ -258,7 +323,7 @@ fun MusicTab(vm: AppViewModel) {
                 )
             }
             Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -268,9 +333,16 @@ fun MusicTab(vm: AppViewModel) {
                     enabled = hasTrack,
                     modifier = Modifier.weight(1f)
                 )
-                Text("تكرار القائمة", style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = repeatAll, onCheckedChange = { vm.toggleRepeat() })
-                Spacer(Modifier.weight(1f))
+                SecondaryAction(
+                    text = if (shuffle) "عشوائي ✓" else "عشوائي",
+                    onClick = { vm.toggleShuffle() },
+                    modifier = Modifier.weight(1f)
+                )
+                SecondaryAction(
+                    text = "تكرار: ${repeatMode.label}",
+                    onClick = { vm.cycleRepeat() },
+                    modifier = Modifier.weight(1f)
+                )
             }
 
             Text(
@@ -312,6 +384,18 @@ private fun PlaylistPane(vm: AppViewModel) {
     var showRenamePlaylist by remember { mutableStateOf(false) }
     var showDeletePlaylist by remember { mutableStateOf(false) }
     var nameText by remember { mutableStateOf("") }
+    var queueQuery by remember { mutableStateOf("") }
+
+    // قائمة حية مُصفّاة بالبحث — البحث لا يغيّر القائمة نفسها
+    val visible = remember(playlist, queueQuery) {
+        val q = queueQuery.trim()
+        if (q.isEmpty()) playlist
+        else playlist.filter {
+            it.title.contains(q, ignoreCase = true) ||
+                    (it.category ?: "").contains(q, ignoreCase = true)
+        }
+    }
+    val totalMs = playlist.sumOf { it.durationMs }
 
     // شريط إدارة القوائم المسماة
     Row(
@@ -356,9 +440,21 @@ private fun PlaylistPane(vm: AppViewModel) {
         SecondaryAction(text = "حذف", onClick = { showDeletePlaylist = true })
         Spacer(Modifier.weight(1f))
         Text(
-            shortenName(activeName, 16) + " · ${playlist.size} مقطعًا",
+            shortenName(activeName, 16) + " · ${playlist.size} مقطعًا" +
+                    if (totalMs > 0) " · ${formatMs(totalMs)}" else "",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    // بحث داخل القائمة الحية
+    if (playlist.size > 3) {
+        OutlinedTextField(
+            value = queueQuery,
+            onValueChange = { queueQuery = it },
+            placeholder = { Text("بحث في مقاطع القائمة (عنوان أو تصنيف)…") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
         )
     }
 
@@ -392,14 +488,15 @@ private fun PlaylistPane(vm: AppViewModel) {
         EmptyState(
             icon = AppIconKind.MUSIC,
             title = "القائمة «${activeName}» فارغة",
-            hint = "أضف ملفات WAV أو MP3 من الأعلى، أو انقل مقاطعًا من المكتبة — القائمة تُحفظ باسمها وتبقى بعد إعادة التشغيل."
+            hint = "أضف ملفات MP3 أو WAV أو OGG أو FLAC من الأعلى، أو انقل مقاطعًا من المكتبة — القائمة تُحفظ باسمها وتبقى بعد إعادة التشغيل."
         )
     } else {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            itemsIndexed(playlist) { index, track ->
+            itemsIndexed(visible, key = { _, t -> t.file.path }) { rowPosition, track ->
+                val index = playlist.indexOf(track)
                 val isCurrent = index == currentIndex
                 Row(
                     modifier = Modifier
@@ -449,6 +546,14 @@ private fun PlaylistPane(vm: AppViewModel) {
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
+                    if (visible.size != playlist.size) {
+                        // أثناء البحث: العرض فقط — الترتيب والإزالة من العرض الكامل
+                        Text(
+                            "#${index + 1}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
                     // إعادة الترتيب والإزالة — القائمة الحية قابلة للتشكيل أثناء العمل
                     SecondaryAction(
                         text = "أعلى",
@@ -460,6 +565,7 @@ private fun PlaylistPane(vm: AppViewModel) {
                         enabled = index < playlist.size - 1,
                         onClick = { vm.moveTrack(index, +1) }
                     )
+                    }
                     SecondaryAction(
                         text = "إزالة",
                         onClick = { vm.removeTrackAt(index) }
@@ -559,8 +665,9 @@ private fun LibraryPane(vm: AppViewModel) {
             onClick = {
                 val dir = FilePickers.pickAudioFolder()
                 if (dir != null) {
-                    val files = dir.listFiles { f -> f.isFile && f.extension.lowercase() in setOf("wav", "mp3") }
-                        ?.sortedBy { it.name }
+                    val files = dir.listFiles { f ->
+                        f.isFile && f.extension.lowercase() in com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS
+                    }?.sortedBy { it.name }
                     if (!files.isNullOrEmpty()) {
                         importFiles = files
                         showImportDialog = true
@@ -673,6 +780,10 @@ private fun LibraryPane(vm: AppViewModel) {
                         SecondaryAction(
                             text = "تشغيل",
                             onClick = { vm.playNow(entry) }
+                        )
+                        SecondaryAction(
+                            text = "التالي ▸",
+                            onClick = { vm.playNextFromLibrary(entry) }
                         )
                         SecondaryAction(
                             text = "إلى القائمة",

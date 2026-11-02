@@ -4,9 +4,11 @@ import com.saidjte.schoolradio.desktop.audio.DuckBus
 import com.saidjte.schoolradio.desktop.audio.MicLiveEngine
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
+import com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS
 import com.saidjte.schoolradio.desktop.audio.RecordingItem
 import com.saidjte.schoolradio.desktop.audio.RecordingMeta
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
+import com.saidjte.schoolradio.desktop.audio.StreamProbe
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
 import com.saidjte.schoolradio.desktop.data.AecState
@@ -21,7 +23,9 @@ import com.saidjte.schoolradio.desktop.data.MusicEqState
 import com.saidjte.schoolradio.desktop.data.DuckState
 import com.saidjte.schoolradio.desktop.data.MusicLibraryStore
 import com.saidjte.schoolradio.desktop.data.NamedPlaylist
+import com.saidjte.schoolradio.desktop.data.PlaylistMath
 import com.saidjte.schoolradio.desktop.data.PlaylistStore
+import com.saidjte.schoolradio.desktop.data.RepeatMode
 import com.saidjte.schoolradio.desktop.data.Role
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
@@ -531,8 +535,18 @@ class AppViewModel {
     // تُحفظ في playlist.json: كل قائمة مساراتها + الجاري، وتكرار القائمة الجارية.
 
     private var playlistStore = PlaylistStore(File(dataDir(), "playlist.json"))
-    private val _repeatAll = MutableStateFlow(playlistStore.repeatAll())
-    val repeatAll: StateFlow<Boolean> = _repeatAll.asStateFlow()
+    private val _repeatMode = MutableStateFlow(playlistStore.repeatMode())
+    val repeatMode: StateFlow<RepeatMode> = _repeatMode.asStateFlow()
+
+    private val _shuffle = MutableStateFlow(playlistStore.shuffle())
+    val shuffle: StateFlow<Boolean> = _shuffle.asStateFlow()
+
+    /** هل المقطع الجاري بُثّ من المكتبة مباشرة (لا من القائمة)؟ — شارة في المشغل. */
+    private val _playingFromLibrary = MutableStateFlow(false)
+    val playingFromLibrary: StateFlow<Boolean> = _playingFromLibrary.asStateFlow()
+
+    /** عشوائية ببذرة زمنية — المنطق نفسه خالص ويُختبر ببذرة مثبّتة. */
+    private val shuffleRandom = kotlin.random.Random(System.nanoTime())
 
     /** كل القوائم المسماة + هوية القائمة الجارية — تُعرض للاختيار في الاستوديو والمشغل. */
     private val _playlists = MutableStateFlow(playlistStore.playlists())
@@ -545,10 +559,16 @@ class AppViewModel {
     val activePlaylistName: String
         get() = playlistStore.playlists().firstOrNull { it.id == _activePlaylistId.value }?.name ?: ""
 
-    /** تكرار القائمة الجارية: عند انتهاء الأخير يعود للأول بدل التوقف. */
-    fun toggleRepeat() {
-        _repeatAll.value = !_repeatAll.value
-        playlistStore.setRepeat(_repeatAll.value)
+    /** نظام التكرار الثلاثي: لا → الكل → المقطع → لا. */
+    fun cycleRepeat() {
+        _repeatMode.value = _repeatMode.value.next()
+        playlistStore.setRepeatMode(_repeatMode.value)
+    }
+
+    /** تبديل العشوائية: التالي/السابق يُخيَّران من غير الجاري. */
+    fun toggleShuffle() {
+        _shuffle.value = !_shuffle.value
+        playlistStore.setShuffle(_shuffle.value)
     }
 
     /** إنشاء قائمة جديدة وتفعيلها (تفريغ المشغل عن القائمة السابقة). */
@@ -602,7 +622,8 @@ class AppViewModel {
     private fun refreshPlaylistState(loadTracks: Boolean = false) {
         _playlists.value = playlistStore.playlists()
         _activePlaylistId.value = playlistStore.activeId()
-        _repeatAll.value = playlistStore.repeatAll()
+        _repeatMode.value = playlistStore.repeatMode()
+        _shuffle.value = playlistStore.shuffle()
         if (loadTracks) loadActivePlaylistTracks()
     }
 
@@ -650,6 +671,7 @@ class AppViewModel {
         val list = _playlist.value
         if (index < 0 || index >= list.size) return
         _currentIndex.value = index
+        _playingFromLibrary.value = false
         playlistStore.setIndex(_activePlaylistId.value, index)
         consecutiveFailures = 0
         player.play(list[index].file)
@@ -713,28 +735,54 @@ class AppViewModel {
             if (auto) player.stop()
             return
         }
-        val n = _currentIndex.value + 1
-        when {
-            n < list.size -> playAt(n)
-            _repeatAll.value -> playAt(0)
-            auto -> player.stop()
-            else -> playAt(0)
-        }
+        val n = PlaylistMath.nextIndex(
+            list.size, _currentIndex.value,
+            _repeatMode.value, _shuffle.value, auto, shuffleRandom
+        )
+        if (n < 0) player.stop() else playAt(n)
     }
 
     fun previous() {
         val list = _playlist.value
         if (list.isEmpty()) return
-        val p = if (_currentIndex.value <= 0) list.size - 1 else _currentIndex.value - 1
-        playAt(p)
+        val p = PlaylistMath.prevIndex(list.size, _currentIndex.value, _shuffle.value, shuffleRandom)
+        if (p >= 0) playAt(p)
     }
 
-    /** تشغيل فوري لمقطع من المكتبة على الهواء دون تعديل القائمة. */
+    /** تشغيل فوري لمقطع من المكتبة على الهواء دون تعديل القائمة — الفشل يُعرض لا يُكتم. */
     fun playNow(entry: LibraryEntry) {
+        val path = entry.path
+        if (path.isNullOrBlank()) {
+            player.fail("تعذّر البث: المقطع بلا مسار — أعد ربطه من صفحة الموسيقى")
+            return
+        }
+        val f = File(path)
+        if (!f.isFile) {
+            player.fail("تعذّر البث: الملف غير موجود على القرص (${f.name}) — أعد ربطه من صفحة الموسيقى")
+            return
+        }
+        if (f.extension.lowercase() !in PLAYABLE_EXTENSIONS) {
+            player.fail("تعذّر البث: صيغة غير مدعومة (${f.extension}) — المدعوم: MP3 وWAV وOGG وFLAC")
+            return
+        }
+        consecutiveFailures = 0
+        _playingFromLibrary.value = true
+        player.play(f)
+    }
+
+    /** إدراج مقطع من المكتبة «التالي» في القائمة الجارية — بدون مقاطعة الجاري. */
+    fun playNextFromLibrary(entry: LibraryEntry) {
         val f = File(entry.path ?: return)
         if (!f.isFile) return
-        consecutiveFailures = 0
-        player.play(f)
+        val existing = _playlist.value.map { it.file }.toSet()
+        if (f in existing) return
+        val track = Track(f, entry.title ?: f.nameWithoutExtension, durationOf(f), entry.category)
+        val list = _playlist.value
+        val insertAt = if (_currentIndex.value in list.indices) _currentIndex.value + 1 else list.size
+        _playlist.value = list.toMutableList().apply { add(insertAt, track) }
+        val newCur = if (_currentIndex.value >= insertAt) _currentIndex.value + 1 else _currentIndex.value
+        _currentIndex.value = newCur
+        playlistStore.setPaths(_activePlaylistId.value, _playlist.value.map { it.file.path }, newCur)
     }
 
     // ================= المكتبة الصوتية المصنفة =================
@@ -769,10 +817,17 @@ class AppViewModel {
         }
 
     fun importToLibrary(files: List<File>, category: String) {
-        val added = libraryStore.addFiles(files, category)
+        val r = libraryStore.addFiles(files, category)
         refreshLibraryState()
-        _lastLibraryMessage.value = if (added.isEmpty()) "لا ملفات جديدة للإضافة"
-        else "أُضيفت ${added.size} إلى «$category»"
+        _lastLibraryMessage.value = when {
+            r.added.isEmpty() && r.skippedUnsupported > 0 ->
+                "لا ملفات قابلة للإضافة — تجاوز ${r.skippedUnsupported} بصيغة غير مدعومة " +
+                        "(المدعوم: MP3 وWAV وOGG وFLAC)"
+            r.added.isEmpty() -> "لا ملفات جديدة للإضافة"
+            r.skippedUnsupported > 0 ->
+                "أُضيفت ${r.added.size} إلى «$category» · تجاوز ${r.skippedUnsupported} بصيغة غير مدعومة"
+            else -> "أُضيفت ${r.added.size} إلى «$category»"
+        }
     }
 
     fun addLibraryCategory(name: String): Boolean {
@@ -974,7 +1029,7 @@ class AppViewModel {
             WavFileWriter.durationMsOf(it.dataBytes, it.sampleRate, it.channels, it.bitsPerSample)
         }
         "mp3" -> Mp3Info.analyze(f)?.durationMs
-        else -> null
+        else -> StreamProbe.durationMsOf(f)
     } ?: 0L
 
     init {

@@ -64,6 +64,10 @@ class MicLiveEngine {
     private val _aecDelayMs = MutableStateFlow(0f)
     val aecDelayMs: StateFlow<Float> = _aecDelayMs.asStateFlow()
 
+    /** تحسّن الإرجاع (ERLE) بالديسيبل — مؤشر قوة إلغاء الصدى الحي. */
+    private val _aecErleDb = MutableStateFlow(0f)
+    val aecErleDb: StateFlow<Float> = _aecErleDb.asStateFlow()
+
     /** مؤشر الخفض التلقائي: هل الموسيقى منخفضة الآن لحديث المذيع؟ */
     private val _duckActive = MutableStateFlow(false)
     val duckActive: StateFlow<Boolean> = _duckActive.asStateFlow()
@@ -137,6 +141,7 @@ class MicLiveEngine {
         if (!state.enabled) {
             _aecLocked.value = false
             _aecDelayMs.value = 0f
+            _aecErleDb.value = 0f
         }
     }
 
@@ -229,6 +234,7 @@ class MicLiveEngine {
                 aec.process(shorts, sampleCount, MusicFarEnd.tap)
                 _aecLocked.value = aec.locked
                 _aecDelayMs.value = aec.delayMs
+                _aecErleDb.value = aec.erleDb
                 val gain = if (micMuted) 0f else micFader * masterFader
                 val level = voice.process(shorts, sampleCount, gain)
                 _level.value = level
@@ -310,6 +316,7 @@ class MicLiveEngine {
             _gateClosed.value = false
             _aecLocked.value = false
             _aecDelayMs.value = 0f
+            _aecErleDb.value = 0f
             _duckActive.value = false
             DuckBus.musicGain = 1f
             DuckBus.active = false

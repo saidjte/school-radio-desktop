@@ -69,10 +69,26 @@ fun StudioScreen(vm: AppViewModel) {
                 .padding(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            StudioSchedulePanel(vm)
+            // العمود الأيمن: حيز التسجيلات أعلى ثم الجدولة تحته (طلب المستخدم)
+            StudioRightColumn(vm)
             StudioScriptPanel(vm, Modifier.weight(1f))
             StudioBroadcastPanel(vm)
         }
+    }
+}
+
+/**
+ * العمود الأيمن للاستوديو المدمج: حيز التسجيلات في القمة مباشرة — ظاهر دائمًا
+ * بلا تمرير — ثم لوحة الجدولة تحته ببقية المساحة.
+ */
+@Composable
+private fun StudioRightColumn(vm: AppViewModel) {
+    Column(
+        modifier = Modifier.width(360.dp).fillMaxHeight(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        StudioRecordingsCard(vm, Modifier.height(200.dp))
+        StudioSchedulePanel(vm, Modifier.weight(1f))
     }
 }
 
@@ -146,7 +162,7 @@ private fun StudioTopBar(vm: AppViewModel) {
 // ================= العمود الأيمن: الجدولة =================
 
 @Composable
-private fun StudioSchedulePanel(vm: AppViewModel) {
+private fun StudioSchedulePanel(vm: AppViewModel, modifier: Modifier = Modifier) {
     val schedule by vm.schedule.collectAsState()
     val episodeStart by vm.episodeStartMinutes.collectAsState()
     val runActive by vm.runActive.collectAsState()
@@ -164,7 +180,7 @@ private fun StudioSchedulePanel(vm: AppViewModel) {
     }
 
     Column(
-        modifier = Modifier.width(360.dp).fillMaxHeight(),
+        modifier = modifier.fillMaxHeight(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(
@@ -519,9 +535,8 @@ private fun StudioBroadcastPanel(vm: AppViewModel) {
         )
         BroadcastMicCard(vm)
         // مشغل الهواء: قوائم مسماة + مكتبة مصنفة + تحكم نقل — اختيار وبث من الاستوديو مباشرة
-        BroadcastMusicCard(vm, paneHeight = 88.dp)
+        BroadcastMusicCard(vm, paneHeight = 110.dp)
         MixerLinkCard(vm)
-        StudioRecordingsCard(vm, Modifier.height(170.dp))
     }
 }
 

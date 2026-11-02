@@ -235,7 +235,7 @@ object SelfTest {
             val mediaFile = File(tmp, "media1.wav").apply {
                 writeBytes(byteArrayOf(0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0)) // ملف غير صالح — للمسارات فقط
             }
-            check(lib.addFiles(listOf(mediaFile), "الأناشيد المدرسية").size == 1)
+            check(lib.addFiles(listOf(mediaFile), "الأناشيد المدرسية").added.size == 1)
             check(lib.addCategory("جينغلات") && lib.categories().size == 8)
             check(!lib.deleteCategory("القرآن الكريم")) // الافتراضية محمية
             check(mediaFile.delete())
@@ -411,12 +411,14 @@ object SelfTest {
             // والصدى = مرجع مؤخَّر 120ms بكسب 0.5 (كما يسمعه الميكروفون من السماعة)
             val refRate = 44100
             val blockN = 4096
-            val nBlocks = 28
+            val nBlocks = 40
             val delaySamples = (0.120 * refRate).toInt()
             val totalRef = delaySamples + blockN * nBlocks
+            // زحزحة واسعة النطاق (موسيقى واقعية) بدل نغمة واحدة غير قابلة لتحديد المسار
             val refSignal = DoubleArray(totalRef) {
-                0.6 * kotlin.math.sin(2.0 * Math.PI * 300.0 * it / refRate) *
-                        kotlin.math.sin(2.0 * Math.PI * 0.9 * it / refRate)
+                val t = it.toDouble() / refRate
+                val freq = 200.0 + 2600.0 * ((t % 2.0) / 2.0)
+                0.6 * kotlin.math.sin(2.0 * Math.PI * freq * t)
             }
             val tap = com.saidjte.schoolradio.desktop.audio.FarEndTap(2.5)
             tap.configure(refRate)
@@ -441,7 +443,7 @@ object SelfTest {
                 }
                 val pre = mic.copyOf()
                 aec.process(mic, mic.size, tap)
-                if (b >= 20) {
+                if (b >= 32) {
                     for (f in 0 until blockN) {
                         inEnergy += (pre[f].toDouble() / 32768.0).let { it * it }
                         outEnergy += (mic[f].toDouble() / 32768.0).let { it * it }
@@ -451,6 +453,55 @@ object SelfTest {
             val cancellationDb = 10.0 * kotlin.math.log10(inEnergy / maxOf(outEnergy, 1e-12))
             check(cancellationDb > 8.0) { "aec cancellation=$cancellationDb" }
             check(aec.locked) { "aec locked" }
+            check(aec.erleDb > 6f) { "aec erle=${aec.erleDb}" }
+            // FFT نقي: دورة كاملة + التفاف خطي يطابق المباشر
+            run {
+                val n = 64
+                val re = DoubleArray(n) { kotlin.math.sin(2.0 * Math.PI * 3 * it / n) }
+                val im = DoubleArray(n)
+                val re0 = re.copyOf()
+                com.saidjte.schoolradio.desktop.audio.Fft.fft(re, im)
+                com.saidjte.schoolradio.desktop.audio.Fft.ifft(re, im)
+                var maxErr = 0.0
+                for (i in 0 until n) maxErr = maxOf(maxErr, kotlin.math.abs(re[i] - re0[i]) + kotlin.math.abs(im[i]))
+                check(maxErr < 1e-9) { "fft roundtrip=$maxErr" }
+                val a = doubleArrayOf(1.0, 2.0, -1.0, 3.0)
+                val b = doubleArrayOf(0.5, -1.0, 2.0)
+                val conv = com.saidjte.schoolradio.desktop.audio.Fft.linearConvolve(a, b)
+                val direct = DoubleArray(a.size + b.size - 1)
+                for (i in a.indices) for (j in b.indices) direct[i + j] += a[i] * b[j]
+                var convErr = 0.0
+                for (i in direct.indices) convErr = maxOf(convErr, kotlin.math.abs(conv[i] - direct[i]))
+                check(convErr < 1e-9) { "fft convolve=$convErr" }
+            }
+            // بوابة الصيغ: الملفات غير القابلة للفك لا تدخل المكتبة — تُعدّ وتُعرض
+            run {
+                val libDir = File(tmp, "libguard").apply { mkdirs() }
+                val goodWav = File(libDir, "g.wav")
+                val gw = WavFileWriter(goodWav, 8000, 1)
+                gw.write(ByteArray(1600))
+                gw.close()
+                val fakeM4a = File(libDir, "bad.m4a").apply { writeBytes(ByteArray(64)) }
+                val store = com.saidjte.schoolradio.desktop.data.MusicLibraryStore(File(tmp, "libguard.json"))
+                val r = store.addFiles(listOf(goodWav, fakeM4a), "فقرات متنوعة")
+                check(r.added.size == 1 && r.skippedUnsupported == 1) {
+                    "library guard ${r.added.size}/${r.skippedUnsupported}"
+                }
+                check("ogg" in com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS) { "ogg playable" }
+                check("flac" in com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS) { "flac playable" }
+                // منطق التكرار الثلاثي والعشوائية (منطق خالص ببذرة مثبّتة)
+                val rng = kotlin.random.Random(7)
+                val pm = com.saidjte.schoolradio.desktop.data.PlaylistMath
+                val mOFF = com.saidjte.schoolradio.desktop.data.RepeatMode.OFF
+                val mALL = com.saidjte.schoolradio.desktop.data.RepeatMode.ALL
+                val mONE = com.saidjte.schoolradio.desktop.data.RepeatMode.ONE
+                check(pm.nextIndex(5, 4, mOFF, false, true, rng) == -1) { "repeat off stops at end" }
+                check(pm.nextIndex(5, 4, mOFF, false, false, rng) == 0) { "repeat off manual wraps" }
+                check(pm.nextIndex(5, 4, mALL, false, true, rng) == 0) { "repeat all wraps" }
+                check(pm.nextIndex(5, 2, mONE, false, true, rng) == 2) { "repeat one replays" }
+                check(pm.nextIndex(1, 0, mOFF, true, true, rng) == 0) { "shuffle single track" }
+                repeat(20) { check(pm.nextIndex(5, 3, mOFF, true, false, rng) != 3) { "shuffle skips current" } }
+            }
             // مرجع راكد (لا موسيقى الآن) = مرور نظيف تام بلا أي مساس
             val aecIdle = com.saidjte.schoolradio.desktop.audio.EchoCanceller()
             aecIdle.configure(refRate, 1)

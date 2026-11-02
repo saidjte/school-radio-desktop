@@ -86,18 +86,30 @@ class MusicLibraryStore(private val file: File) {
             if (!File(p).isFile) p else null
         }.toSet()
 
-    /** إضافة ملفات ضمن تصنيف (التصنيف الغريب يُرجع للتصنيف الافتراضي). */
-    fun addFiles(files: List<File>, category: String): List<LibraryEntry> {
+    /** نتيجة استيراد: المقبول + عدد المتجاوز لصيغة غير مدعومة (يُعرض للمستخدم لا صمتًا). */
+    data class ImportResult(val added: List<LibraryEntry>, val skippedUnsupported: Int)
+
+    /**
+     * إضافة ملفات ضمن تصنيف (التصنيف الغريب يُرجع للتصنيف الافتراضي).
+     * الملفات بصيغة لا يفكّها المحرك تُرفض هنا — لا تدخل المكتبة أبدًا مقاطع
+     * لا يمكن تشغيلها (درس خلل «المكتبة تظهر ولا تشتغل»).
+     */
+    fun addFiles(files: List<File>, category: String): ImportResult {
         val cat = if (category in doc.categories) category else LibraryDefaults.FALLBACK_CATEGORY
         val existing = doc.entries.mapNotNull { it.path }.toSet()
-        val added = files
-            .filter { it.isFile && it.path !in existing }
-            .map { LibraryEntry(nextId++, it.path, it.nameWithoutExtension, cat, System.currentTimeMillis()) }
+        val usable = files.filter {
+            it.isFile && it.path !in existing &&
+                    it.extension.lowercase() in com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS
+        }
+        val skipped = files.count { it.isFile && it !in usable }
+        val added = usable.map {
+            LibraryEntry(nextId++, it.path, it.nameWithoutExtension, cat, System.currentTimeMillis())
+        }
         if (added.isNotEmpty()) {
             doc = doc.copy(entries = doc.entries + added)
             persist()
         }
-        return added
+        return ImportResult(added, skipped)
     }
 
     /** إعادة ربط ملف مفقود بمسار جديد (نفس اسم المكتبة يتغير موقعه). */

@@ -22,6 +22,9 @@ dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
     implementation("javazoom:jlayer:1.0.1")
+    // فكّ صيغ الموسيقى الحديثة: OGG Vorbis وFLAC — قرّاء نقية على JVM
+    implementation("com.googlecode.soundlibs:vorbisspi:1.0.3.3")
+    implementation("org.jflac:jflac-codec:1.5.2")
     implementation("com.google.code.gson:gson:2.11.0")
     testImplementation(kotlin("test"))
 }

@@ -4,6 +4,8 @@ import com.saidjte.schoolradio.desktop.data.MusicEqState
 import javazoom.jl.decoder.Bitstream
 import javazoom.jl.decoder.Decoder
 import javazoom.jl.decoder.SampleBuffer
+import javazoom.spi.vorbis.sampled.file.VorbisAudioFileReader
+import org.jflac.sound.spi.FlacAudioFileReader
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,9 +23,12 @@ import kotlin.concurrent.thread
 import kotlin.math.log10
 import kotlin.math.min
 
+/** الصيغ القابلة للتشغيل فعليًا في المحرك — بوابة واحدة للاستيراد والمسح والمكتبة. */
+val PLAYABLE_EXTENSIONS = setOf("wav", "mp3", "ogg", "oga", "flac", "aif", "aiff", "au")
+
 /**
  * قارئ مقطع صوتي يفكّ ويكتب في خط السماع مباشرة.
- * واجهة موحّدة فوق MP3 (JLayer) و PCM (Java Sound).
+ * واجهة موحّدة فوق MP3 (JLayer) و PCM (Java Sound + OGG + FLAC).
  */
 private interface TrackReader : Closeable {
     val durationMs: Long
@@ -143,7 +148,7 @@ private class Mp3TrackReader(
         bitstream = Bitstream(stream)
         format = AudioFormat(f.sampleRate.toFloat(), 16, f.channels, true, false)
         line = AudioDevices.openSourceLine(outMixer, format)
-        line.open(format, 64 * 1024)
+        line.open(format, 16 * 1024)
         line.start()
         applyGain(line, volume())
         channel.configure(f.sampleRate, f.channels)
@@ -225,7 +230,7 @@ private class Mp3TrackReader(
     }
 }
 
-/** قارئ PCM (WAV/AIFF/AU) عبر AudioSystem مع تحويل إلى PCM 16-bit عند الحاجة. */
+/** قارئ PCM (WAV/AIFF/AU وOGG وFLAC عبر قرّاء صريحين) مع تحويل إلى PCM 16-bit عند الحاجة. */
 private class PcmTrackReader(
     private val file: File,
     outMixer: Mixer.Info?,
@@ -245,7 +250,7 @@ private class PcmTrackReader(
     override val currentMs: Long get() = currentMsValue
 
     init {
-        val raw = AudioSystem.getAudioInputStream(file)
+        val raw = openAudioInputStream(file)
         val rf = raw.format
         val isPlainPcm = rf.encoding == AudioFormat.Encoding.PCM_SIGNED &&
                 !rf.isBigEndian && rf.sampleSizeInBits == 16
@@ -267,7 +272,7 @@ private class PcmTrackReader(
         }
 
         line = AudioDevices.openSourceLine(outMixer, pcmFormat)
-        line.open(pcmFormat, 64 * 1024)
+        line.open(pcmFormat, 16 * 1024)
         line.start()
         applyGain(line, volume())
         channel.configure(pcmFormat.sampleRate.toInt(), pcmFormat.channels)
@@ -293,7 +298,7 @@ private class PcmTrackReader(
     override fun seek(ms: Long) {
         val target = ms.coerceIn(0L, durationMs)
         try { ais.close() } catch (_: Exception) { }
-        val raw = AudioSystem.getAudioInputStream(file)
+        val raw = openAudioInputStream(file)
         val rf = raw.format
         ais = if (rf.encoding == AudioFormat.Encoding.PCM_SIGNED && !rf.isBigEndian && rf.sampleSizeInBits == 16) raw
         else AudioSystem.getAudioInputStream(AudioFormat(rf.sampleRate, 16, rf.channels, true, false), raw)
@@ -341,6 +346,36 @@ private class PcmTrackReader(
 }
 
 /**
+ * فتح مجرى صوتي بقرّاء صريحين حسب الامتداد — بلا اعتماد على ServiceLoader
+ * (دمج ملفات الخدمات في الجرة الموحّدة غير مضمون):
+ * OGG عبر قارئ Vorbis الصريح، FLAC عبر قارئ Flac الصريح، والباقي عبر AudioSystem.
+ */
+internal fun openAudioInputStream(file: File): AudioInputStream {
+    val name = file.name.lowercase()
+    return when {
+        name.endsWith(".ogg") || name.endsWith(".oga") ->
+            VorbisAudioFileReader().getAudioInputStream(file)
+        name.endsWith(".flac") ->
+            FlacAudioFileReader().getAudioInputStream(file)
+        else -> AudioSystem.getAudioInputStream(file)
+    }
+}
+
+/**
+ * تقدير مدة ملف صوتي بفتح المجرى وقراءة طوله الإطاري —
+ * للأصوات غير MP3/WAV (OGG/FLAC/AIFF/AU) في قوائم العرض. يعيد 0 إن تعذّر.
+ */
+internal object StreamProbe {
+    fun durationMsOf(file: File): Long = try {
+        openAudioInputStream(file).use { ais ->
+            val fl = ais.frameLength
+            val fr = ais.format.frameRate
+            if (fl > 0 && fr > 0) (fl * 1000L / fr.toLong()) else 0L
+        }
+    } catch (_: Exception) { 0L }
+}
+
+/**
  * محرّك تشغيل الموسيقى (نسخة الحاسوب): خيط عامل واحد يملك القارئ والخط،
  * أوامر متطايرة (تبديل/بحث/إيقاف مؤقت) — نمط مجرّب لا سباقات فيه.
  */
@@ -372,6 +407,16 @@ class MusicPlayerEngine {
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    /** الإبلاغ بخطأ تشغيل من الخارج (مقطع مفقود مثلًا) — يظهر في واجهة المشغل. */
+    fun fail(message: String) {
+        _error.value = message
+    }
+
+    /** مسح الخطأ المعروض (زر إخفاء في الواجهة). */
+    fun clearError() {
+        _error.value = null
+    }
 
     /** مقياس قناة الموسيقى الحي (منمّط 0..1) — بعد المعادل والفيدر. */
     private val _level = MutableStateFlow(0f)
@@ -420,6 +465,7 @@ class MusicPlayerEngine {
     @Volatile private var outputMixer: Mixer.Info? = null
     @Volatile private var reopenOutput = false
     private var worker: Thread? = null
+    private val workerLock = Any()
 
     /**
      * تغيير مخرج التشغيل (السماعات) أثناء العمل: يُطبّق فورًا على المقطع الجاري
@@ -478,8 +524,10 @@ class MusicPlayerEngine {
     }
 
     private fun ensureWorker() {
-        if (worker?.isAlive == true) return
-        worker = thread(name = "music-player", isDaemon = true) { run() }
+        synchronized(workerLock) {
+            if (worker?.isAlive == true) return
+            worker = thread(name = "music-player", isDaemon = true) { run() }
+        }
     }
 
     private fun run() {
@@ -599,7 +647,7 @@ class MusicPlayerEngine {
                 _positionMs.value = 0L
                 _durationMs.value = 0L
             }
-            worker = null
+            synchronized(workerLock) { worker = null }
         }
     }
 

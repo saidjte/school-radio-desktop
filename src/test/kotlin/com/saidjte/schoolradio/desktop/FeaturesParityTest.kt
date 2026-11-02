@@ -226,15 +226,15 @@ class FeaturesParityTest {
         // إضافة ملفات
         val f1 = File(dir, "nashid1.mp3").apply { writeBytes(byteArrayOf(1, 2, 3)) }
         val f2 = File(dir, "quran2.wav").apply { writeBytes(byteArrayOf(4, 5)) }
-        val added = store.addFiles(listOf(f1, f2), "الأناشيد المدرسية")
+        val added = store.addFiles(listOf(f1, f2), "الأناشيد المدرسية").added
         assertEquals(2, added.size)
         assertEquals("الأناشيد المدرسية", added[0].category)
         // تصنيف غريب يعود للافتراضي — ملف جديد لم يُدرج من قبل
         val f1b = File(dir, "nashid1b.mp3").apply { writeBytes(byteArrayOf(7, 8)) }
-        val added2 = store.addFiles(listOf(f1b), "تصنيف شبح")
+        val added2 = store.addFiles(listOf(f1b), "تصنيف شبح").added
         assertEquals("فقرات متنوعة", added2.first().category)
         // منع التكرار
-        assertTrue(store.addFiles(listOf(f1), "الأناشيد المدرسية").isEmpty())
+        assertTrue(store.addFiles(listOf(f1), "الأناشيد المدرسية").added.isEmpty())
 
         // البحث الخالص
         assertTrue(LibraryMath.matches("نشيد الصباح", "الأناشيد", "صباح"))

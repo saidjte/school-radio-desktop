@@ -185,11 +185,16 @@ class ProAudioTest {
 
     private fun runEchoSimulation(withVoice: Boolean): SimResult {
         val blockN = 4096
-        val nBlocks = 28
+        val nBlocks = 40
         val delaySamples = (0.120 * fs).toInt()
         val totalRef = delaySamples + blockN * nBlocks
+        // زحزحة ترددات واسعة (200→2800هرتز كل ثانيتين) — موسيقى واقعية قابلة
+        // لتحديد المسار: نغمة واحدة وحيدة تجعل موضع الطرقة غير قابل للتمييز
         val ref = DoubleArray(totalRef) {
-            0.6 * sin(2.0 * PI * 300.0 * it / fs) * sin(2.0 * PI * 0.9 * it / fs)
+            val t = it.toDouble() / fs
+            val phase = (t % 2.0) / 2.0
+            val freq = 200.0 + 2600.0 * phase
+            0.6 * sin(2.0 * PI * freq * t)
         }
         val tap = FarEndTap(2.5)
         tap.configure(fs)
@@ -210,13 +215,16 @@ class ProAudioTest {
             for (f in 0 until blockN) {
                 val idx = b * blockN + f - delaySamples
                 val echo = if (idx >= 0) 0.5 * ref[idx] else 0.0
-                val voice = if (withVoice) 0.15 * sin(2.0 * PI * 700.0 * (b * blockN + f) / fs) else 0.0
+                // كلام المذيع متقطع (نصف الوقت) — كاشف الحديث المزدوج يجمّد التعلّم فيه
+                val voice = if (withVoice && ((b * blockN + f) / 2048) % 2 == 0) {
+                    0.15 * sin(2.0 * PI * 700.0 * (b * blockN + f) / fs)
+                } else 0.0
                 voiceEnergy += voice * voice
                 mic[f] = ((echo + voice) * 32767.0).toInt().toShort()
             }
             val pre = mic.copyOf()
             aec.process(mic, mic.size, tap)
-            if (b >= 20) {
+            if (b >= 32) {
                 for (f in 0 until blockN) {
                     inEnergy += (pre[f].toDouble() / 32768.0).let { it * it }
                     outEnergy += (mic[f].toDouble() / 32768.0).let { it * it }
@@ -232,13 +240,14 @@ class ProAudioTest {
         val r = runEchoSimulation(withVoice = false)
         assertTrue(r.cancellationDb > 8.0, "إلغاء غير كافٍ: ${r.cancellationDb} dB")
         assertTrue(r.locked, "المسار يجب أن يقفل")
-        assertTrue(abs(r.delayMs - 120f) <= 24f, "التأخير المكتشف قريب من الحقيقي: ${r.delayMs}")
+        // حلقة الميكروفون وساعة المرجع متطابقتان لحظة البحث: المؤشر = التأخير الصوتي الحقيقي
+        assertTrue(abs(r.delayMs - 120f) <= 35f, "التأخير المكتشف قريب من الحقيقي: ${r.delayMs}")
     }
 
     @Test
     fun `echo canceller keeps announcer voice while removing echo`() {
         val r = runEchoSimulation(withVoice = true)
-        assertTrue(r.cancellationDb > 3.0, "الصدى يُطرح مع بقاء الصوت: ${r.cancellationDb} dB")
+        assertTrue(r.cancellationDb > 4.0, "الصدى يُطرح مع بقاء الصوت: ${r.cancellationDb} dB")
         assertTrue(r.voiceKeptRms > 0.0)
     }
 

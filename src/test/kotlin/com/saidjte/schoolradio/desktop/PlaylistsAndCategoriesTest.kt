@@ -237,8 +237,8 @@ class PlaylistsAndCategoriesTest {
         val dir = tmp()
         val store = MusicLibraryStore(File(dir, "library.json"))
         val f = fakeAudio(dir, "same.mp3")
-        assertTrue(store.addFiles(listOf(f), "فقرات متنوعة").size == 1)
-        assertTrue(store.addFiles(listOf(f), "فقرات متنوعة").isEmpty())
+        assertTrue(store.addFiles(listOf(f), "فقرات متنوعة").added.size == 1)
+        assertTrue(store.addFiles(listOf(f), "فقرات متنوعة").added.isEmpty())
         assertEquals(1, store.entries().size)
     }
 

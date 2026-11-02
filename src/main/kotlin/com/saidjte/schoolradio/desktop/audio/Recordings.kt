@@ -44,7 +44,8 @@ data class RecordingMeta(
 /** ماسح مكتبة التسجيلات: WAV عبر ترويسته، وMP3 عبر محلّل الإطارات. */
 object RecordingsScanner {
 
-    val AUDIO_EXTENSIONS = setOf("wav", "mp3")
+    /** كل الصيغ القابلة للتشغيل في المحرك — المرجع الوحيد لبوابات الاستيراد والمسح. */
+    val AUDIO_EXTENSIONS = PLAYABLE_EXTENSIONS
 
     fun scan(dir: File): List<RecordingItem> {
         val files = dir.listFiles { f -> f.isFile && f.extension.lowercase() in AUDIO_EXTENSIONS }
