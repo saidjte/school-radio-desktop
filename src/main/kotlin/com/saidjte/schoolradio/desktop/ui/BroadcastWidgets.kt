@@ -276,22 +276,8 @@ fun BroadcastMicCard(vm: AppViewModel) {
         persistDevices()
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "الميكروفون",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
-        }
+    StudioCard {
+        SectionHeader(title = "الميكروفون")
 
         // سطر المداخل (طلب v0.21.0: «في حيز البث اجعل سطرا مخصصا المداخل و سطر
         // مخصص المخارج») — المدخل ١ هو جهاز المذيع والمدخل ٢ اختياري يُخلط في
@@ -563,26 +549,13 @@ fun BroadcastMusicCard(
     val libraryEntries by vm.libraryEntries.collectAsState()
     val onAir = isPlaying && !isPaused
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
+    StudioCard(modifier = modifier) {
         // لوحة المقاطع: متمددة بكل المساحة الباقية (الاستوديو) أو بارتفاع مقتطع
         // (البث المباشر) — weight يعمل داخل نطاق العمود فقط
         val paneModifier = if (expandPane) Modifier.fillMaxWidth().weight(1f)
         else Modifier.fillMaxWidth().height(paneHeight + 24.dp)
         // الرأس: العنوان + شارة الهواء الحية + مفتاحا المصدر
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                "الموسيقى",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
+        SectionHeader(title = "الموسيقى") {
             if (onAir) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     PulsingDot(color = MaterialTheme.colorScheme.primary, size = 8.dp)
@@ -684,22 +657,9 @@ fun BroadcastPlayerCard(
     var seekMs by remember { mutableStateOf<Long?>(null) }
     val shownPos = seekMs ?: positionMs
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
+    StudioCard(modifier = modifier, contentPadding = 12.dp) {
         // الرأس: الاسم + شارة الهواء + اسم القائمة الجارية وموضعها
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "مشغل الموسيقى",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
+        SectionHeader(title = "مشغل الموسيقى") {
             if (onAir) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     PulsingDot(color = MaterialTheme.colorScheme.primary, size = 8.dp)

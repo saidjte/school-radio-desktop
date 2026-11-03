@@ -22,6 +22,7 @@ import com.saidjte.schoolradio.desktop.data.ScriptSource
 import com.saidjte.schoolradio.desktop.data.SettingsStore
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 import com.saidjte.schoolradio.desktop.data.TeleprompterNames
+import com.saidjte.schoolradio.desktop.ui.GuiTokens
 import java.io.File
 import javax.sound.sampled.AudioFormat
 import kotlin.math.PI
@@ -691,6 +692,29 @@ object SelfTest {
             check(StudioLogic.resolveReadingSection(sch, true, 1, ss, null, true)?.first?.id == 2L) { "reading follows run" }
             check(StudioLogic.resolveReadingSection(sch, true, 1, ss, 1L, false)?.first?.id == 1L) { "reading manual takeover" }
             check(StudioLogic.resolveReadingSection(sch, true, 0, ss, 999L, false)?.first?.id == 1L) { "reading stale manual falls back" }
+
+            // v0.22.0: تطوير الواجهة — هوية مختبرة رياضيًا وموارد مدمجة
+            // 1) تباين WCAG للثنائيات الحرجة: نص شارة الهواء على خلفيتها ≥ 4.5:1
+            check(GuiTokens.contrastRatio(0xFFFFFFFF.toInt(), 0xFF000000.toInt()) > 20.0) { "contrast black/white=21" }
+            check(GuiTokens.validateCriticalContrast()) { "onAir pill contrast >= 4.5" }
+            // 2) طبقات الثيم متمايزة: خلفية/سطح/سطح متغاير/حافة بطاقة
+            check(GuiTokens.validateThemeLayering()) { "theme layering distinct" }
+            // 3) خريطة مقاطع المقياس تحترم حدود MeterLogic (0-13 أخضر، 14-19 كهرماني، 20-23 أحمر)
+            check(GuiTokens.segmentColorArgb(0, lit = true) == GuiTokens.zoneGreen) { "segment 0 green" }
+            check(GuiTokens.segmentColorArgb(13, lit = true) == GuiTokens.zoneGreen) { "segment 13 green" }
+            check(GuiTokens.segmentColorArgb(14, lit = true) == GuiTokens.zoneAmber) { "segment 14 amber" }
+            check(GuiTokens.segmentColorArgb(20, lit = true) == GuiTokens.zoneRed) { "segment 20 red" }
+            check(GuiTokens.segmentColorArgb(0, lit = false) != GuiTokens.zoneGreen) { "dim differs from lit" }
+            // 4) الخط العربي المدمج: أوزان أربعة بمورد الجرة وسحرة TTF سليمة
+            for (w in listOf("Regular", "Medium", "SemiBold", "Bold")) {
+                val bytes = GuiTokens::class.java.classLoader.getResourceAsStream("fonts/NotoSansArabic-$w.ttf")?.readBytes()
+                check(bytes != null && bytes.size > 100_000) { "font $w packaged" }
+                check(bytes[0].toInt() == 0 && bytes[1].toInt() == 1 && bytes[2].toInt() == 0 && bytes[3].toInt() == 0) { "font $w ttf magic" }
+            }
+            // 5) أيقونة النافذة مدمجة بسحر PNG
+            val iconBytes = GuiTokens::class.java.classLoader.getResourceAsStream("icon.png")?.readBytes()
+            check(iconBytes != null && iconBytes.size > 1_000) { "icon packaged" }
+            check((iconBytes[0].toInt() and 0xFF) == 0x89 && (iconBytes[1].toInt() and 0xFF) == 0x50) { "icon png magic" }
 
             println("SELFTEST OK — version $APP_VERSION")
         } finally {

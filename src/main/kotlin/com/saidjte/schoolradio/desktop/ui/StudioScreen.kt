@@ -1,9 +1,13 @@
 package com.saidjte.schoolradio.desktop.ui
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -241,11 +245,20 @@ private fun StudioHSplit(
 ) {
     val dragCb by rememberUpdatedState(onDragX)
     val endCb by rememberUpdatedState(onEnd)
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    // توهج القبضة عند المرور: تعليم واضح أن الفاصل قابل للسحب (v0.22.0)
+    val gripColor by animateColorAsState(
+        if (hovered) MaterialTheme.colorScheme.primary.copy(alpha = 0.95f)
+        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f),
+        label = "h-grip"
+    )
     Box(
         modifier = modifier
             .width(10.dp)
             .fillMaxHeight()
             .pointerHoverIcon(PointerIcon(Cursor.getPredefinedCursor(Cursor.E_RESIZE_CURSOR)))
+            .hoverable(interaction)
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDrag = { change, drag ->
@@ -264,7 +277,7 @@ private fun StudioHSplit(
                 .width(4.dp)
                 .height(52.dp)
                 .clip(RoundedCornerShape(3.dp))
-                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f))
+                .background(gripColor)
         )
     }
 }
@@ -281,11 +294,19 @@ private fun StudioVSplit(
 ) {
     val dragCb by rememberUpdatedState(onDragY)
     val endCb by rememberUpdatedState(onEnd)
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val gripColor by animateColorAsState(
+        if (hovered) MaterialTheme.colorScheme.primary.copy(alpha = 0.95f)
+        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f),
+        label = "v-grip"
+    )
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(10.dp)
             .pointerHoverIcon(PointerIcon(Cursor.getPredefinedCursor(Cursor.N_RESIZE_CURSOR)))
+            .hoverable(interaction)
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDrag = { change, drag ->
@@ -304,7 +325,7 @@ private fun StudioVSplit(
                 .width(52.dp)
                 .height(4.dp)
                 .clip(RoundedCornerShape(3.dp))
-                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f))
+                .background(gripColor)
         )
     }
 }
@@ -324,54 +345,70 @@ private fun StudioTopBar(vm: AppViewModel) {
         recording = recording,
         musicPlaying = playing && !paused
     ).onAir
+    val sc = LocalStudioColors.current
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(64.dp)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Column {
-            Text(
-                "الاستوديو المدمج",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
-            )
-            if (schoolName != null) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // شعار التطبيق في قلب الشريط العلوي — هوية بصرية ثابتة (v0.22.0)
+            LogoMark(size = 38.dp)
+            Column {
                 Text(
-                    schoolName ?: "",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
+                    "الاستوديو المدمج",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                if (schoolName != null) {
+                    Text(
+                        schoolName ?: "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            // مؤشر الهواء الموحد بنبض حي
+            OnAirPill(onAir = onAir)
+            if (recording) {
+                Text(
+                    "تسجيل جارٍ",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = sc.recordingAccent,
+                    fontWeight = FontWeight.Bold
                 )
             }
-        }
 
-        // مؤشر الهواء الموحد بنبض حي
-        OnAirPill(onAir = onAir)
-        if (recording) {
+            Spacer(Modifier.weight(1f))
             Text(
-                "تسجيل جارٍ",
-                style = MaterialTheme.typography.labelLarge,
-                color = LocalStudioColors.current.recordingAccent,
+                clock,
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
+            SecondaryAction(text = "الأقسام التفصيلية", onClick = { vm.selectTab(Tab.LIVE) })
+            Text(
+                "v$APP_VERSION",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
-
-        Spacer(Modifier.weight(1f))
-        Text(
-            clock,
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
-        )
-        SecondaryAction(text = "الأقسام التفصيلية", onClick = { vm.selectTab(Tab.LIVE) })
-        Text(
-            "v$APP_VERSION",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+        // خط هوية رقيق أسفل الشريط: تدرج الشعار يربط الرأس بالمحتوى (v0.22.0)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(2.dp)
+                .background(
+                    androidx.compose.ui.graphics.Brush.horizontalGradient(
+                        listOf(sc.logoTop, MaterialTheme.colorScheme.primary, sc.logoBottom)
+                    )
+                )
         )
     }
 }
@@ -400,16 +437,7 @@ private fun StudioSchedulePanel(vm: AppViewModel, modifier: Modifier = Modifier)
         modifier = modifier.fillMaxHeight(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                "الجدولة",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
+        SectionHeader(title = "الجدولة") {
             Text(
                 "${schedule.size} فقرات · ${formatMs(ScheduleMath.totalSeconds(schedule) * 1000)}",
                 style = MaterialTheme.typography.bodySmall,
@@ -641,15 +669,7 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
         modifier = modifier.fillMaxHeight(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                "السكريبت",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
+        SectionHeader(title = "السكريبت") {
             // مصدر النص المعروض
             Box(
                 modifier = Modifier
@@ -776,11 +796,7 @@ private fun StudioBroadcastPanel(
             .onSizeChanged { heightPx = it.height.coerceAtLeast(1) },
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Text(
-            "البث",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold
-        )
+        SectionHeader(title = "البث")
         // حيّز الميكروفون: بتمرير داخلي حين يضيّقه المذيع لصالح الموسيقى
         Box(
             Modifier
@@ -817,21 +833,8 @@ private fun StudioRecordingsCard(vm: AppViewModel, modifier: Modifier = Modifier
     val isPlaying by vm.player.isPlaying.collectAsState()
     val isPaused by vm.player.isPaused.collectAsState()
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "التسجيلات",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
+    StudioCard(modifier = modifier.fillMaxWidth()) {
+        SectionHeader(title = "التسجيلات") {
             SecondaryAction(text = "تحديث", onClick = { vm.refreshRecordings() })
             SecondaryAction(text = "المكتبة", onClick = { vm.selectTab(Tab.RECORDINGS) })
         }

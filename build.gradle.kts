@@ -93,6 +93,8 @@ compose.desktop {
                 dirChooser = true
                 menu = true
                 shortcut = true
+                // أيقونة المثبّت والمختصر — نفس شعار الواجهة (v0.22.0)
+                iconFile = rootProject.file("packaging/icon.ico")
             }
         }
     }

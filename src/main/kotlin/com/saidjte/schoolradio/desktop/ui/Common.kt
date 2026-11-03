@@ -1,21 +1,34 @@
 package com.saidjte.schoolradio.desktop.ui
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.saidjte.schoolradio.desktop.data.SegmentKind
@@ -31,45 +44,133 @@ fun formatMs(ms: Long): String {
     return "%02d:%02d".format(m, s)
 }
 
-/** مقياس مستوى رأسي (يمتلئ من الأسفل إلى الأعلى). */
+// ================= حاضنات الهوية الموحّدة (v0.22.0 «طوّر GUI التطبيق») =================
+
+/**
+ * البطاقة الموحّدة: خلفية السطح، حافة مرسومة بلون بطاقة مختبر، وزاوية
+ * 16dp ثابتة عبر التطبيق — كل حيّزات الاستوديو والصفحات التفصيلية تلتقطها
+ * فتبدو الواجهة عائلة واحدة بدل مستطيلات متفرقة الأشكال.
+ */
+@Composable
+fun StudioCard(
+    modifier: Modifier = Modifier,
+    contentPadding: Dp = 12.dp,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val sc = LocalStudioColors.current
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, sc.cardBorder, RoundedCornerShape(16.dp))
+            .padding(contentPadding),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        content()
+    }
+}
+
+/**
+ * ترويسة قسم موحّدة: شريحة تمييز سماوية عمودية + عنوان ثقيل، مع مساحة
+ * خلفها لأدوات القسم (أزرار تحديث/فتح…) — بدل نصوص عناوين متفاوتة الأنماط.
+ */
+@Composable
+fun SectionHeader(
+    title: String,
+    modifier: Modifier = Modifier,
+    trailing: @Composable RowScope.() -> Unit = {}
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            Modifier
+                .size(width = 4.dp, height = 18.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(accent)
+        )
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        trailing()
+    }
+}
+
+/**
+ * شارة حالة موحّدة: كبسولة بلون دلالي ونص مضاد مبني على نسبة تباين مختبرة —
+ * تُستخدم لـ «سكريبت» و«الجارية» و«الآن» وكل الوسوم الصغيرة.
+ */
+@Composable
+fun StatusChip(
+    text: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+    contentColor: Color = Color.White
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(color)
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = contentColor
+        )
+    }
+}
+
+/** مقياس مستوى رأسي مقطعي (يمتلئ من الأسفل إلى الأعلى) بمناطق MeterLogic. */
 @Composable
 fun LevelBar(level: Float, modifier: Modifier) {
-    val barColor = MaterialTheme.colorScheme.primary
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
-    Canvas(modifier = modifier) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-        drawRoundRect(color = trackColor, cornerRadius = CornerRadius(w / 3f))
-        val lv = level.coerceIn(0f, 1f)
-        if (lv > 0.01f) {
-            val barHeight = h * lv
+        val segments = 12
+        val gap = h * 0.015f
+        val segH = (h - gap * (segments - 1)) / segments
+        for (i in 0 until segments) {
+            // المقطع 0 أسفل الشاشة؛ الترتيب من الأسفل إلى الأعلى
+            val lit = level * segments >= (segments - i)
+            val top = h - (i + 1) * segH - i * gap
             drawRoundRect(
-                color = barColor,
-                topLeft = Offset(0f, h - barHeight),
-                size = Size(w, barHeight),
-                cornerRadius = CornerRadius(w / 3f)
+                color = Color(GuiTokens.segmentColorArgb(i, lit = true)).let { if (lit) it else trackColor },
+                topLeft = Offset(0f, top),
+                size = Size(w, segH),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(w / 4f)
             )
         }
     }
 }
 
-/** مقياس مستوى أفقي (يمتلئ من اليمين إلى اليسار — اتجاه القراءة العربية). */
+/** مقياس مستوى أفقي مقطعي (يمتلئ من اليمين إلى اليسار — اتجاه القراءة العربية). */
 @Composable
 fun LevelBarH(level: Float, modifier: Modifier) {
-    val barColor = MaterialTheme.colorScheme.primary
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
-    Canvas(modifier = modifier) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-        drawRoundRect(color = trackColor, cornerRadius = CornerRadius(h / 2f))
-        val lv = level.coerceIn(0f, 1f)
-        if (lv > 0.01f) {
-            val barWidth = w * lv
+        val segments = 12
+        val gap = w * 0.008f
+        val segW = (w - gap * (segments - 1)) / segments
+        for (i in 0 until segments) {
+            // المقطع 0 عند اليمين (بداية الامتلاء في RTL)
+            val lit = level * segments >= (segments - i)
+            val rightX = w - i * (segW + gap)
             drawRoundRect(
-                color = barColor,
-                topLeft = Offset(w - barWidth, 0f),
-                size = Size(barWidth, h),
-                cornerRadius = CornerRadius(h / 2f)
+                color = Color(GuiTokens.segmentColorArgb(i, lit = true)).let { if (lit) it else trackColor },
+                topLeft = Offset(rightX - segW, 0f),
+                size = Size(segW, h),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(h / 4f)
             )
         }
     }
@@ -102,15 +203,33 @@ fun PrimaryAction(
     if (danger) {
         Button(
             onClick = onClick,
-            modifier = modifier,
+            modifier = modifier.defaultMinSize(minHeight = 36.dp),
             enabled = enabled,
+            shape = RoundedCornerShape(10.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.error,
                 contentColor = Color.White
             )
-        ) { Text(text) }
+        ) {
+            Text(
+                text,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+        }
     } else {
-        Button(onClick = onClick, modifier = modifier, enabled = enabled) { Text(text) }
+        Button(
+            onClick = onClick,
+            modifier = modifier.defaultMinSize(minHeight = 36.dp),
+            enabled = enabled,
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Text(
+                text,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+        }
     }
 }
 
@@ -121,7 +240,18 @@ fun SecondaryAction(
     modifier: Modifier = Modifier,
     enabled: Boolean = true
 ) {
-    FilledTonalButton(onClick = onClick, modifier = modifier, enabled = enabled) { Text(text) }
+    FilledTonalButton(
+        onClick = onClick,
+        modifier = modifier.defaultMinSize(minHeight = 36.dp),
+        enabled = enabled,
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
 }
 
 /** منتقيات ملفات Swing — تعمل داخل تطبيقات Compose Desktop. */

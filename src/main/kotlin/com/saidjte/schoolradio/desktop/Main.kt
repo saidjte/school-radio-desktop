@@ -9,6 +9,7 @@ import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,6 +35,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
@@ -71,11 +74,21 @@ fun main(args: Array<String>) {
         ?.substringAfter("=")
         ?.let { name -> Tab.entries.firstOrNull { it.name == name } }
     application {
+        // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
+        val windowIcon = remember {
+            Thread.currentThread().contextClassLoader
+                .getResourceAsStream("icon.png")
+                ?.use { org.jetbrains.skia.Image.makeFromEncoded(it.readBytes()) }
+                ?.toComposeImageBitmap()
+        }
         Window(
             onCloseRequest = { exitApplication() },
             title = "إذاعة مدرسية احترافي — نسخة الحاسوب v$APP_VERSION",
-            state = rememberWindowState(placement = WindowPlacement.Maximized, width = 1280.dp, height = 800.dp)
+            state = rememberWindowState(placement = WindowPlacement.Maximized, width = 1280.dp, height = 800.dp),
+            icon = windowIcon?.let { BitmapPainter(it) }
         ) {
+            // حد أدنى لحجم النافذة يحفظ تخطيط الاستوديو من الانهيار
+            LaunchedEffect(Unit) { window.minimumSize = java.awt.Dimension(1024, 640) }
             AppTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     AppRoot(startTab = startTab)
@@ -277,6 +290,16 @@ private fun NavItem(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        // شريط تمييز جانبي للعنصر المحدد — إشارة موضع أقوى من اللون وحده (v0.22.0)
+        if (selected) {
+            Box(
+                Modifier
+                    .width(3.dp)
+                    .height(22.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+        }
         AppIcon(kind = icon, size = 20.dp, tint = contentTint)
         Text(
             label,
