@@ -4,7 +4,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,10 +15,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -27,9 +25,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +37,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,7 +49,6 @@ import com.saidjte.schoolradio.desktop.data.ScriptStats
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 
 /**
  * سرعات التلقيم الحي — أربع سرعات بعد طلب المستخدم v0.20.0 «إضافة سرعة رابعة»:
@@ -75,13 +74,17 @@ private object ReadingColors {
 }
 
 /**
- * شاشة القراءة الاحترافية (طلب المستخدم v0.20.0 «طور واجهة شاشة القراءة الى
- * شاشة احترافية» + «طور طريقة ظهور النص» + «مؤشر القراءة»):
- * تلقيم بصري بملء النافذة على خلفية ليلية — مؤشر قراءة ثابت في منتصف الشاشة
- * (شريط تركيز + خط إرشادي + سهمان جانبيان) يحدد سطر القراءة كشاشات الاستوديو
- * الحقيقية، الفقرة الجارية بحدود مضيئة وبقية الفقرات معتمة فتسحب العين إلى
- * الموضع الحي، ساعة الحاسوب في الشريط العلوي كغرفة التحكم، والخط والسرعة
- * والمتابعة تُذكر بين الجلسات — والتمرير الآلي بأربع سرعات.
+ * شاشة القراءة الاحترافية — طلب المستخدم v0.21.0:
+ * «شاشة القراءة يجب أن تضم سكريبت واحد لتجنب ارباك المذيع» — الشاشة تعرض
+ * فقرة واحدة فقط (الجارية أثناء الحلقة، وإلا اختيار المذيع) فلا تتشتت العين
+ * بين فقرات كثيرة،
+ * «النص يجب ان يبدأ من الأسفل و ينتهي في الأعلى» — النص يبدأ تحت الحافة
+ * السفلية ويزحف حتى تخرج آخر سطر من الحافة العليا، فتمرّ كل سطور الفقرة
+ * كاملًا عبر مؤشر القراءة الثابت في منتصف الشاشة (حشوتان بارتفاع الشاشة
+ * قبل النص وبعده تضمنان ذلك رياضيًا مهما كان طول الفقرة).
+ * ومؤشر القراءة (v0.20.0) ثابت: شريط تركيز + خط إرشادي + سهمان جانبيان،
+ * والسرعات أربع، والخط والسرعة والمتابعة تُذكر بين الجلسات، وساعة الحاسوب
+ * في الشريط العلوي كغرف التحكم.
  * تُفتح من أي لوحة قراءة (الاستوديو المدمج، البث المباشر، سكريبت المذيع).
  */
 @Composable
@@ -104,20 +107,32 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
     }
     var followActive by remember { mutableStateOf(savedReading.follow ?: true) }
     var clock by remember { mutableStateOf(StudioLogic.clockText(System.currentTimeMillis())) }
-    val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+    val density = LocalDensity.current
 
     /** حفظ التفضيلات الحالية — يُستدعى عند اختيار صريح من المذيع فقط. */
     fun persistReading() {
         vm.saveReading(fontSp, speed.label, followActive)
     }
 
-    // الفقرة الجارية: نفس منطق لوحات القراءة (من الجدولة أثناء الحلقة وإلا الاختيار اليدوي)
-    val resolved = StudioLogic.resolveScriptSection(schedule, runActive, runIndex, script, selectedId)
-    val activeId = resolved?.first?.id
+    // الفقرة المعروضة — فقرة واحدة: الجارية أثناء الحلقة مع المتابعة،
+    // واختيار المذيع اليدوي إن أمسك القيادة (وقف المتابعة)
+    val shown = StudioLogic.resolveReadingSection(
+        schedule, runActive, runIndex, script, selectedId, followActive
+    )
+    val activeId = shown?.first?.id
     val activeIdx = script.indexOfFirst { it.id == activeId }
     val progress = if (script.isEmpty()) 0f
     else ((activeIdx + 1).coerceAtLeast(1)).toFloat() / script.size
+
+    // ارتفاع مساحة الزحف بالبكسل — الحشوتان قبل النص وبعده (بارتفاع المساحة
+    // ناقص سطر واحد) تجعلان أول سطر مرئيًا عند الحافة السفلية عند البداية
+    // وآخر سطر مرئيًا عند الحافة العليا عند النهاية، فمرّ النص كله عبر
+    // مؤشر القراءة في المنتصف (طلب v0.21.0)
+    var areaPx by remember { mutableIntStateOf(0) }
+    val areaDp = with(density) { areaPx.toDp() }
+    val lineDp = with(density) { (fontSp * 1.6f).sp.toDp() }
+    val edgePad = (areaDp - lineDp).coerceAtLeast(0.dp)
 
     // ساعة الحاسوب — كل ثانية (شاشات الاستوديو تعرض الساعة للمذيع)
     LaunchedEffect(Unit) {
@@ -127,21 +142,29 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
         }
     }
 
-    // التمرير الآلي: خطوات صغيرة متتالية فيبدو الزحف سلسًا لا قفزات
+    // التمرير الآلي: خطوات صغيرة متتالية فيبدو الزحف سلسًا لا قفزات —
+    // وعند بلوغ نهاية النص (آخر سطر خرج من الأعلى) يتوقف التلقيم وحده
     LaunchedEffect(autoScroll, speed) {
         if (autoScroll) {
+            // جلسة انتهت سابقًا والنص عند النهاية؟ نعيده لأسفل الشاشة ليبدأ من جديد
+            if (scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue) {
+                scrollState.scrollTo(0)
+            }
             while (isActive) {
-                listState.scrollBy(speed.pxPerSecond / 20f)
+                scrollState.scrollBy(speed.pxPerSecond / 20f)
+                if (scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue) {
+                    autoScroll = false
+                    break
+                }
                 delay(50)
             }
         }
     }
 
-    // متابعة الجارية: لحظة تقدّم الحلقة لفقرة تالية تنزلق الشاشة إليها تلقائيًا
-    LaunchedEffect(activeIdx, followActive) {
-        if (followActive && activeIdx >= 0) {
-            listState.animateScrollToItem(activeIdx)
-        }
+    // تغيّر الفقرة المعروضة (متابعة الحلقة أو اختيار يدوي) يعيد النص إلى
+    // موضعه الأول: تحت الحافة السفلية — فتُقرأ الفقرة من بدايتها عبر المؤشر
+    LaunchedEffect(activeId) {
+        scrollState.scrollTo(0)
     }
 
     Dialog(
@@ -173,12 +196,22 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        resolved?.second?.label ?: "فارغ",
+                        shown?.second?.label ?: "فارغ",
                         style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
                         color = ReadingColors.title,
                         fontWeight = FontWeight.Bold
                     )
                 }
+                // عنوان الفقرة المعروضة — المذيع يعرف أي سكريبت بين يديه دائمًا
+                Text(
+                    shown?.first?.title?.ifEmpty { "بدون عنوان" } ?: "—",
+                    style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
+                    color = ReadingColors.title,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
                 Spacer(Modifier.weight(1f))
                 // ساعة الحاسوب — للمذيع الذي لا يريد إزعاج نظره عن النص
                 Box(
@@ -272,8 +305,8 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
                 )
             }
 
-            // ================= نص السكريبت كاملًا مع مؤشر القراءة =================
-            if (script.isEmpty()) {
+            // ================= الفقرة الواحدة تزحف من الأسفل إلى الأعلى =================
+            if (script.isEmpty() || shown == null) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Text(
                         "لا يوجد سكريبت بعد — أضف فقرات النص من قسم «سكريبت المذيع».",
@@ -282,76 +315,53 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
                     )
                 }
             } else {
-                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    LazyColumn(
-                        state = listState,
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .onSizeChanged { areaPx = it.height }
+                ) {
+                    Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(ReadingColors.surface)
-                            .padding(horizontal = 26.dp, vertical = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(24.dp)
+                            .verticalScroll(scrollState),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        itemsIndexed(script, key = { _, s -> s.id }) { i, section ->
-                            val isActive = section.id == activeId
-                            // طريقة ظهور النص المطوّرة: الجارية بكامل توهجها
-                            // وبحدود مضيئة، وبقية الفقرات معتمة فتسحب العين
-                            // إلى الموضع الحي بلا عناء
-                            val textAlpha = if (isActive) 1f else 0.42f
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(if (isActive) ReadingColors.active else ReadingColors.surface)
-                                    .then(
-                                        if (isActive) Modifier.border(
-                                            1.5.dp,
-                                            ReadingColors.accent.copy(alpha = 0.6f),
-                                            RoundedCornerShape(12.dp)
-                                        ) else Modifier
-                                    )
-                                    .clickable { vm.selectSection(section.id) }
-                                    .padding(16.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(
-                                        "${i + 1}.",
-                                        style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
-                                        color = if (isActive) ReadingColors.accent else ReadingColors.dim.copy(alpha = textAlpha),
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        section.title.ifEmpty { "بدون عنوان" },
-                                        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = ReadingColors.title.copy(alpha = if (isActive) 1f else 0.55f)
-                                    )
-                                    if (isActive) {
-                                        Spacer(Modifier.weight(1f))
-                                        Text(
-                                            "الجارية",
-                                            style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
-                                            color = ReadingColors.accent,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    section.body.ifEmpty { "—" },
-                                    fontSize = fontSp.sp,
-                                    lineHeight = (fontSp * 1.6f).sp,
-                                    color = ReadingColors.body.copy(alpha = textAlpha)
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "${ScriptStats.wordCount(section.body)} كلمة · " +
-                                            formatMs(ScriptStats.secondsFor(section.body) * 1000),
-                                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
-                                    color = ReadingColors.dim.copy(alpha = textAlpha)
-                                )
-                            }
+                        // حشوة علوية: عند البدء يظهر أول سطر عند الحافة السفلية
+                        // مباشرة — النص كله أمام المؤشر لا فوقه
+                        Spacer(Modifier.height(edgePad))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(ReadingColors.surface)
+                                .border(1.5.dp, ReadingColors.accent.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                                .padding(horizontal = 30.dp, vertical = 24.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                shown.first.title.ifEmpty { "بدون عنوان" },
+                                fontSize = (fontSp * 0.62f).sp,
+                                lineHeight = (fontSp * 0.95f).sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ReadingColors.title
+                            )
+                            Text(
+                                shown.first.body.ifEmpty { "—" },
+                                fontSize = fontSp.sp,
+                                lineHeight = (fontSp * 1.6f).sp,
+                                color = ReadingColors.body
+                            )
+                            Text(
+                                "${ScriptStats.wordCount(shown.first.body)} كلمة · " +
+                                        formatMs(ScriptStats.secondsFor(shown.first.body) * 1000),
+                                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+                                color = ReadingColors.dim
+                            )
                         }
+                        // حشوة سفلية: عند نهاية الزحف يظهر آخر سطر عند الحافة
+                        // العليا تمامًا — النص كله مرّ عبر المؤشر (طلب v0.21.0)
+                        Spacer(Modifier.height(edgePad))
                     }
 
                     // ================= مؤشر القراءة (v0.20.0) =================
@@ -410,7 +420,7 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
                     enabled = activeIdx >= 0,
                     onClick = {
                         if (activeIdx >= 0) {
-                            scope.launch { listState.animateScrollToItem(activeIdx) }
+                            vm.selectSection(activeId!!)
                         }
                     }
                 )

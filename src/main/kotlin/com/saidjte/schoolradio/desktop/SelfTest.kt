@@ -651,6 +651,47 @@ object SelfTest {
             check(StudioLogic.restoreOptional(listOf("أ", "ب"), { it }, "غائب") == null) { "restoreOptional missing" }
             devFile.delete()
 
+            // v0.21.0: أبعاد حيزات الاستوديو بالفأرة — حسم محبوس وحفظ بين الجلسات
+            val dl = com.saidjte.schoolradio.desktop.data.StudioLayoutLogic.resolve(null)
+            check(dl.rightTopFrac == 0.5f) { "right areas equal height default" }
+            val clamped = com.saidjte.schoolradio.desktop.data.StudioLayoutLogic.resolve(
+                com.saidjte.schoolradio.desktop.data.LayoutJson(
+                    rightWidth = 1f, broadcastWidth = 99999f,
+                    rightTopFrac = -2f, midTopFrac = 5f, bcMicFrac = 0f
+                )
+            )
+            check(clamped.rightWidth == com.saidjte.schoolradio.desktop.data.StudioLayoutLogic.RIGHT_WIDTH_MIN &&
+                    clamped.broadcastWidth == com.saidjte.schoolradio.desktop.data.StudioLayoutLogic.BC_WIDTH_MAX &&
+                    clamped.rightTopFrac == com.saidjte.schoolradio.desktop.data.StudioLayoutLogic.RIGHT_TOP_MIN &&
+                    clamped.midTopFrac == com.saidjte.schoolradio.desktop.data.StudioLayoutLogic.MID_TOP_MAX &&
+                    clamped.bcMicFrac == com.saidjte.schoolradio.desktop.data.StudioLayoutLogic.BC_MIC_MIN) { "layout clamp" }
+            val layFile = File(tmp, "selftest-layout.json")
+            val stl1 = SettingsStore(layFile)
+            stl1.setLayout(
+                com.saidjte.schoolradio.desktop.data.StudioLayoutLogic.toJson(
+                    com.saidjte.schoolradio.desktop.data.StudioLayout(500f, 400f, 0.7f, 0.85f, 0.6f)
+                )
+            )
+            val stl2 = SettingsStore(layFile)
+            val sl = stl2.layout()
+            check(sl.rightWidth == 500f && sl.broadcastWidth == 400f && sl.rightTopFrac == 0.7f &&
+                    sl.midTopFrac == 0.85f && sl.bcMicFrac == 0.6f) { "layout persist" }
+            layFile.delete()
+
+            // v0.21.0: شاشة القراءة بسكريبت واحد — متابعة تعرض الجارية ووقفها
+            // يعطي المذيع الاختيار اليدوي أثناء الحلقة
+            val ss = listOf(
+                com.saidjte.schoolradio.desktop.data.ScriptSection(1, "مقدمة", "أ"),
+                com.saidjte.schoolradio.desktop.data.ScriptSection(2, "خبر", "ب")
+            )
+            val sch = listOf(
+                com.saidjte.schoolradio.desktop.data.ScheduleItem(10, "مقدمة", scriptSectionId = 1L),
+                com.saidjte.schoolradio.desktop.data.ScheduleItem(11, "خبر", scriptSectionId = 2L)
+            )
+            check(StudioLogic.resolveReadingSection(sch, true, 1, ss, null, true)?.first?.id == 2L) { "reading follows run" }
+            check(StudioLogic.resolveReadingSection(sch, true, 1, ss, 1L, false)?.first?.id == 1L) { "reading manual takeover" }
+            check(StudioLogic.resolveReadingSection(sch, true, 0, ss, 999L, false)?.first?.id == 1L) { "reading stale manual falls back" }
+
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
             tmp.listFiles()?.forEach { it.delete() }

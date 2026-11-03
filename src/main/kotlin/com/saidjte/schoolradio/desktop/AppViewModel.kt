@@ -31,6 +31,8 @@ import com.saidjte.schoolradio.desktop.data.RepeatMode
 import com.saidjte.schoolradio.desktop.data.Role
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
+import com.saidjte.schoolradio.desktop.data.StudioLayout
+import com.saidjte.schoolradio.desktop.data.StudioLayoutLogic
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
 import com.saidjte.schoolradio.desktop.data.ScriptSection
 import com.saidjte.schoolradio.desktop.data.ScriptStore
@@ -179,6 +181,16 @@ class AppViewModel {
     /** حفظ تفضيلات شاشة القراءة — عند كل تغيير من المذيع. */
     fun saveReading(fontSp: Float, speed: String, follow: Boolean) {
         settingsStore.setReading(ReadingJson(fontSp = fontSp, speed = speed, follow = follow))
+    }
+
+    // ================= أبعاد حيزات الاستوديو: التحكم بالفأرة + الحفظ (v0.21.0) =================
+
+    /** الأبعاد المحسومة من الجلسة السابقة — الافتراضي إن لم يُضبط قطع. */
+    fun savedLayout(): StudioLayout = settingsStore.layout()
+
+    /** حفظ أبعاد الحيزات بعد إفلات الفاصل — تعود كما ضبطها المذيع عند الإقلاع. */
+    fun saveLayout(l: StudioLayout) {
+        settingsStore.setLayout(StudioLayoutLogic.toJson(l))
     }
 
     // ================= وحدة المزج الإذاعية =================

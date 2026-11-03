@@ -205,8 +205,9 @@ fun EmptyState(
 // ================= بطاقة الميكروفون المشتركة =================
 
 /**
- * بطاقة الميكروفون المشتركة بين الاستوديو المدمج والبث المباشر: اختيار الجهاز
- * والمخرج، مقياس مقطعي بذروة، سماع مراقب، وتسجيل — نسخة واحدة يحين مكان نسختين.
+ * بطاقة الميكروفون المشتركة بين الاستوديو المدمج والبث المباشر: سطر المداخل
+ * وسطر المخارج (طلب v0.21.0)، مقياس مقطعي بذروة، سماع مراقب، وتسجيل —
+ * نسخة واحدة يحين مكان نسختين.
  */
 @Composable
 fun BroadcastMicCard(vm: AppViewModel) {
@@ -290,9 +291,20 @@ fun BroadcastMicCard(vm: AppViewModel) {
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
+        }
+
+        // سطر المداخل (طلب v0.21.0: «في حيز البث اجعل سطرا مخصصا المداخل و سطر
+        // مخصص المخارج») — المدخل ١ هو جهاز المذيع والمدخل ٢ اختياري يُخلط في
+        // صوته (مذيعان أو ميكروفون القاعة)، كلاهما في سطر واحد واضح
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                "المداخل",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
             Box {
                 SecondaryAction(
-                    text = "الجهاز…",
+                    text = "١: " + (selectedDevice?.let { shortenName(it.name, 12) } ?: "…"),
                     onClick = { refreshDeviceLists(); devicesMenu = true }
                 )
                 DropdownMenu(expanded = devicesMenu, onDismissRequest = { devicesMenu = false }) {
@@ -308,20 +320,9 @@ fun BroadcastMicCard(vm: AppViewModel) {
                     }
                 }
             }
-        }
-
-        // المدخل الثاني (اختياري): مذيعان أو ميكروفون القاعة — يُخلط في صوت المذيع
-        // ويعالج بالسلسلة كلها. يُطبّق عند بدء البث (تغييره أثناء الهواء يحتاج إعادة بدء)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "المدخل ٢",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.weight(1f))
             Box {
                 SecondaryAction(
-                    text = selectedDevice2?.let { shortenName(it.name, 14) } ?: "بلا",
+                    text = "٢: " + (selectedDevice2?.let { shortenName(it.name, 12) } ?: "بلا"),
                     onClick = { refreshDeviceLists(); devices2Menu = true }
                 )
                 DropdownMenu(expanded = devices2Menu, onDismissRequest = { devices2Menu = false }) {
@@ -353,18 +354,17 @@ fun BroadcastMicCard(vm: AppViewModel) {
             }
         }
 
-        // محدّدا المخرجين (السماعات): الرئيسي يوجّه الموسيقى والتسجيلات والسماع المراقب،
-        // والثاني اختياري — نفس الصوت يُكتب في الجهازين معًا (قاعة + سماعة المذيع مثلًا)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // سطر المخارج — المخرج ١ يوجّه الموسيقى والتسجيلات والسماع المراقب،
+        // والمخرج ٢ اختياري: نفس الصوت يُكتب في الجهازين معًا (قاعة + سماعة المذيع مثلًا)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                "المخرج ١",
+                "المخارج",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
-            Spacer(Modifier.weight(1f))
             Box {
                 SecondaryAction(
-                    text = selectedOut?.let { shortenName(it.name, 14) } ?: "المخرج…",
+                    text = "١: " + (selectedOut?.let { shortenName(it.name, 12) } ?: "المخرج…"),
                     onClick = { refreshDeviceLists(); outMenu = true }
                 )
                 DropdownMenu(expanded = outMenu, onDismissRequest = { outMenu = false }) {
@@ -386,17 +386,9 @@ fun BroadcastMicCard(vm: AppViewModel) {
                     }
                 }
             }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "المخرج ٢",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.weight(1f))
             Box {
                 SecondaryAction(
-                    text = selectedOut2?.let { shortenName(it.name, 14) } ?: "بلا",
+                    text = "٢: " + (selectedOut2?.let { shortenName(it.name, 12) } ?: "بلا"),
                     onClick = { refreshDeviceLists(); out2Menu = true }
                 )
                 DropdownMenu(expanded = out2Menu, onDismissRequest = { out2Menu = false }) {
@@ -426,6 +418,7 @@ fun BroadcastMicCard(vm: AppViewModel) {
                     }
                 }
             }
+            Spacer(Modifier.weight(1f))
             SecondaryAction(text = "تحديث", onClick = { refreshDeviceLists() })
         }
 
@@ -536,17 +529,23 @@ private enum class MusicSource(val label: String) {
 }
 
 /**
- * حيز الموسيقى في عمود البث — منطقة اختيار فقط: القائمة والمكتبة كلتاهما قائمة
+ * حيّز الموسيقى في عمود البث — منطقة اختيار فقط: القائمة والمكتبة كلتاهما قائمة
  * نقية بلا أي أزرار نقل، على غرار بعضهما (طلب المستخدم v0.17.0: «أزل أزرار
  * التحكم بمشغل الموسيقى من منطقة الموسيقى لتكون مخصصة القائمة على غرار
  * المكتبة») — النقر على مقطع يبثه فورًا، وكل أزرار النقل في المشغل المستقل
  * BroadcastPlayerCard أسفل شاشة السكريبت.
+ *
+ * طلب v0.21.0 «اعطي أهمية لحيز الموسيقى كي تظهر القوائم جيداً»: في الاستوديو
+ * المدمج تُمرَّر expandPane = true فتتمدد لوحة المقاطع بكل المساحة الباقية
+ * من البطاقة (والبطاقة نفسها تتمدد بالوزن من عمود البث) فتظهر القوائم بعدد
+ * صفوف كبير بدل الحيّز المقتطع.
  */
 @Composable
 fun BroadcastMusicCard(
     vm: AppViewModel,
     modifier: Modifier = Modifier,
-    paneHeight: Dp = 170.dp
+    paneHeight: Dp = 170.dp,
+    expandPane: Boolean = false
 ) {
     val player = vm.player
     val playlist by vm.playlist.collectAsState()
@@ -572,6 +571,10 @@ fun BroadcastMusicCard(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+        // لوحة المقاطع: متمددة بكل المساحة الباقية (الاستوديو) أو بارتفاع مقتطع
+        // (البث المباشر) — weight يعمل داخل نطاق العمود فقط
+        val paneModifier = if (expandPane) Modifier.fillMaxWidth().weight(1f)
+        else Modifier.fillMaxWidth().height(paneHeight + 24.dp)
         // الرأس: العنوان + شارة الهواء الحية + مفتاحا المصدر
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
@@ -615,7 +618,7 @@ fun BroadcastMusicCard(
                     currentIndex = currentIndex,
                     selectedCategory = selectedCategory,
                     libraryEntries = libraryEntries,
-                    modifier = Modifier.fillMaxWidth().height(paneHeight + 24.dp)
+                    modifier = paneModifier
                 )
             }
             MusicSource.LIBRARY -> {
@@ -636,7 +639,7 @@ fun BroadcastMusicCard(
                     currentIndex = currentIndex,
                     selectedCategory = selectedCategory,
                     libraryEntries = libraryEntries,
-                    modifier = Modifier.fillMaxWidth().height(paneHeight + 24.dp)
+                    modifier = paneModifier
                 )
             }
         }

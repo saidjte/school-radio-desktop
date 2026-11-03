@@ -25,6 +25,26 @@ data class ReadingJson(
     val follow: Boolean? = null
 )
 
+/**
+ * أبعاد حيزات شاشة الاستوديو المحفوظة — طلب المستخدم v0.21.0 «أعطي المستعمل
+ * طريقة التحكم في ابعاد كل الحيزات الموجودة في شاشة الاستوديو بواسطة الفأرة»:
+ * سحب الفواصل يغيّر الأبعاد وتُكتب في settings.json فتعود كما ضبطها المذيع
+ * عند الإقلاع. القيم أرقام مطلقة (عرض بالـdp ونِسَب ارتفاع 0..1) وتُحبَس
+ * عند التحميل داخل حدود الواجهة فلا يكسر ملف معدَّل يدويًا التخطيط.
+ */
+data class LayoutJson(
+    /** عرض عمود الجانب الأيمن (التسجيلات + الجدولة) بالـdp. */
+    val rightWidth: Float? = null,
+    /** عرض عمود البث بالـdp. */
+    val broadcastWidth: Float? = null,
+    /** نصيب الحيّز العلوي في الجانب الأيمن (التسجيلات) من الارتفاع — الباقي للجدولة. */
+    val rightTopFrac: Float? = null,
+    /** نصيب شاشة السكريبت من ارتفاع العمود الأوسط — الباقي للمشغل المستقل. */
+    val midTopFrac: Float? = null,
+    /** نصيب حيّز الميكروفون من ارتفاع عمود البث — الباقي لحيّز الموسيقى. */
+    val bcMicFrac: Float? = null
+)
+
 /** إعدادات التطبيق العامة — تُحفظ في settings.json. */
 data class AppSettings(
     val schoolName: String? = null,
@@ -33,7 +53,9 @@ data class AppSettings(
     /** اختيار أجهزة الصوت المحفوظ (أسماء — تُطابق عند الإقلاع). */
     val devices: DevicesJson? = null,
     /** تفضيلات شاشة القراءة المحفوظة. */
-    val reading: ReadingJson? = null
+    val reading: ReadingJson? = null,
+    /** أبعاد حيزات شاشة الاستوديو المحفوظة (سحب الفواصل). */
+    val layout: LayoutJson? = null
 )
 
 /**
@@ -118,6 +140,17 @@ class SettingsStore(private val file: File) {
                 follow = r.follow
             )
         )
+        persist()
+    }
+
+    // ================= أبعاد حيزات الاستوديو: حفظ سحب الفواصل (v0.21.0) =================
+
+    /** الأبعاد المحسومة بحبس كل قيمة داخل حدود الواجهة — الافتراضي من StudioLayoutLogic. */
+    fun layout(): StudioLayout = StudioLayoutLogic.resolve(doc.layout)
+
+    /** حفظ أبعاد الحيزات — يُستدعى عند إفلات الفاصل بعد السحب. */
+    fun setLayout(l: LayoutJson) {
+        doc = doc.copy(layout = l)
         persist()
     }
 

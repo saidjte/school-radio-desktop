@@ -10,6 +10,61 @@ enum class ScriptSource(val label: String) {
     MANUAL("اختيار يدوي")
 }
 
+/**
+ * أبعاد حيزات شاشة الاستوديو — القيم الفعلية بعد الحسم من المحفوظ (v0.21.0):
+ * الافتراضي يلبي «في الجانب الايمن اجعل الحيزين متساويين في الارتفاع»
+ * (rightTopFrac = 0.5)، وكل قيمة محبوسة داخل حدود الواجهة.
+ */
+data class StudioLayout(
+    val rightWidth: Float = 360f,
+    val broadcastWidth: Float = 330f,
+    val rightTopFrac: Float = 0.5f,
+    val midTopFrac: Float = 0.72f,
+    val bcMicFrac: Float = 0.45f
+)
+
+/**
+ * حدود أبعاد الحيزات وحسمها — نقية قابلة للاختبار، تستعملها الواجهة عند
+ * السحب (لتقييد الفاصل) والمخزن عند التحميل (لتعقيم الملف).
+ */
+object StudioLayoutLogic {
+    const val RIGHT_WIDTH_MIN = 280f
+    const val RIGHT_WIDTH_MAX = 560f
+    const val BC_WIDTH_MIN = 280f
+    const val BC_WIDTH_MAX = 480f
+    const val RIGHT_TOP_MIN = 0.2f
+    const val RIGHT_TOP_MAX = 0.8f
+    const val MID_TOP_MIN = 0.3f
+    const val MID_TOP_MAX = 0.9f
+    const val BC_MIC_MIN = 0.25f
+    const val BC_MIC_MAX = 0.8f
+
+    /** حسم الأبعاد: المحفوظ داخل الحدود، وما خارجه أو الفاسد يعود للحد الأقرب. */
+    fun resolve(l: LayoutJson?): StudioLayout {
+        val d = StudioLayout()
+        if (l == null) return d
+        return StudioLayout(
+            rightWidth = l.rightWidth?.coerceIn(RIGHT_WIDTH_MIN, RIGHT_WIDTH_MAX) ?: d.rightWidth,
+            broadcastWidth = l.broadcastWidth?.coerceIn(BC_WIDTH_MIN, BC_WIDTH_MAX) ?: d.broadcastWidth,
+            rightTopFrac = l.rightTopFrac?.coerceIn(RIGHT_TOP_MIN, RIGHT_TOP_MAX) ?: d.rightTopFrac,
+            midTopFrac = l.midTopFrac?.coerceIn(MID_TOP_MIN, MID_TOP_MAX) ?: d.midTopFrac,
+            bcMicFrac = l.bcMicFrac?.coerceIn(BC_MIC_MIN, BC_MIC_MAX) ?: d.bcMicFrac
+        )
+    }
+
+    /** تحويل حالة الواجهة إلى JSON محفوظ — قيم نهائية مرقّمة. */
+    fun toJson(l: StudioLayout) = LayoutJson(
+        rightWidth = l.rightWidth,
+        broadcastWidth = l.broadcastWidth,
+        rightTopFrac = l.rightTopFrac,
+        midTopFrac = l.midTopFrac,
+        bcMicFrac = l.bcMicFrac
+    )
+
+    /** قيد نسبة داخل حدودها — تستعمله فواصل السحب لحظة بلحظة. */
+    fun clampFrac(v: Float, min: Float, max: Float): Float = v.coerceIn(min, max)
+}
+
 /** حالة الهواء المجمّعة من كل مصادر الصوت في الاستوديو. */
 data class StudioStatus(
     val micLive: Boolean,
@@ -25,6 +80,29 @@ data class StudioStatus(
  * دوال خالصة حتمية كاملة — مغطاة باختبارات وحدوية قبل أي رفع.
  */
 object StudioLogic {
+
+    /**
+     * الفقرة المعروضة في شاشة القراءة — طلب v0.21.0 «شاشة القراءة يجب أن تضم
+     * سكريبت واحد لتجنب ارباك المذيع»: شاشة واحدة تعرض فقرة واحدة فقط.
+     * متابعة الجارية مفعّلة (أو لا حلقة حية): نفس أولوية resolveScriptSection
+     * (الجارية من الجدولة ثم اليدوي ثم الأولى). متابعة موقوفة أثناء حلقة حية:
+     * المذيع أمسك القيادة — الفقرة المختارة يدويًا هي المعروضة ما دامت صالحة،
+     * وإن لم يختر شيئًا تبقى الجارية حتى يختار.
+     */
+    fun resolveReadingSection(
+        schedule: List<ScheduleItem>,
+        runActive: Boolean,
+        runIndex: Int,
+        script: List<ScriptSection>,
+        manualSectionId: Long?,
+        followActive: Boolean
+    ): Pair<ScriptSection, ScriptSource>? {
+        if (script.isEmpty()) return null
+        if (runActive && !followActive && manualSectionId != null && manualSectionId > 0L) {
+            script.firstOrNull { it.id == manualSectionId }?.let { return it to ScriptSource.MANUAL }
+        }
+        return resolveScriptSection(schedule, runActive, runIndex, script, manualSectionId)
+    }
 
     /**
      * أولوية عرض السكريبت على لوحة القراءة في الاستوديو المدمج:

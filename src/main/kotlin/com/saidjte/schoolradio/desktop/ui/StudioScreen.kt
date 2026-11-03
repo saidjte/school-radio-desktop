@@ -3,6 +3,7 @@ package com.saidjte.schoolradio.desktop.ui
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,12 +28,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -46,19 +55,39 @@ import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.ScriptSection
 import com.saidjte.schoolradio.desktop.data.ScriptStats
 import com.saidjte.schoolradio.desktop.data.SegmentStatus
+import com.saidjte.schoolradio.desktop.data.StudioLayout
+import com.saidjte.schoolradio.desktop.data.StudioLayoutLogic
 import com.saidjte.schoolradio.desktop.data.StudioLogic
+import java.awt.Cursor
 import java.io.File
 
 /**
  * الاستوديو المدمج: الجدولة + السكريبت + البث في شاشة واحدة للإذاعة.
- * (يمين) فقرات الحلقة ولوحة تشغيلها الحي،
- * (وسط) لوحة قراءة السكريبت بخط كبير تنتقل آليًا مع الفقرة الجارية،
- *       وأسفلها مباشرة مشغل الموسيقى المستقل بنفس عرض شاشة السكريبت (طلب المستخدم)
- *       — مظهر مشغل حقيقي: شريط سعي وأزرار أيقونية بلا نصوص كبيرة،
- * (يسار) البث: الميكروفون وحيز الموسيقى (المكتبة والقوائم كما كان) ووحدة المزج.
+ * (يمين) حيز التسجيلات وحيز الجدولة متساويان في الارتفاع افتراضيًا
+ *       (طلب المستخدم v0.21.0) وبفاصل سحب بينهما،
+ * (وسط) لوحة قراءة السكريبت بخط كبير وأسفلها مشغل الموسيقى المستقل
+ *       بنفس العرض وبفاصل سحب بينهما،
+ * (يسار) حيّز البث: الميكروفون وحيّز موسيقى واسع تظهر فيه القوائم جيدًا
+ *       (طلب المستخدم v0.21.0) ووحدة المزج.
+ * كل الحيزات تُضبط أبعادها بالفأرة عبر فواصل السحب (طلب v0.21.0: «أعطي
+ * المستعمل طريقة التحكم في ابعاد كل الحيزات الموجودة في شاشة الاستوديو
+ * بواسطة الفأرة») والأبعاد تُحفظ في settings.json فتعود بين الجلسات.
  */
 @Composable
 fun StudioScreen(vm: AppViewModel) {
+    // أبعاد الحيزات: المحفوظة من الجلسة السابقة، والسحب يعدّلها ويحفظ عند الإفلات
+    val saved = remember { vm.savedLayout() }
+    var rightW by remember { mutableFloatStateOf(saved.rightWidth) }
+    var bcW by remember { mutableFloatStateOf(saved.broadcastWidth) }
+    var rightTop by remember { mutableFloatStateOf(saved.rightTopFrac) }
+    var midTop by remember { mutableFloatStateOf(saved.midTopFrac) }
+    var bcMic by remember { mutableFloatStateOf(saved.bcMicFrac) }
+    val dens = LocalDensity.current.density
+
+    fun persist() {
+        vm.saveLayout(StudioLayout(rightW, bcW, rightTop, midTop, bcMic))
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         StudioTopBar(vm)
         // شريط الموعد الأسبوعي المنطلق — يظهر أعلاه محتوى الاستوديو لحظة الإطلاق
@@ -71,37 +100,212 @@ fun StudioScreen(vm: AppViewModel) {
                 .weight(1f)
                 .fillMaxWidth()
                 .padding(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // العمود الأيمن: حيز التسجيلات أعلى ثم الجدولة تحته (طلب المستخدم)
-            StudioRightColumn(vm)
-            // المنطقة الوسطى: شاشة السكريبت وأسفلها مباشرة مشغل الموسيقى المستقل
-            // بنفس عرض الشاشة (طلب المستخدم)
-            Column(
-                modifier = Modifier.weight(1f).fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                StudioScriptPanel(vm, Modifier.weight(1f))
-                StudioPlayerArea(vm)
-            }
-            // عمود البث: الميكروفون + حيز الموسيقى كما كان + رابط المزج
-            StudioBroadcastPanel(vm)
+            // العمود الأيمن: حيّزا التسجيلات والجدولة متساويان في الارتفاع (v0.21.0)
+            StudioRightColumn(
+                vm = vm,
+                modifier = Modifier.width(rightW.dp),
+                topFrac = rightTop,
+                onTopFrac = { rightTop = it },
+                onEnd = { persist() }
+            )
+            // فاصل سحب: عرض الجانب الأيمن
+            StudioHSplit(
+                onDragX = { dx ->
+                    rightW = (rightW + dx / dens).coerceIn(StudioLayoutLogic.RIGHT_WIDTH_MIN, StudioLayoutLogic.RIGHT_WIDTH_MAX)
+                },
+                onEnd = { persist() }
+            )
+            // المنطقة الوسطى: شاشة السكريبت ثم فاصل سحب ثم المشغل المستقل —
+            // بنفس عرض الشاشة (طلب المستخدم v0.15.0)
+            StudioMiddleColumn(
+                vm = vm,
+                midTop = midTop,
+                onMidTop = { midTop = it },
+                onEnd = { persist() },
+                modifier = Modifier.weight(1f)
+            )
+            // فاصل سحب: عرض عمود البث
+            StudioHSplit(
+                onDragX = { dx ->
+                    bcW = (bcW - dx / dens).coerceIn(StudioLayoutLogic.BC_WIDTH_MIN, StudioLayoutLogic.BC_WIDTH_MAX)
+                },
+                onEnd = { persist() }
+            )
+            // عمود البث: الميكروفون + حيّز موسيقى واسع + رابط المزج
+            StudioBroadcastPanel(
+                vm = vm,
+                modifier = Modifier.width(bcW.dp),
+                micFrac = bcMic,
+                onMicFrac = { bcMic = it },
+                onEnd = { persist() }
+            )
         }
     }
 }
 
 /**
- * العمود الأيمن للاستوديو المدمج: حيز التسجيلات في القمة مباشرة — ظاهر دائمًا
- * بلا تمرير — ثم لوحة الجدولة تحته ببقية المساحة.
+ * العمود الأيمن للاستوديو المدمج: حيّزا التسجيلات والجدولة متساويان في
+ * الارتفاع افتراضيًا (طلب المستخدم v0.21.0 «في الجانب الايمن اجعل الحيزين
+ * متساويين في الارتفاع») — والفاصل بينهما قابل للسحب بالفأرة فمن أراد
+ * اختلافًا يعيد توزيعهما بسهولة.
  */
 @Composable
-private fun StudioRightColumn(vm: AppViewModel) {
+private fun StudioRightColumn(
+    vm: AppViewModel,
+    modifier: Modifier = Modifier,
+    topFrac: Float,
+    onTopFrac: (Float) -> Unit,
+    onEnd: () -> Unit
+) {
+    var heightPx by remember { mutableIntStateOf(1) }
+
     Column(
-        modifier = Modifier.width(360.dp).fillMaxHeight(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        modifier = modifier
+            .fillMaxHeight()
+            .onSizeChanged { heightPx = it.height.coerceAtLeast(1) },
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        StudioRecordingsCard(vm, Modifier.height(200.dp))
-        StudioSchedulePanel(vm, Modifier.weight(1f))
+        StudioRecordingsCard(vm, Modifier.fillMaxWidth().weight(topFrac))
+        StudioVSplit(
+            onDragY = { dy ->
+                onTopFrac(
+                    StudioLayoutLogic.clampFrac(
+                        topFrac + dy / heightPx,
+                        StudioLayoutLogic.RIGHT_TOP_MIN, StudioLayoutLogic.RIGHT_TOP_MAX
+                    )
+                )
+            },
+            onEnd = onEnd
+        )
+        StudioSchedulePanel(vm, Modifier.fillMaxWidth().weight(1f - topFrac))
+    }
+}
+
+/**
+ * العمود الأوسط: شاشة السكريبت بحصة قابلة للسحب والمشغل المستقل تحتها —
+ * الفاصل بينهما بالفأرة ويُحفظ موضع بين الجلسات.
+ */
+@Composable
+private fun StudioMiddleColumn(
+    vm: AppViewModel,
+    midTop: Float,
+    onMidTop: (Float) -> Unit,
+    onEnd: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var heightPx by remember { mutableIntStateOf(1) }
+
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .onSizeChanged { heightPx = it.height.coerceAtLeast(1) },
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        StudioScriptPanel(vm, Modifier.weight(midTop))
+        StudioVSplit(
+            onDragY = { dy ->
+                onMidTop(
+                    StudioLayoutLogic.clampFrac(
+                        midTop + dy / heightPx,
+                        StudioLayoutLogic.MID_TOP_MIN, StudioLayoutLogic.MID_TOP_MAX
+                    )
+                )
+            },
+            onEnd = onEnd
+        )
+        // منطقة المشغل المستقل: بتمرير داخلي حين يضيّقها المذيع بلا فقد أي زر
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f - midTop)
+                .verticalScroll(rememberScrollState())
+        ) {
+            BroadcastPlayerCard(vm = vm, modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+// ================= فواصل السحب بالفأرة (طلب v0.21.0) =================
+
+/**
+ * فاصل سحب عمودي (بين الأعمدة): سحب أفقي يعدّل عرض العمود المجاور —
+ * مؤشر السهم الثنائي والقبضة المرئية يعلمان قابلية السحب، والإفلات يحفظ.
+ */
+@Composable
+private fun StudioHSplit(
+    onDragX: (Float) -> Unit,
+    onEnd: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val dragCb by rememberUpdatedState(onDragX)
+    val endCb by rememberUpdatedState(onEnd)
+    Box(
+        modifier = modifier
+            .width(10.dp)
+            .fillMaxHeight()
+            .pointerHoverIcon(PointerIcon(Cursor.getPredefinedCursor(Cursor.E_RESIZE_CURSOR)))
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDrag = { change, drag ->
+                        change.consume()
+                        dragCb(drag.x)
+                    },
+                    onDragEnd = { endCb() },
+                    onDragCancel = { endCb() }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        // قبضة مرئية: مضلّع رقيق عمودي في المنتصف
+        Box(
+            Modifier
+                .width(4.dp)
+                .height(52.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f))
+        )
+    }
+}
+
+/**
+ * فاصل سحب أفقي (بين حيّزين متراصين): سحب عمودي يعيد توزيع الارتفاع بينهما —
+ * الإفلات يحفظ الموضع الجديد في الإعدادات.
+ */
+@Composable
+private fun StudioVSplit(
+    onDragY: (Float) -> Unit,
+    onEnd: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val dragCb by rememberUpdatedState(onDragY)
+    val endCb by rememberUpdatedState(onEnd)
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(10.dp)
+            .pointerHoverIcon(PointerIcon(Cursor.getPredefinedCursor(Cursor.N_RESIZE_CURSOR)))
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDrag = { change, drag ->
+                        change.consume()
+                        dragCb(drag.y)
+                    },
+                    onDragEnd = { endCb() },
+                    onDragCancel = { endCb() }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        // قبضة مرئية: مضلّع رقيق أفقي في المنتصف
+        Box(
+            Modifier
+                .width(52.dp)
+                .height(4.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f))
+        )
     }
 }
 
@@ -506,7 +710,9 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
             }
         }
 
-        // معلومات أسفل اللوحة + تنقّل سلس بين الفقرات أثناء القراءة
+        // معلومات أسفل اللوحة + تنقّل سلس بين الفقرات أثناء القراءة —
+        // نص المعلومات هو المطاط (weight) فلا تنضغط الأزرار حين يضيّق
+        // المذيع العمود بالفأرة (v0.21.0)
         val shown = resolved?.first
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -517,9 +723,11 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
                 else "${ScriptStats.wordCount(shown.body)} كلمة · " +
                         "زمن تقديري ${formatMs(ScriptStats.secondsFor(shown.body) * 1000)}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
             )
-            Spacer(Modifier.weight(1f))
             SecondaryAction(
                 text = "السابقة",
                 onClick = { vm.selectAdjacentSection(-1) },
@@ -545,36 +753,60 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
 
 // ================= العمود الأيسر: البث =================
 
+/**
+ * عمود البث: الميكروفون وحيّز الموسيقى ووحدة المزج — طلب v0.21.0
+ * «اعطي أهمية لحيز الموسيقى كي تظهر القوائم جيداً»: حيّز الموسيقى يأخذ
+ * كل المساحة الباقية من العمود فتظهر القوائم بعدد صفوف كبير، وحيّز
+ * الميكروفون فوقه بفاصل سحب بالفأرة (بتمرير داخلي إن ضُيّق) — وموضع
+ * الفاصل يُحفظ بين الجلسات.
+ */
 @Composable
-private fun StudioBroadcastPanel(vm: AppViewModel) {
-    // تمرير عمودي رشيق حين تكون النافذة قصيرة — كل المحتوى يبقى قابلًا للوصول
+private fun StudioBroadcastPanel(
+    vm: AppViewModel,
+    modifier: Modifier = Modifier,
+    micFrac: Float,
+    onMicFrac: (Float) -> Unit,
+    onEnd: () -> Unit
+) {
+    var heightPx by remember { mutableIntStateOf(1) }
+
     Column(
-        modifier = Modifier
-            .width(330.dp)
+        modifier = modifier
             .fillMaxHeight()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .onSizeChanged { heightPx = it.height.coerceAtLeast(1) },
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
             "البث",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
         )
-        BroadcastMicCard(vm)
-        // حيز الموسيقى كما كان: القوائم المسمّاة والمكتبة المصنفة (توضيح المستخدم)
-        BroadcastMusicCard(vm, paneHeight = 110.dp)
+        // حيّز الميكروفون: بتمرير داخلي حين يضيّقه المذيع لصالح الموسيقى
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .weight(micFrac)
+                .verticalScroll(rememberScrollState())
+        ) {
+            BroadcastMicCard(vm)
+        }
+        StudioVSplit(
+            onDragY = { dy ->
+                onMicFrac(
+                    StudioLayoutLogic.clampFrac(
+                        micFrac + dy / heightPx,
+                        StudioLayoutLogic.BC_MIC_MIN, StudioLayoutLogic.BC_MIC_MAX
+                    )
+                )
+            },
+            onEnd = onEnd
+        )
+        // حيّز الموسيقى: كل المساحة الباقية — القائمة والمكتبة تظهران جيدًا
+        Box(Modifier.fillMaxWidth().weight(1f - micFrac)) {
+            BroadcastMusicCard(vm = vm, modifier = Modifier.fillMaxSize(), expandPane = true)
+        }
         MixerLinkCard(vm)
     }
-}
-
-/**
- * مشغل الموسيقى المستقل (طلب المستخدم): منطقة تحت شاشة السكريبت مباشرة وبنفس
- * عرضها، بمظهر مشغل موسيقى حقيقي — شريط تقدم قابل للسعي وأزرار نقل بأيقونات
- * مرسومة بدل الأزرار النصية الكبيرة — والحيز ذو المكتبة والقوائم يبقى في عمود البث.
- */
-@Composable
-private fun StudioPlayerArea(vm: AppViewModel) {
-    BroadcastPlayerCard(vm = vm, modifier = Modifier.fillMaxWidth())
 }
 
 @Composable
