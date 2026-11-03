@@ -474,6 +474,6 @@
 
 **دروس البيئة:** التطبيق تحت Xvfb يطلب libXtst.so.6 (غير موجودة بالصندوق) — تُحل بتنزيل deb libxtst6 وفكّه إلى /home/z/.xlibs/deb/x وLD_LIBRARY_PATH إليه؛ وCompose يرفض GL سياق Xvfb فرأسياً فيجب SKIKO_RENDER_API=SOFTWARE. سكربتا المراقبة واللقطات أعيد بناؤهما (watch_ci_desktop.py بمراقبة API، xshot.py بـ ffmpeg x11grab).
 
-**التسليم:** CI 41732863655 (ff885b0) success — الأصول الأربعة HTTP 200 (MSI 88,037,173 / Windows jar 39,160,895 / Linux jar 40,960,661 / macOS jar 46,193,190) — الجرات الثلاث نُزّلت واجتازت SELFTEST OK — version 0.22.0 — نسخ احتياطية في download/ — قالب الملاحظات حُدّث مع أرشفة v0.21.0 وجسم الإصدار المنشور رُقّع بنفس النص عبر PATCH (Release 433077146، PATCH_OK).
+**التسليم:** CI 41732863655 (ff885b0) success — الأصول الأربعة HTTP 200 (MSI 88,037,173 / Windows jar 39,160,895 / Linux jar 40,960,661 / macOS jar 46,193,190) — الجرات الثلاث نُزّلت واجتازت SELFTEST OK — version 0.22.0 — نسخ احتياطية في download/ — قالب الملاحظات حُدّث مع أرشفة v0.21.0 وجسم الإصدار المنشور رُقّع بنفس النص عبر PATCH (Release 433298296، PATCH_OK).
 
 **الإصدار التالي: 0.23.0**
