@@ -357,6 +357,10 @@ object SelfTest {
             check(ghostPreset.preset == null) { "ghost preset" }
             val announcer = m.applyVoicePreset(com.saidjte.schoolradio.desktop.data.VoiceFxState(), "صوت المذيع")
             check(announcer.presenceDb == 4.0f && announcer.compOn && announcer.gateOn) { "voice preset" }
+            // v0.18.0: حزمة البث الكاملة تفرض كل الحلقات، وأعماق الخفض تُحسم بالتسامح
+            val kit = m.applyVoicePreset(com.saidjte.schoolradio.desktop.data.VoiceFxState(hpfOn = false, agcOn = false), "حزمة البث")
+            check(kit.hpfOn && kit.agcOn && kit.gateOn && kit.compOn) { "broadcast kit full chain" }
+            check(m.duckPresetName(-12f) == "متوسط" && m.duckPresetName(-9f) == null) { "duck depth presets" }
             val warm = m.applyMusicPreset(com.saidjte.schoolradio.desktop.data.MusicEqState(), "باص دافئ")
             check(warm.bands[0] == 5f && warm.bands.size == 5) { "music preset" }
 

@@ -82,6 +82,10 @@ class MicLiveEngine {
     private val _duckActive = MutableStateFlow(false)
     val duckActive: StateFlow<Boolean> = _duckActive.asStateFlow()
 
+    /** كسب تسوية AGC الحي بالديسيبل (+تعزيز / −خفض / 0 ساكن) — كما يحسبه المعالج كل كتلة. */
+    private val _agcGainDb = MutableStateFlow(0f)
+    val agcGainDb: StateFlow<Float> = _agcGainDb.asStateFlow()
+
     @Volatile private var running = false
     @Volatile private var monitorWanted = false
     @Volatile private var recordWanted = false
@@ -267,6 +271,7 @@ class MicLiveEngine {
                 val level = voice.process(shorts, sampleCount, gain)
                 _level.value = level
                 _gateClosed.value = voice.gateClosed && voice.params().gateOn
+                _agcGainDb.value = voice.agcCurrentDb
 
                 // قيادة الخفض التلقائي: كلام = بوابة مفتوحة، أو مستوى فوق العتبة حين البوابة معطلة
                 val p = voice.params()
@@ -345,6 +350,7 @@ class MicLiveEngine {
             _recording.value = false
             _level.value = 0f
             _gateClosed.value = false
+            _agcGainDb.value = 0f
             _aecLocked.value = false
             _aecDelayMs.value = 0f
             _aecErleDb.value = 0f

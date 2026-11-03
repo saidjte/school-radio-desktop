@@ -51,6 +51,7 @@ fun MixerPage(vm: AppViewModel) {
     val gateClosed by vm.mic.gateClosed.collectAsState()
     val micLive by vm.mic.state.collectAsState()
     val duckActive by vm.mic.duckActive.collectAsState()
+    val agcGainDb by vm.mic.agcGainDb.collectAsState()
     val aecLocked by vm.mic.aecLocked.collectAsState()
     val aecDelayMs by vm.mic.aecDelayMs.collectAsState()
     val aecErleDb by vm.mic.aecErleDb.collectAsState()
@@ -176,7 +177,7 @@ fun MixerPage(vm: AppViewModel) {
         }
 
         // ================= معالج صوت المذيع =================
-        VoiceProcessorCard(vm, mixer.voice)
+        VoiceProcessorCard(vm, mixer.voice, micLive == com.saidjte.schoolradio.desktop.audio.MicState.LIVE, agcGainDb)
 
         // ================= معادل الصوت =================
         MusicEqCard(vm, mixer.musicEq)
@@ -302,7 +303,7 @@ private fun PresetChip(
 // ================= معالج صوت المذيع =================
 
 @Composable
-private fun VoiceProcessorCard(vm: AppViewModel, v: VoiceFxState) {
+private fun VoiceProcessorCard(vm: AppViewModel, v: VoiceFxState, micLive: Boolean, agcGainDb: Float) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -327,6 +328,12 @@ private fun VoiceProcessorCard(vm: AppViewModel, v: VoiceFxState) {
         )
 
         if (v.enabled) {
+            // حزمة البث الكاملة: كل حلقات السلسلة الإذاعية تُسلّح بنقرة واحدة
+            KitChip(
+                selected = v.preset == "حزمة البث",
+                onClick = { vm.applyVoicePreset("حزمة البث") }
+            )
+
             // الأنماط الجاهزة
             Text("أنماط الإذاعة", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -375,6 +382,17 @@ private fun VoiceProcessorCard(vm: AppViewModel, v: VoiceFxState) {
                     range = 6f..30f,
                     onValue = { vm.updateVoiceFx { s -> s.copy(agcMaxBoostDb = MixerLogic.cleanAgcBoost(it)) } }
                 )
+                if (micLive) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Dot(color = MaterialTheme.colorScheme.primary, size = 8.dp)
+                        Text(
+                            "الكسب الآلي الآن: " + (if (agcGainDb > 0.05f) "+" else "") + "%.1f".format(agcGainDb) + " dB",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
                 Text(
                     "الكسب يتحرك ببطء فلا مضخّ ولا قفزات، ويجمّد نفسه عند الصمت كي لا يضخّم الضجيج",
                     style = MaterialTheme.typography.labelSmall,
@@ -537,6 +555,17 @@ private fun DuckCard(vm: AppViewModel, d: com.saidjte.schoolradio.desktop.data.D
         )
 
         if (d.enabled) {
+            // أعماق جاهزة بنقرة واحدة، والمنزلق يبقى للضبط الدقيق
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                MixerLogic.DUCK_DEPTHS.forEach { (name, db) ->
+                    PresetChip(
+                        label = "$name %.0f dB".format(db),
+                        selected = MixerLogic.duckPresetName(d.duckDb) == name,
+                        onClick = { vm.updateDuck { s -> s.copy(duckDb = MixerLogic.cleanDuckDb(db)) } },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
             DbSlider(
                 label = "نسبة الخفض",
                 value = d.duckDb,
@@ -637,6 +666,36 @@ private fun AecCard(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+// ================= زر حزمة البث الكاملة =================
+
+/**
+ * زر الحزمة الكاملة — تسليح كل حلقات السلسلة الإذاعية (قناع الرعد + بوابة +
+ * تسوية AGC + ضاغط + منحنى بث) بنقرة واحدة، بعرض كامل ليكون أوضح شيء في البطاقة.
+ */
+@Composable
+private fun KitChip(selected: Boolean, onClick: () -> Unit) {
+    androidx.compose.material3.Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Text(
+                "حزمة البث الكاملة" + if (selected) " — مفعّلة" else "",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
+            )
+            Text(
+                "قناع الرعد + بوابة الضجيج + تسوية AGC + الضاغط + منحنى البث — بنقرة واحدة",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

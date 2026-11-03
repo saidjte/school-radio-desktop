@@ -124,7 +124,7 @@ object MixerLogic {
 
     const val FADER_MAX = 1.5f
 
-    val VOICE_PRESET_NAMES = listOf("طبيعي", "صوت المذيع", "وضوح السرد", "دفء الاستوديو")
+    val VOICE_PRESET_NAMES = listOf("حزمة البث", "طبيعي", "صوت المذيع", "وضوح السرد", "دفء الاستوديو")
     val MUSIC_PRESET_NAMES = listOf("مسطّح", "موسيقى هادئة", "باص دافئ", "صباحي منعش", "وضوح الكلام")
 
     // ---- أنماط معالج المذيع: (باس، حضور، هواء، بوابة، ضاغط، نسبة، تعويض) ----
@@ -133,15 +133,38 @@ object MixerLogic {
         val bassDb: Float, val presenceDb: Float, val airDb: Float,
         val gateOn: Boolean, val compOn: Boolean,
         val compRatio: Float, val compMakeupDb: Float,
-        val gateThresholdDb: Float = -45f
+        val gateThresholdDb: Float = -45f,
+        /** null = لا يُمسّ مفتاح قناع الرعد (للأنماط القديمة)؛ true/false = يُفرض. */
+        val hpfOn: Boolean? = null,
+        /** null = لا يُمسّ مفتاح AGC؛ true = تُفرض التسوية ضمن الحزمة. */
+        val agcOn: Boolean? = null
     )
 
     val VOICE_PRESETS: Map<String, VoiceRecipe> = mapOf(
+        // حزمة البث الكاملة: كل حلقات السلسلة الإذاعية تُسلّح بنقرة واحدة —
+        // قناع الرعد + بوابة الضجيج + تسوية AGC + الضاغط + منحنى البث
+        "حزمة البث" to VoiceRecipe(
+            1.5f, 3.5f, 1.0f,
+            gateOn = true, compOn = true, 3f, 3f, -42f,
+            hpfOn = true, agcOn = true
+        ),
         "طبيعي" to VoiceRecipe(0f, 0f, 0f, gateOn = false, compOn = false, 1f, 0f),
         "صوت المذيع" to VoiceRecipe(1.5f, 4.0f, 1.5f, gateOn = true, compOn = true, 3f, 3f, -42f),
         "وضوح السرد" to VoiceRecipe(-2.0f, 6.0f, 2.0f, gateOn = true, compOn = true, 4f, 4f, -40f),
         "دفء الاستوديو" to VoiceRecipe(3.0f, 1.5f, 0f, gateOn = false, compOn = true, 2f, 2f)
     )
+
+    // ---- أعماق الخفض التلقائي الجاهزة: (الاسم، مقدار الخفض بالديسيبل) ----
+
+    val DUCK_DEPTHS: List<Pair<String, Float>> = listOf(
+        "خفيف" to -6f,   // الموسيقى تبقى مسموعة بوضوح تحت الصوت
+        "متوسط" to -12f, // توازن الاستوديو الكلاسيكي
+        "قوي" to -20f    // الموسيقى تكاد تختفي أثناء الحديث
+    )
+
+    /** اسم عمق الخفض الجاهز المطابق للقيمة (تسامح نصف ديسيبل) أو null للقيمة المخصصة. */
+    fun duckPresetName(db: Float): String? =
+        DUCK_DEPTHS.firstOrNull { kotlin.math.abs(it.second - db) <= 0.5f }?.first
 
     // ---- أنماط معادل الموسيقى: 5 شرائح (80/250/1ك/3.5ك/10ك) ----
 
@@ -240,7 +263,7 @@ object MixerLogic {
         )
     }
 
-    /** تطبيق نمط معالج مذيع على حالة حية. */
+    /** تطبيق نمط معالج مذيع على حالة حية — حلقات الحزمة الكاملة تُفرض عند تحديدها. */
     fun applyVoicePreset(state: VoiceFxState, name: String): VoiceFxState {
         val r = VOICE_PRESETS[name] ?: return state
         return state.copy(
@@ -248,6 +271,8 @@ object MixerLogic {
             gateOn = r.gateOn, compOn = r.compOn,
             compRatio = r.compRatio, compMakeupDb = r.compMakeupDb,
             gateThresholdDb = r.gateThresholdDb,
+            hpfOn = r.hpfOn ?: state.hpfOn,
+            agcOn = r.agcOn ?: state.agcOn,
             preset = name
         )
     }

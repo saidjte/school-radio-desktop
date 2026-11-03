@@ -313,4 +313,78 @@ class MixerDspTest {
             dir.delete()
         }
     }
+
+    // ================= v0.18.0: حزمة البث وأعماق الخفض ومؤشر AGC الحي =================
+
+    @Test
+    fun `broadcast kit preset arms the full chain`() {
+        val base = VoiceFxState(hpfOn = false, agcOn = false)
+        val kit = MixerLogic.applyVoicePreset(base, "حزمة البث")
+        assertTrue(kit.hpfOn, "قناع الرعد يُفرض ضمن الحزمة")
+        assertTrue(kit.agcOn, "تسوية AGC تُفرض ضمن الحزمة")
+        assertTrue(kit.gateOn && kit.compOn, "البوابة والضاغط يُسلّحان معًا")
+        assertTrue(kit.presenceDb > 0f && kit.bassDb > 0f, "منحنى البث الإذاعي مع الحزمة")
+        assertEquals("حزمة البث", kit.preset)
+    }
+
+    @Test
+    fun `legacy presets leave hpf and agc untouched`() {
+        val base = VoiceFxState(hpfOn = false, agcOn = false)
+        val announcer = MixerLogic.applyVoicePreset(base, "صوت المذيع")
+        assertFalse(announcer.hpfOn, "النمط القديم لا يفرض قناع الرعد")
+        assertFalse(announcer.agcOn, "النمط القديم لا يفرض AGC")
+        val warm = MixerLogic.applyVoicePreset(base, "دفء الاستوديو")
+        assertFalse(warm.hpfOn && warm.agcOn)
+    }
+
+    @Test
+    fun `duck depth presets resolve by proximity`() {
+        assertEquals("خفيف", MixerLogic.duckPresetName(-6f))
+        assertEquals("متوسط", MixerLogic.duckPresetName(-12f))
+        assertEquals("قوي", MixerLogic.duckPresetName(-20f))
+        assertEquals("متوسط", MixerLogic.duckPresetName(-12.4f))
+        assertNull(MixerLogic.duckPresetName(-12.6f), "خارج التسامح = قيمة مخصصة")
+        assertNull(MixerLogic.duckPresetName(-9f), "قيمة بين العمقين = مخصصة")
+        assertNull(MixerLogic.duckPresetName(-30f), "أقصى خفض يدوي = مخصص")
+    }
+
+    @Test
+    fun `agc live gain tracks the processor`() {
+        val vp = VoiceProcessor()
+        vp.configure(fs, 1)
+        vp.setParams(
+            VoiceProcessor.Params(
+                agcOn = true, agcTargetDb = -18f, agcMaxBoostDb = 24f,
+                hpfOn = false, gateOn = false, compOn = false
+            )
+        )
+        repeat(80) {
+            val quiet = sineShorts(440.0, 0.02, 1024)
+            vp.process(quiet, quiet.size, 1.0f)
+        }
+        assertTrue(vp.agcCurrentDb > 1f, "الإشارة الخافتة ترفع الكسب: ${vp.agcCurrentDb}")
+        val off = VoiceProcessor()
+        off.configure(fs, 1)
+        off.setParams(VoiceProcessor.Params(agcOn = false))
+        repeat(10) { val blk = sineShorts(440.0, 0.02, 1024); off.process(blk, blk.size, 1.0f) }
+        assertEquals(0f, off.agcCurrentDb, "AGC مطفي = كسب صفر")
+    }
+
+    @Test
+    fun `kit preset survives persistence roundtrip`() {
+        val resolved = MixerLogic.resolveVoice(VoiceFxJson(preset = "حزمة البث"))
+        assertEquals("حزمة البث", resolved.preset)
+        val dir = Files.createTempDirectory("sr-kit-test").toFile()
+        try {
+            val f = File(dir, "settings.json")
+            val st = SettingsStore(f)
+            st.setMixer(MixerState(voice = MixerLogic.applyVoicePreset(VoiceFxState(hpfOn = false), "حزمة البث")))
+            val back = SettingsStore(f).mixer()
+            assertEquals("حزمة البث", back.voice.preset)
+            assertTrue(back.voice.hpfOn && back.voice.agcOn && back.voice.compOn && back.voice.gateOn)
+        } finally {
+            dir.listFiles()?.forEach { it.delete() }
+            dir.delete()
+        }
+    }
 }
