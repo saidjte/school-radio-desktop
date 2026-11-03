@@ -13,6 +13,7 @@ import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
 import com.saidjte.schoolradio.desktop.data.AecState
 import com.saidjte.schoolradio.desktop.data.Backup
+import com.saidjte.schoolradio.desktop.data.DevicesJson
 import com.saidjte.schoolradio.desktop.data.ExecutionsStore
 import com.saidjte.schoolradio.desktop.data.FireStatus
 import com.saidjte.schoolradio.desktop.data.LibraryEntry
@@ -25,6 +26,7 @@ import com.saidjte.schoolradio.desktop.data.MusicLibraryStore
 import com.saidjte.schoolradio.desktop.data.NamedPlaylist
 import com.saidjte.schoolradio.desktop.data.PlaylistMath
 import com.saidjte.schoolradio.desktop.data.PlaylistStore
+import com.saidjte.schoolradio.desktop.data.ReadingJson
 import com.saidjte.schoolradio.desktop.data.RepeatMode
 import com.saidjte.schoolradio.desktop.data.Role
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
@@ -156,6 +158,27 @@ class AppViewModel {
         if (!canManage) return
         settingsStore.setSchoolName(name)
         _schoolName.value = settingsStore.schoolName()
+    }
+
+    // ================= حفظ اختيار الأجهزة بين الجلسات (v0.20.0) =================
+    // الأسماء وحدها تُخزَّن في settings.json — عند الإقلاع تُطابق مع الأجهزة
+    // الموجودة فعليًا، وجهاز غير موصول لا يُمحى اختياره (لا كتابة إلا عند
+    // اختيار صريح من المذيع).
+
+    /** الاختيار المحفوظ من الجلسة السابقة (أسماء). */
+    fun savedDevices(): DevicesJson = settingsStore.devices()
+
+    /** حفظ اختيار الأجهزة الحالي (بأسمائه) — عند اختيار صريح من المذيع. */
+    fun saveDevices(in1: String?, in2: String?, out1: String?, out2: String?) {
+        settingsStore.setDevices(DevicesJson(input1 = in1, input2 = in2, output1 = out1, output2 = out2))
+    }
+
+    /** تفضيلات شاشة القراءة المحفوظة (خط/سرعة/متابعة). */
+    fun savedReading(): ReadingJson = settingsStore.reading()
+
+    /** حفظ تفضيلات شاشة القراءة — عند كل تغيير من المذيع. */
+    fun saveReading(fontSp: Float, speed: String, follow: Boolean) {
+        settingsStore.setReading(ReadingJson(fontSp = fontSp, speed = speed, follow = follow))
     }
 
     // ================= وحدة المزج الإذاعية =================

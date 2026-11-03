@@ -69,6 +69,7 @@ import com.saidjte.schoolradio.desktop.Track
 import com.saidjte.schoolradio.desktop.data.MeterLogic
 import com.saidjte.schoolradio.desktop.data.MeterZone
 import com.saidjte.schoolradio.desktop.data.MixerLogic
+import com.saidjte.schoolradio.desktop.data.StudioLogic
 import java.io.File
 
 // ================= مقياس البث المقطعي =================
@@ -222,10 +223,22 @@ fun BroadcastMicCard(vm: AppViewModel) {
 
     var devices by remember { mutableStateOf(AudioDevices.listMics()) }
     var outputs by remember { mutableStateOf(AudioDevices.listOutputs()) }
-    var selectedDevice by remember { mutableStateOf(devices.firstOrNull()) }
-    var selectedDevice2 by remember { mutableStateOf<AudioDevices.MicDevice?>(null) }
-    var selectedOut by remember { mutableStateOf(outputs.firstOrNull()) }
-    var selectedOut2 by remember { mutableStateOf<AudioDevices.OutDevice?>(null) }
+    // استرجاع اختيار الأجهزة المحفوظ من الجلسة السابقة (طلب v0.20.0 «حفظ اختيار
+    // الأجهزة بين الجلسات») — بالمطابقة بالاسم: جهاز غير موصول يعيد الرئيسي
+    // للأول ويُترك الثاني «بلا» دون مساس بالاسم المحفوظ.
+    val savedDevices = remember { vm.savedDevices() }
+    var selectedDevice by remember {
+        mutableStateOf(StudioLogic.restorePrimary(devices, { it.name }, savedDevices.input1))
+    }
+    var selectedDevice2 by remember {
+        mutableStateOf(StudioLogic.restoreOptional(devices, { it.name }, savedDevices.input2))
+    }
+    var selectedOut by remember {
+        mutableStateOf(StudioLogic.restorePrimary(outputs, { it.name }, savedDevices.output1))
+    }
+    var selectedOut2 by remember {
+        mutableStateOf(StudioLogic.restoreOptional(outputs, { it.name }, savedDevices.output2))
+    }
     var devicesMenu by remember { mutableStateOf(false) }
     var devices2Menu by remember { mutableStateOf(false) }
     var outMenu by remember { mutableStateOf(false) }
@@ -245,10 +258,21 @@ fun BroadcastMicCard(vm: AppViewModel) {
         selectedOut2 = prevOut2?.let { p -> outputs.firstOrNull { it.name == p.name } }
     }
 
+    /** حفظ اختيار الأجهزة الحالي باسمائه — يُستدعى عند اختيار صريح فقط. */
+    fun persistDevices() {
+        vm.saveDevices(
+            selectedDevice?.name,
+            selectedDevice2?.name,
+            selectedOut?.name,
+            selectedOut2?.name
+        )
+    }
+
     /** تطبيق المخرجين الحاليين على مشغل الموسيقى والسماع المراقب فورًا. */
     fun applyOutputs() {
         vm.player.setOutput(selectedOut?.mixerInfo, selectedOut2?.mixerInfo)
         mic.setMonitorOutput(selectedOut?.mixerInfo, selectedOut2?.mixerInfo)
+        persistDevices()
     }
 
     Column(
@@ -277,6 +301,7 @@ fun BroadcastMicCard(vm: AppViewModel) {
                             text = { Text(d.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
                             onClick = {
                                 selectedDevice = d
+                                persistDevices()
                                 devicesMenu = false
                             }
                         )
@@ -304,6 +329,7 @@ fun BroadcastMicCard(vm: AppViewModel) {
                         text = { Text("— بلا مدخل ثانٍ —") },
                         onClick = {
                             selectedDevice2 = null
+                            persistDevices()
                             devices2Menu = false
                         }
                     )
@@ -318,6 +344,7 @@ fun BroadcastMicCard(vm: AppViewModel) {
                             },
                             onClick = {
                                 selectedDevice2 = d
+                                persistDevices()
                                 devices2Menu = false
                             }
                         )

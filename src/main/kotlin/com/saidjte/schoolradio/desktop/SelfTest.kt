@@ -6,8 +6,10 @@ import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
+import com.saidjte.schoolradio.desktop.data.DevicesJson
 import com.saidjte.schoolradio.desktop.data.MeterLogic
 import com.saidjte.schoolradio.desktop.data.MeterZone
+import com.saidjte.schoolradio.desktop.data.ReadingJson
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
 import com.saidjte.schoolradio.desktop.data.SegmentKind
@@ -17,7 +19,9 @@ import com.saidjte.schoolradio.desktop.data.ScriptStats
 import com.saidjte.schoolradio.desktop.data.ScriptStore
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
 import com.saidjte.schoolradio.desktop.data.ScriptSource
+import com.saidjte.schoolradio.desktop.data.SettingsStore
 import com.saidjte.schoolradio.desktop.data.StudioLogic
+import com.saidjte.schoolradio.desktop.data.TeleprompterNames
 import java.io.File
 import javax.sound.sampled.AudioFormat
 import kotlin.math.PI
@@ -623,6 +627,29 @@ object SelfTest {
             check(fo1.chunks[0].contentEquals(twinData) && fo2.chunks[0].contentEquals(twinData)) { "twin same bytes" }
             check(kotlin.math.abs(fo1.lastVolume - 0.8f) < 1e-4f && kotlin.math.abs(fo2.lastVolume - 0.8f) < 1e-4f) { "twin volume" }
             check(fo1.closed == 1 && fo2.closed == 1) { "twin close both" }
+
+            // v0.20.0: السرعة الرابعة — أربع سرعات متصاعدة وتسميات مطابقة لعقد الحفظ
+            val speeds = com.saidjte.schoolradio.desktop.ui.TeleprompterSpeed.entries
+            check(speeds.size == 4) { "teleprompter fourth speed: ${speeds.size}" }
+            check(speeds.zipWithNext().all { (a, b) -> a.pxPerSecond < b.pxPerSecond }) { "speeds ascend" }
+            check(speeds.map { it.label } == TeleprompterNames.ALL) { "speed labels contract" }
+
+            // v0.20.0: حفظ اختيار الأجهزة وتفضيلات القراءة بين الجلسات
+            val devFile = File(tmp, "selftest-settings.json")
+            val st1 = SettingsStore(devFile)
+            st1.setDevices(DevicesJson(input1 = "ميكروفون فحص", input2 = null, output1 = "سماعات فحص", output2 = "قاعة فحص"))
+            st1.setReading(ReadingJson(fontSp = 72f, speed = "سريعة جدًا", follow = false))
+            val st2 = SettingsStore(devFile)
+            val sd = st2.devices()
+            check(sd.input1 == "ميكروفون فحص" && sd.input2 == null && sd.output1 == "سماعات فحص" && sd.output2 == "قاعة فحص") { "devices persist" }
+            val sr2 = st2.reading()
+            check(sr2.fontSp == 72f && sr2.speed == "سريعة جدًا" && sr2.follow == false) { "reading prefs persist" }
+            st1.setReading(ReadingJson(fontSp = 300f, speed = "مجهولة", follow = true))
+            check(st1.reading().fontSp == 96f && st1.reading().speed == null) { "reading prefs sanitize" }
+            check(StudioLogic.restorePrimary(listOf("أ", "ب"), { it }, "ب") == "ب") { "restorePrimary hit" }
+            check(StudioLogic.restorePrimary(listOf("أ", "ب"), { it }, "غائب") == "أ") { "restorePrimary fallback" }
+            check(StudioLogic.restoreOptional(listOf("أ", "ب"), { it }, "غائب") == null) { "restoreOptional missing" }
+            devFile.delete()
 
             println("SELFTEST OK — version $APP_VERSION")
         } finally {

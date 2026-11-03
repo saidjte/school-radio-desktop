@@ -3,11 +3,18 @@ package com.saidjte.schoolradio.desktop
 import com.saidjte.schoolradio.desktop.audio.PcmMixer
 import com.saidjte.schoolradio.desktop.audio.PcmOutLine
 import com.saidjte.schoolradio.desktop.audio.TwinPcmOut
+import com.saidjte.schoolradio.desktop.data.DevicesJson
+import com.saidjte.schoolradio.desktop.data.ReadingJson
+import com.saidjte.schoolradio.desktop.data.SettingsStore
+import com.saidjte.schoolradio.desktop.data.StudioLogic
+import com.saidjte.schoolradio.desktop.data.TeleprompterNames
 import com.saidjte.schoolradio.desktop.ui.TeleprompterSpeed
+import java.io.File
 import javax.sound.sampled.AudioFormat
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -185,7 +192,104 @@ class DualDevicesAndReadingTest {
         val values = TeleprompterSpeed.entries.map { it.pxPerSecond }
         assertEquals(values.sorted(), values, "speeds must ascend")
         assertTrue(values.first() >= 20f, "slowest must still move: ${values.first()}")
-        assertTrue(values.last() <= 130f, "fastest must stay readable: ${values.last()}")
+        assertTrue(values.last() <= 200f, "fastest must stay scannable: ${values.last()}")
         assertTrue(TeleprompterSpeed.entries.all { it.label.isNotBlank() })
+    }
+
+    // ================= v0.20.0: السرعة الرابعة =================
+
+    @Test
+    fun `fourth teleprompter speed exists beyond fast`() {
+        assertEquals(4, TeleprompterSpeed.entries.size, "المستخدم طلب سرعة رابعة")
+        val fourth = TeleprompterSpeed.entries.last()
+        assertEquals("سريعة جدًا", fourth.label)
+        assertTrue(fourth.pxPerSecond > TeleprompterSpeed.FAST.pxPerSecond, "الرابعة أسرع من الثالثة")
+    }
+
+    @Test
+    fun `teleprompter labels match persisted names contract`() {
+        assertEquals(TeleprompterNames.ALL, TeleprompterSpeed.entries.map { it.label })
+    }
+
+    // ================= v0.20.0: حفظ اختيار الأجهزة بين الجلسات =================
+
+    private fun tmpSettings(tag: String): File =
+        File(System.getProperty("java.io.tmpdir"), "sr-test-settings-$tag-${System.nanoTime()}.json")
+
+    @Test
+    fun `device selection survives settings reload`() {
+        val f = tmpSettings("devices")
+        try {
+            val s1 = SettingsStore(f)
+            s1.setDevices(DevicesJson(input1 = "ميكروفون USB", input2 = null, output1 = "سماعات HDMI", output2 = "قاعة"))
+            val d = SettingsStore(f).devices()
+            assertEquals("ميكروفون USB", d.input1)
+            assertNull(d.input2, "بلا مدخل ثانٍ يبقى بلا")
+            assertEquals("سماعات HDMI", d.output1)
+            assertEquals("قاعة", d.output2)
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
+    fun `device persistence drops blank names`() {
+        val f = tmpSettings("devices-blank")
+        try {
+            val s = SettingsStore(f)
+            s.setDevices(DevicesJson(input1 = "   ", output2 = "قاعة"))
+            assertNull(s.devices().input1, "اسم فارغ لا يُحفظ")
+            assertEquals("قاعة", s.devices().output2)
+        } finally {
+            f.delete()
+        }
+    }
+
+    // ================= v0.20.0: تفضيلات شاشة القراءة المحفوظة =================
+
+    @Test
+    fun `reading prefs survive reload and font is clamped`() {
+        val f = tmpSettings("reading")
+        try {
+            SettingsStore(f).setReading(ReadingJson(fontSp = 200f, speed = "سريعة جدًا", follow = false))
+            val r = SettingsStore(f).reading()
+            assertEquals(96f, r.fontSp, "حجم الخط يُحبس عند السقف 96")
+            assertEquals("سريعة جدًا", r.speed)
+            assertEquals(false, r.follow)
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
+    fun `reading prefs reject unknown speed name`() {
+        val f = tmpSettings("reading-bad")
+        try {
+            val s = SettingsStore(f)
+            s.setReading(ReadingJson(fontSp = 40f, speed = "خارقة", follow = true))
+            assertNull(s.reading().speed, "اسم سرعة مجهول لا يُثق به")
+        } finally {
+            f.delete()
+        }
+    }
+
+    // ================= v0.20.0: استرجاع الاختيار بالاسم =================
+
+    @Test
+    fun `restorePrimary falls back to first when saved name missing`() {
+        val items = listOf("أ", "ب", "ج")
+        assertEquals("أ", StudioLogic.restorePrimary(items, { it }, null))
+        assertEquals("أ", StudioLogic.restorePrimary(items, { it }, "غير موجود"))
+        assertEquals("ب", StudioLogic.restorePrimary(items, { it }, " ب "), "الفراغات تُقص")
+        assertNull(StudioLogic.restorePrimary(emptyList(), { it: String -> it }, "أ"))
+    }
+
+    @Test
+    fun `restoreOptional returns null when saved name missing`() {
+        val items = listOf("أ", "ب", "ج")
+        assertEquals("ب", StudioLogic.restoreOptional(items, { it }, "ب"))
+        assertNull(StudioLogic.restoreOptional(items, { it }, "غير موجود"))
+        assertNull(StudioLogic.restoreOptional(items, { it }, null))
+        assertNull(StudioLogic.restoreOptional(items, { it }, "  "))
     }
 }

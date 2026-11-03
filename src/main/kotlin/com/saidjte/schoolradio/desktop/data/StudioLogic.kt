@@ -80,4 +80,27 @@ object StudioLogic {
             cal.get(java.util.Calendar.SECOND)
         )
     }
+
+    // ================= استرجاع الاختيارات المحفوظة بالاسم (v0.20.0) =================
+
+    /**
+     * استرجاع اختيار رئيسي محفوظ بالاسم: الجهاز المطابق بالاسم أولًا، وإلا
+     * أول بند (الافتراضي) — الاختيار الرئيسي لا يبقى فارغًا أبدًا. اسم غير
+     * موجود (جهاز غير موصول) يرجع للأول دون مساس بالاسم المحفوظ.
+     */
+    fun <T> restorePrimary(items: List<T>, nameOf: (T) -> String, saved: String?): T? {
+        if (items.isEmpty()) return null
+        val s = saved?.trim().takeUnless { it.isNullOrEmpty() }
+        if (s != null) items.firstOrNull { nameOf(it) == s }?.let { return it }
+        return items.first()
+    }
+
+    /**
+     * استرجاع اختيار ثانٍ اختياري: الجهاز المطابق بالاسم فقط — اسم غير موجود
+     * أو null يعني «بلا» (null) فلا يُفتح جهاز ثانٍ سرًا.
+     */
+    fun <T> restoreOptional(items: List<T>, nameOf: (T) -> String, saved: String?): T? {
+        val s = saved?.trim().takeUnless { it.isNullOrEmpty() } ?: return null
+        return items.firstOrNull { nameOf(it) == s }
+    }
 }
