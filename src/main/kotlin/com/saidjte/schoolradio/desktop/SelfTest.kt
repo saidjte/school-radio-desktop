@@ -12,6 +12,7 @@ import com.saidjte.schoolradio.desktop.data.MeterZone
 import com.saidjte.schoolradio.desktop.data.ReadingJson
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
+import com.saidjte.schoolradio.desktop.data.SeekLogic
 import com.saidjte.schoolradio.desktop.data.SegmentKind
 import com.saidjte.schoolradio.desktop.data.SegmentStatus
 import com.saidjte.schoolradio.desktop.data.ScriptSection
@@ -73,6 +74,38 @@ object SelfTest {
             check(fh.bitRateKbps == 128) { "mp3 bitrate=${fh.bitRateKbps}" }
             check(fh.samplesPerFrame == 1152) { "mp3 spf=${fh.samplesPerFrame}" }
             check(fh.frameSize == 417) { "mp3 frameSize=${fh.frameSize}" }
+
+            // 3ب) شريط التقدم القابل للسعي (v0.23.0): تحويلات + زحف + جدول Xing
+            check(SeekLogic.msForFraction(0.5f, 5999L) == 2999L) { "msForFraction" }
+            check(SeekLogic.fractionForMs(-5L, 1000L) == 0f) { "fractionForMs clamp" }
+            check(SeekLogic.msForFraction(2f, 10_000L) == 10_000L) { "msForFraction clamp" }
+            val scrub = SeekLogic.ScrubState()
+            scrub.begin(1200L); scrub.update(3400L)
+            check(scrub.end() == 3400L && scrub.end() == null) { "scrub commit-once" }
+            val tocRamp = ByteArray(100) { i -> (i * 255 / 99).toByte() }
+            check(
+                SeekLogic.tocByteFraction(tocRamp, 0f) == 0f &&
+                        SeekLogic.tocByteFraction(tocRamp, 1f) == 1f
+            ) { "toc bounds" }
+            // في مجلد فرعي كي لا يلتقطه ماسح التسجيلات في الفحص 4)
+            val probeDir = File(tmp, "seekprobe").apply { mkdirs() }
+            val xmp3 = File(probeDir, "xing.mp3")
+            run {
+                val header = byteArrayOf(0xFF.toByte(), 0xFB.toByte(), 0x90.toByte(), 0x00.toByte())
+                val out = ByteArray(417 * 2)
+                header.copyInto(out, 0); header.copyInto(out, 417)
+                var p = 36
+                "Xing".toByteArray(Charsets.US_ASCII).copyInto(out, p); p += 4
+                for (b in intArrayOf(0, 0, 0, 0x07)) out[p++] = b.toByte()
+                val frames = 86
+                for (b in intArrayOf((frames shr 24) and 0xFF, (frames shr 16) and 0xFF, (frames shr 8) and 0xFF, frames and 0xFF)) out[p++] = b.toByte()
+                for (b in intArrayOf(0, 0, 3, 66)) out[p++] = b.toByte() // 834 باية
+                for (i in 0 until 100) out[p++] = (i * 255 / 99).toByte()
+                xmp3.writeBytes(out)
+            }
+            val xinfo = Mp3Info.analyze(xmp3)
+            check(xinfo != null && xinfo.isVbr && xinfo.toc != null && xinfo.toc!!.size == 100) { "xing toc parse" }
+            check(xinfo!!.durationMs == 86L * 1152L * 1000L / 44100L) { "xing duration" }
 
             // 4) ماسح التسجيلات
             val items = RecordingsScanner.scan(tmp)

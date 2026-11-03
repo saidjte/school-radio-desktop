@@ -37,6 +37,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -653,9 +654,11 @@ fun BroadcastPlayerCard(
     val playerError by player.error.collectAsState()
     val onAir = isPlaying && !isPaused
 
-    // أثناء سحب المؤشر نعرض القيمة المحلية ثم ننفذ السعي عند الإفلات
-    var seekMs by remember { mutableStateOf<Long?>(null) }
-    val shownPos = seekMs ?: positionMs
+    // أثناء الزحف في شريط التقدم (StudioSeekBar v0.23.0) نعرض المعاينة الحية
+    // ثم ينفّذ المشغل سعيًا واحدًا عند الإفلات — والنقر سعي فوري
+    var scrubbing by remember { mutableStateOf(false) }
+    var scrubMs by remember { mutableLongStateOf(0L) }
+    val shownPos = if (scrubbing) scrubMs else positionMs
 
     StudioCard(modifier = modifier, contentPadding = 12.dp) {
         // الرأس: الاسم + شارة الهواء + اسم القائمة الجارية وموضعها
@@ -698,12 +701,14 @@ fun BroadcastPlayerCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (hasTrack && durationMs > 0) {
-                    Slider(
-                        value = (shownPos.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f),
-                        onValueChange = { seekMs = (it * durationMs).toLong() },
-                        onValueChangeFinished = {
-                            seekMs?.let { player.seek(it) }
-                            seekMs = null
+                    StudioSeekBar(
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        enabled = true,
+                        onSeek = { player.seek(it) },
+                        onScrub = { ms ->
+                            if (ms == null) scrubbing = false
+                            else { scrubbing = true; scrubMs = ms }
                         },
                         modifier = Modifier.weight(1f)
                     )
@@ -717,7 +722,7 @@ fun BroadcastPlayerCard(
                     )
                 }
                 Text(
-                    formatMs(durationMs),
+                    formatMs((durationMs - shownPos).coerceAtLeast(0L)),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

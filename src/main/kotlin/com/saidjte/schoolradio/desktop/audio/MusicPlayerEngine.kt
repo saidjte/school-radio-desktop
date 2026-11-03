@@ -177,6 +177,7 @@ private class Mp3TrackReader(
     }
 
     override fun seek(ms: Long) {
+        val i = info ?: return
         val f = fh ?: return
         val target = ms.coerceIn(0L, durationMs)
         try { bitstream.close() } catch (_: Exception) { }
@@ -186,14 +187,25 @@ private class Mp3TrackReader(
         stream = s
         Mp3Info.skipId3v2(s)
 
-        // قفزة سريعة بالبايتات (تقدير CBR) مع هامش أمان 1.5 ثانية
-        val jumpMs = (target - 1500L).coerceAtLeast(0L)
-        var toSkip = jumpMs * f.bitRateKbps / 8L
-        val buf = ByteArray(8192)
-        while (toSkip > 0) {
-            val r = s.read(buf, 0, min(toSkip, buf.size.toLong()).toInt())
-            if (r < 0) break
-            toSkip -= r
+        // موضع البايت وزمن المرساة قبل العدّ الدقيق للإطارات:
+        // - جدول Xing المئوي (VBR موسوم): مواضع بايتات لكل 1% زمني — أدق المسارات
+        // - متوسط معدل البت الفعلي (VBR دون جدول): من حجم البيانات والمدة
+        // - معدل الإطار الأول (CBR): التحويل الخطي مباشر
+        val jumpMs: Long
+        val toc = i.toc
+        val dataBytes = i.dataBytes.coerceAtLeast(0L)
+        if (toc != null && toc.size >= 100 && durationMs > 0 && dataBytes > 0) {
+            val frac = ((target - 500L).coerceAtLeast(0L)).toFloat() / durationMs.toFloat()
+            val idx = (frac * 100).toInt().coerceIn(0, 99)
+            val byteFrac = (toc[idx].toInt() and 0xFF) / 255f
+            jumpMs = idx.toLong() * durationMs / 100L
+            skipBytes(s, (byteFrac * dataBytes).toLong())
+        } else {
+            val avgKbps = if (i.isVbr && durationMs > 0 && dataBytes > 0)
+                (dataBytes * 8L / durationMs).toInt().coerceAtLeast(1)
+            else f.bitRateKbps
+            jumpMs = (target - 1500L).coerceAtLeast(0L)
+            skipBytes(s, jumpMs * avgKbps / 8L)
         }
         bitstream = Bitstream(s)
 
@@ -209,6 +221,17 @@ private class Mp3TrackReader(
         framesDone = jumpMs * f.sampleRate / (f.samplesPerFrame * 1000L) + count
         currentMsValue = jumpMs + count * f.samplesPerFrame * 1000L / f.sampleRate
         out.flush()
+    }
+
+    /** تجاوز عدد بايتات من المجرى بالقراءة — متحمل للقراءات الجزئية. */
+    private fun skipBytes(s: BufferedInputStream, bytes: Long) {
+        var toSkip = bytes.coerceAtLeast(0L)
+        val buf = ByteArray(8192)
+        while (toSkip > 0) {
+            val r = s.read(buf, 0, min(toSkip, buf.size.toLong()).toInt())
+            if (r < 0) break
+            toSkip -= r
+        }
     }
 
     override fun pause() { try { out.stop() } catch (_: Exception) { } }

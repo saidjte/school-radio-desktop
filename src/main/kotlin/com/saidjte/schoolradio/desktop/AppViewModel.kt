@@ -757,8 +757,10 @@ class AppViewModel {
     }
 
     fun togglePlay() {
-        if (_currentIndex.value < 0 && _playlist.value.isNotEmpty()) {
-            playAt(0)
+        // v0.23.0: زر التشغيل يعمل دائمًا — بعد إعادة فتح التطبيق تكون القائمة
+        // مستعادة بمؤشر جارٍ دون مقطع محمّل في المحرك، فالتبديل وحده لا يفعل شيئًا
+        if (!player.hasTrack.value && _playlist.value.isNotEmpty()) {
+            playAt(_currentIndex.value.coerceAtLeast(0))
             return
         }
         player.toggle()

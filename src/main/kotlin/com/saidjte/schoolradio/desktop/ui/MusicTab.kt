@@ -29,6 +29,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -77,8 +78,9 @@ fun MusicTab(vm: AppViewModel) {
 
     var mode by remember { mutableStateOf(MusicMode.PLAYLIST) }
 
-    var seekDragging by remember { mutableStateOf(false) }
-    var seekValue by remember { mutableStateOf(0f) }
+    // زحف شريط التقدم (StudioSeekBar v0.23.0): معاينة حية وسعي واحد عند الإفلات
+    var scrubbing by remember { mutableStateOf(false) }
+    var scrubMs by remember { mutableLongStateOf(0L) }
 
     Row(
         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -260,31 +262,26 @@ fun MusicTab(vm: AppViewModel) {
                 }
             }
 
-            if (hasTrack && durationMs > 0) {
-                val pos = if (seekDragging) seekValue else positionMs.toFloat()
-                Slider(
-                    value = pos.coerceIn(0f, durationMs.toFloat()),
-                    onValueChange = {
-                        seekDragging = true
-                        seekValue = it
-                    },
-                    onValueChangeFinished = {
-                        player.seek(seekValue.toLong())
-                        seekDragging = false
-                    },
-                    valueRange = 0f..durationMs.toFloat()
-                )
-            } else {
-                Slider(value = 0f, onValueChange = { }, valueRange = 0f..1f, enabled = false)
-            }
+            // شريط التقدم: النقر ينقل فوريًا والسحب يعاين ثم يسعّي عند الإفلات
+            StudioSeekBar(
+                positionMs = positionMs,
+                durationMs = durationMs,
+                enabled = hasTrack && durationMs > 0,
+                onSeek = { player.seek(it) },
+                onScrub = { ms ->
+                    if (ms == null) scrubbing = false
+                    else { scrubbing = true; scrubMs = ms }
+                }
+            )
             Row(modifier = Modifier.fillMaxWidth()) {
+                val shownPos = if (scrubbing) scrubMs else positionMs
                 Text(
-                    formatMs(if (seekDragging) seekValue.toLong() else positionMs),
+                    formatMs(shownPos),
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "-" + formatMs((durationMs - positionMs).coerceAtLeast(0L)),
+                    "-" + formatMs((durationMs - shownPos).coerceAtLeast(0L)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

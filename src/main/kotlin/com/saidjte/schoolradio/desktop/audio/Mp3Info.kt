@@ -24,7 +24,9 @@ object Mp3Info {
         val dataOffset: Long,    // إزاحة أول إطار صالح في الملف
         val first: FrameHeader,
         val durationMs: Long,
-        val isVbr: Boolean
+        val isVbr: Boolean,
+        val dataBytes: Long = 0L,     // حجم البيانات الصوتية (بعد ID3v2 وقبل ID3v1) — للسعي بالبايتات (v0.23.0)
+        val toc: ByteArray? = null    // جدول Xing المئوي (100 بايت: موضع بايت لكل 1% زمني) — سعي دقيق للـVBR (v0.23.0)
     )
 
     private val BITRATES_V1_L3 = intArrayOf(0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320)
@@ -171,6 +173,7 @@ object Mp3Info {
                 val xingPos = (offset + 4 + sideInfo).toInt()
                 var frames = -1L
                 var isVbr = false
+                var toc: ByteArray? = null
                 if (xingPos + 16 <= headLen) {
                     val tag = String(head, xingPos, 4, Charsets.US_ASCII)
                     if (tag == "Xing" || tag == "Info") {
@@ -178,13 +181,20 @@ object Mp3Info {
                                 ((head[xingPos + 5].toInt() and 0xFF) shl 16) or
                                 ((head[xingPos + 6].toInt() and 0xFF) shl 8) or
                                 (head[xingPos + 7].toInt() and 0xFF)
-                        if (flags and 0x01 != 0) {
-                            frames = ((head[xingPos + 8].toInt() and 0xFF).toLong() shl 24) or
-                                    ((head[xingPos + 9].toInt() and 0xFF).toLong() shl 16) or
-                                    ((head[xingPos + 10].toInt() and 0xFF).toLong() shl 8) or
-                                    (head[xingPos + 11].toInt() and 0xFF).toLong()
-                            isVbr = tag == "Xing"
+                        // حقول الوسم تتالي حسب الأعلام: الإطارات ثم البايتات ثم الجدول
+                        var fieldPos = xingPos + 8
+                        if (flags and 0x01 != 0 && fieldPos + 4 <= headLen) {
+                            frames = ((head[fieldPos].toInt() and 0xFF).toLong() shl 24) or
+                                    ((head[fieldPos + 1].toInt() and 0xFF).toLong() shl 16) or
+                                    ((head[fieldPos + 2].toInt() and 0xFF).toLong() shl 8) or
+                                    (head[fieldPos + 3].toInt() and 0xFF).toLong()
+                            fieldPos += 4
                         }
+                        if (flags and 0x02 != 0) fieldPos += 4 // حقل حجم البايتات — تجاوزه
+                        if (flags and 0x04 != 0 && fieldPos + 100 <= headLen) {
+                            toc = head.copyOfRange(fieldPos, fieldPos + 100)
+                        }
+                        isVbr = tag == "Xing"
                     }
                 }
 
@@ -193,7 +203,7 @@ object Mp3Info {
                 } else {
                     dataBytes * 8000L / (fh.bitRateKbps * 1000L)
                 }
-                Info(offset.toLong(), fh, durationMs, isVbr)
+                Info(offset.toLong(), fh, durationMs, isVbr, dataBytes, toc)
             }
         } catch (_: Exception) {
             null
