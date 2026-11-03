@@ -7,7 +7,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import javax.sound.sampled.Mixer
-import javax.sound.sampled.SourceDataLine
 import kotlin.concurrent.thread
 
 enum class MicState { IDLE, LIVE }
@@ -97,9 +96,12 @@ class MicLiveEngine {
      */
     var onRecordingSaved: ((File, Long) -> Unit)? = null
 
-    /** مخرج السماع المراقب (السماعة التي يختارها المذيع). */
-    @Volatile private var outMixer: Mixer.Info? = null
+    /** مخرجا السماع المراقب (الرئيسي والثاني الاختياري — طلب المستخدم v0.19.0). */
+    @Volatile private var outMixerMain: Mixer.Info? = null
+    @Volatile private var outMixerSecond: Mixer.Info? = null
     @Volatile private var outMixerDirty = false
+    /** جهاز المدخل الثاني الاختياري (null = مدخل وحيد) — يُفتح لحظة البدء. */
+    @Volatile private var inSecondMixer: Mixer.Info? = null
     private var worker: Thread? = null
 
     // ================= وحدة المزج: قناة الميكروفون =================
@@ -176,18 +178,31 @@ class MicLiveEngine {
         if (_state.value == MicState.LIVE) _monitoring.value = on
     }
 
-    /** تغيير مخرج السماع المراقب قبل البدء وأثناءه (إعادة فتح حيّة دون قطع البث). */
-    fun setMonitorOutput(mixerInfo: Mixer.Info?) {
-        outMixer = mixerInfo
+    /** تغيير مخرجي السماع المراقب قبل البدء وأثناءه (إعادة فتح حيّة دون قطع البث). */
+    fun setMonitorOutput(main: Mixer.Info?, second: Mixer.Info?) {
+        outMixerMain = main
+        outMixerSecond = second
         outMixerDirty = true
     }
 
-    fun start(mixerInfo: Mixer.Info?, outMixerInfo: Mixer.Info? = null) {
+    /** تحديد جهاز المدخل الثاني (يُطبّق عند البدء — التغيير أثناء الهواء يحتاج إعادة بدء). */
+    fun setSecondInput(mixerInfo: Mixer.Info?) {
+        inSecondMixer = mixerInfo
+    }
+
+    fun start(
+        mixerInfo: Mixer.Info?,
+        secondMixerInfo: Mixer.Info? = null,
+        outMixerInfo: Mixer.Info? = null,
+        outSecondMixerInfo: Mixer.Info? = null
+    ) {
         synchronized(this) {
             if (running) return
             running = true
         }
-        outMixer = outMixerInfo
+        inSecondMixer = secondMixerInfo
+        outMixerMain = outMixerInfo
+        outMixerSecond = outSecondMixerInfo
         outMixerDirty = false
         _error.value = null
         _liveMs.value = 0L
@@ -223,7 +238,7 @@ class MicLiveEngine {
 
     private fun run(mixerInfo: Mixer.Info?) {
         var line: javax.sound.sampled.TargetDataLine? = null
-        var out: SourceDataLine? = null
+        var out: PcmOutLine? = null
         var wav: WavFileWriter? = null
         try {
             val format = AudioDevices.pickFormat(mixerInfo)
@@ -235,7 +250,7 @@ class MicLiveEngine {
             l.open(actual, chunk * 4)
             l.start()
             line = l
-            _deviceName.value = mixerInfo?.name?.trim()?.ifEmpty { null } ?: "الميكروفون الافتراضي"
+            val name1 = mixerInfo?.name?.trim()?.ifEmpty { null } ?: "الميكروفون الافتراضي"
             _activeFormat.value = "${actual.sampleRate.toInt()} هرتز · ${actual.channels} قناة · 16 بت"
 
             // قناة الميكروفون في وحدة المزج: بناء معاملات المعالج حسب الصيغة المتفاوض عليها
@@ -246,6 +261,46 @@ class MicLiveEngine {
             aecMonitor.reset()
             ducker.reset()
             val shorts = ShortArray(chunk / 2)
+
+            // ============ المدخل الثاني (طلب المستخدم v0.19.0) ============
+            // يُفتح حصريًا على جهازه المختار: فشله لا يُسقط البث — يُكمل
+            // المذيع بمدخل واحد مع رسالة السبب، فالصمت الصريح على الالتقاط
+            // المزدوج أنواع من التقاط ميكروفون آخر سرًا فيختلط المدخلان.
+            var line2: javax.sound.sampled.TargetDataLine? = null
+            var line2Rate = 0
+            var line2Channels = 1
+            var line2FrameSize = 2
+            val secondWanted = inSecondMixer
+            if (secondWanted != null) {
+                try {
+                    val l2 = AudioDevices.openTargetLineStrict(secondWanted, format)
+                    val f2 = l2.format
+                    line2Rate = f2.sampleRate.toInt()
+                    line2Channels = f2.channels
+                    line2FrameSize = f2.frameSize.coerceAtLeast(1)
+                    val chunk2 = line2FrameSize * 1024
+                    l2.open(f2, chunk2 * 4)
+                    l2.start()
+                    line2 = l2
+                } catch (t: Throwable) {
+                    _error.value = "المدخل الثاني: " + AudioDevices.describeInputFailure(t) +
+                            " — جارٍ البث بمدخل واحد"
+                }
+            }
+            _deviceName.value = if (line2 != null) {
+                "١: $name1 · ٢: ${secondWanted?.name?.trim()?.ifEmpty { null } ?: "مدخل ثانٍ"}"
+            } else name1
+            if (line2 != null && line2Rate != actual.sampleRate.toInt()) {
+                _activeFormat.value += " · المدخل الثاني ${line2Rate} هرتز يُعاد تشكيله"
+            }
+            // حمل ما زاد من تحويل المدخل الثاني لشبكة الرئيسي — يُستهلك في الكتلة التالية
+            var carry = FloatArray(chunk / 2 + 1024)
+            var carryLen = 0
+            val mono2 = FloatArray((chunk / 2) + 2048)
+            val resampled = FloatArray((chunk / 2) * 2 + 2048)
+            val addMono = FloatArray(chunk / 2)
+            val buf2 = ByteArray(chunk * 2)
+            val shorts2 = ShortArray(chunk)
 
             val buf = ByteArray(chunk)
             val started = System.nanoTime()
@@ -258,6 +313,59 @@ class MicLiveEngine {
                 // معالجة لاحية) ثم معالج المذيع وكسب القناة — المقياس والسماع المراقب
                 // والتسجيل كلها على الصوت «على الهواء»
                 val sampleCount = Pcm16.bytesToShorts(buf, n, shorts)
+
+                // خلط المدخل الثاني في عينات الرئيسي قبل أي معالجة — فيعالج
+                // السلسلة كلها (مانعا الصدى ومعالج المذيع والمقياس) الصوت المختلط
+                if (line2 != null && sampleCount > 0) {
+                    val frames1 = sampleCount / actual.channels
+                    val rate1 = actual.sampleRate.toInt()
+                    if (PcmMixer.needsConversion(rate1, line2Rate)) {
+                        // معدلان مختلفان: قراءة ما يسدّ النقص بعد الحمل فقط —
+                        // فلا ينحرف الحمل تراكميًا مهما طال البث
+                        val needed = frames1 - carryLen
+                        if (needed > 0) {
+                            val frames2 = ((needed.toLong() * line2Rate) + rate1 - 1) / rate1
+                            val needBytes = (frames2 * line2FrameSize).toInt()
+                            val got = readFully(line2, buf2, needBytes)
+                            if (got <= 0) {
+                                try { line2.stop(); line2.close() } catch (_: Exception) { }
+                                line2 = null
+                                _error.value = "المدخل الثاني انقطع — جارٍ البث بمدخل واحد"
+                            } else {
+                                val c2 = Pcm16.bytesToShorts(buf2, got, shorts2)
+                                val fr2 = PcmMixer.foldToMono(shorts2, c2, line2Channels, mono2)
+                                val prod = PcmMixer.resample(mono2, fr2, line2Rate, rate1, resampled)
+                                if (carryLen + prod > carry.size) {
+                                    carry = FloatArray(maxOf(carry.size * 2, carryLen + prod))
+                                }
+                                System.arraycopy(resampled, 0, carry, carryLen, prod)
+                                carryLen += prod
+                            }
+                        }
+                        if (line2 != null && frames1 > 0) {
+                            val take = minOf(frames1, carryLen)
+                            if (take > 0) {
+                                System.arraycopy(carry, 0, addMono, 0, take)
+                                System.arraycopy(carry, take, carry, 0, carryLen - take)
+                                carryLen -= take
+                            }
+                            for (i in take until frames1) addMono[i] = 0f
+                            PcmMixer.addClamped(shorts, sampleCount, actual.channels, addMono, frames1)
+                        }
+                    } else {
+                        val needBytes = frames1 * line2FrameSize
+                        val got = readFully(line2, buf2, needBytes)
+                        if (got <= 0) {
+                            try { line2.stop(); line2.close() } catch (_: Exception) { }
+                            line2 = null
+                            _error.value = "المدخل الثاني انقطع — جارٍ البث بمدخل واحد"
+                        } else {
+                            val c2 = Pcm16.bytesToShorts(buf2, got, shorts2)
+                            PcmMixer.addSameRate(shorts, sampleCount, actual.channels, shorts2, c2, line2Channels)
+                        }
+                    }
+                }
+
                 // السلسلة كنسخة الهاتف: طرح صدى الموسيقى ثم صدى صوت المذيع العائد
                 // من سماعة المراقبة — مانعان متتاليان يغطيان كل ما تسمعه الغرفة
                 aec.process(shorts, sampleCount, MusicFarEnd.tap)
@@ -286,7 +394,7 @@ class MicLiveEngine {
                 _duckActive.value = DuckBus.active
                 Pcm16.shortsToBytes(shorts, sampleCount, buf)
 
-                // إعادة فتح السماع المراقب على المخرج الجديد دون قطع البث
+                // إعادة فتح السماع المراقب على المخرجين الجديدين دون قطع البث
                 if (outMixerDirty) {
                     outMixerDirty = false
                     try { out?.stop(); out?.close() } catch (_: Exception) { }
@@ -294,9 +402,15 @@ class MicLiveEngine {
                 }
                 if (monitorWanted) {
                     if (out == null) {
-                        // فشل السماع المراقب لا يوقف البث المباشر أبدًا
+                        // فشل السماع المراقب لا يوقف البث المباشر أبدًا،
+                        // وفشل المخرج الثاني يبقي الأول يعمل (تشغيل مزدوج متسامح)
                         out = try {
-                            val o = AudioDevices.openSourceLine(outMixer, actual)
+                            val o = AudioDevices.openOutLine(
+                                outMixerMain, outMixerSecond, actual
+                            ) { t ->
+                                _error.value = "المخرج الثاني للسماع المراقب: " +
+                                        AudioDevices.describeOutputFailure(t)
+                            }
                             o.open(actual, chunk * 4)
                             o.start()
                             o
@@ -373,6 +487,22 @@ internal object MixerLogicFader {
 
 /** مخزن أحادي لمرجع مانع صدى المراقبة داخل المحرك. */
 private var monitorMonoBuf = FloatArray(4096)
+
+/**
+ * قراءة محكمة: لا ترجع قبل اكتمال المطلوب (إلا بانقطاع الخط) —
+ * الالتقاط المزدوج يحتاج كتلًا متطابقة الطول من الجهازين كي تُجمع
+ * عينةً بعيناتها بلا انزياح يتراكم ساعةً بساعة.
+ */
+private fun readFully(line: javax.sound.sampled.TargetDataLine, buf: ByteArray, len: Int): Int {
+    if (len <= 0) return 0
+    var off = 0
+    while (off < len) {
+        val r = try { line.read(buf, off, len - off) } catch (_: Exception) { return -1 }
+        if (r <= 0) return if (off > 0) off else -1
+        off += r
+    }
+    return off
+}
 
 /**
  * دفع ما يُكتب في سماعة المراقبة كمرجع لمانع صدى المراقبة (أحادي متوسط القنوات)

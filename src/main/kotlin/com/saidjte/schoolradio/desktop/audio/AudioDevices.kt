@@ -243,8 +243,11 @@ object AudioDevices {
      * فتح خط تشغيل على المخرج الذي اختاره المذيع.
      * الجهاز المختار ← احتياطًا السماعة الافتراضية للنظام —
      * فلا يصمت التشغيل أبدًا لخلل في جهاز بعينه.
+     * وضع strict: الجهاز المختار وحده بلا أي احتياط — للجهاز الثاني
+     * في التشغيل المزدوج، فالصمت على الجهاز المختار أصدق من الالتفاف
+     * إلى الافتراضي فيكرّر الرئيسي ويبدّد معنى الاختيار.
      */
-    fun openSourceLine(mixerInfo: Mixer.Info?, format: AudioFormat): SourceDataLine {
+    fun openSourceLine(mixerInfo: Mixer.Info?, format: AudioFormat, strict: Boolean = false): SourceDataLine {
         if (mixerInfo != null) {
             try {
                 val info = DataLine.Info(SourceDataLine::class.java, format)
@@ -255,11 +258,56 @@ object AudioDevices {
             } catch (_: Exception) {
             }
         }
+        if (strict) {
+            throw IOException("تعذّر فتح المخرج المختار على النسق المطلوب — تأكد من توصيله وعدم استعماله من تطبيق آخر")
+        }
         try {
             return AudioSystem.getSourceDataLine(format)
         } catch (t: Throwable) {
             throw IOException(describeOutputFailure(t), t)
         }
+    }
+
+    /**
+     * فتح خط تقاط على جهاز الإدخال المحدد حصريًا — بلا المسار الافتراضي
+     * وبلا مسح شامل. للمدخل الثاني في التقاط مزدوج: الصمت الصريح على
+     * الجهاز المختار أصدق من التقاط ميكروفون آخر سرًا فيختلط المدخلان.
+     */
+    fun openTargetLineStrict(mixerInfo: Mixer.Info?, format: AudioFormat): TargetDataLine {
+        if (mixerInfo == null) {
+            throw IOException("لا يوجد جهاز إدخال محدد")
+        }
+        var lastCause: Throwable? = null
+        for (f in orderedInputFormats(mixerInfo, format)) {
+            try {
+                return rawTarget(mixerInfo, f)
+            } catch (t: Throwable) { lastCause = t }
+        }
+        throw IOException(describeInputFailure(lastCause), lastCause)
+    }
+
+    /**
+     * فتح خط إخراج موحّد على المخرج الرئيسي مع مخرج ثانٍ اختياري (تشغيل مزدوج —
+     * طلب المستخدم v0.19.0 «أضف إمكانية اختيار مخرجين»):
+     * الرئيسي بسلوك الإصدارات السابقة حرفيًا (المختار ← الافتراضي)، والثاني
+     * إن اختير يُفتح حصريًا على جهازه — فشله لا يُسقط البث: يعود الإخراج
+     * وحيدًا ويرفع المتصل رسالة السبب عبر onSecondFailed.
+     */
+    fun openOutLine(
+        mainMixer: Mixer.Info?,
+        secondMixer: Mixer.Info?,
+        format: AudioFormat,
+        onSecondFailed: ((Throwable) -> Unit)? = null
+    ): PcmOutLine {
+        val main = SinglePcmOut(openSourceLine(mainMixer, format))
+        if (secondMixer == null) return main
+        val second = try {
+            SinglePcmOut(openSourceLine(secondMixer, format, strict = true))
+        } catch (t: Throwable) {
+            onSecondFailed?.invoke(t)
+            return main
+        }
+        return TwinPcmOut(main, second)
     }
 
     // ================= رسائل عربية لأسباب الجذر =================

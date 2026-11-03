@@ -16,11 +16,8 @@ import java.io.FileInputStream
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioInputStream
 import javax.sound.sampled.AudioSystem
-import javax.sound.sampled.FloatControl
 import javax.sound.sampled.Mixer
-import javax.sound.sampled.SourceDataLine
 import kotlin.concurrent.thread
-import kotlin.math.log10
 import kotlin.math.min
 
 /** الصيغ القابلة للتشغيل فعليًا في المحرك — بوابة واحدة للاستيراد والمسح والمكتبة. */
@@ -109,28 +106,23 @@ class MusicChannel internal constructor() {
     }
 }
 
-private fun gainDb(volume: Float): Float =
-    if (volume <= 0.01f) -60f else 20f * log10(volume).toFloat()
-
-private fun applyGain(line: SourceDataLine, volume: Float) {
-    try {
-        val c = line.getControl(FloatControl.Type.MASTER_GAIN) as FloatControl
-        c.value = gainDb(volume).coerceIn(c.minimum, c.maximum)
-    } catch (_: Exception) { }
-}
-
-/** قارئ MP3 عبر JLayer: فك إطارًا بإطار مع بحث زمني بإعادة الفتح والعدّ السريع. */
+/**
+ * قارئ MP3 عبر JLayer: فك إطارًا بإطار مع بحث زمني بإعادة الفتح والعدّ السريع.
+ * الكتابة في PcmOutLine — وحيد أو مزدوج (مخرجان معًا) دون أن يعرف القارئ الفرق.
+ */
 private class Mp3TrackReader(
     private val file: File,
-    outMixer: Mixer.Info?,
+    outMain: Mixer.Info?,
+    outSecond: Mixer.Info?,
     volume: () -> Float,
+    onSecondOutFailed: ((Throwable) -> Unit)? = null,
     private val channel: MusicChannel
 ) : TrackReader {
 
     private val info = Mp3Info.analyze(file)
     private val fh = info?.first
     private val format: AudioFormat
-    private val line: SourceDataLine
+    private val out: PcmOutLine
     private var stream: BufferedInputStream
     private var bitstream: Bitstream
     private val decoder = Decoder()
@@ -147,30 +139,30 @@ private class Mp3TrackReader(
         Mp3Info.skipId3v2(stream)
         bitstream = Bitstream(stream)
         format = AudioFormat(f.sampleRate.toFloat(), 16, f.channels, true, false)
-        line = AudioDevices.openSourceLine(outMixer, format)
-        line.open(format, 16 * 1024)
-        line.start()
-        applyGain(line, volume())
+        out = AudioDevices.openOutLine(outMain, outSecond, format, onSecondOutFailed)
+        out.open(format, 16 * 1024)
+        out.start()
+        out.setVolume(volume())
         channel.configure(f.sampleRate, f.channels)
     }
 
     override fun readChunk(): Boolean {
         val header = try { bitstream.readFrame() } catch (_: Exception) { null } ?: return false
         try {
-            val out = decoder.decodeFrame(header, bitstream)
-            if (out is SampleBuffer) {
-                val shorts = out.buffer
+            val decoded = decoder.decodeFrame(header, bitstream)
+            if (decoded is SampleBuffer) {
+                val shorts = decoded.buffer
                 if (shorts.isNotEmpty()) {
                     // قناة المزج: المعادل + الفيدر + المقياس قبل كتابة الخط
                     channel.processShorts(shorts, shorts.size)
-                    val bytes = ByteArray(shorts.size * 2)
+                    val lineBytes = ByteArray(shorts.size * 2)
                     var bi = 0
                     for (s in shorts) {
                         val v = s.toInt()
-                        bytes[bi++] = (v and 0xFF).toByte()
-                        bytes[bi++] = ((v shr 8) and 0xFF).toByte()
+                        lineBytes[bi++] = (v and 0xFF).toByte()
+                        lineBytes[bi++] = ((v shr 8) and 0xFF).toByte()
                     }
-                    line.write(bytes, 0, bytes.size)
+                    out.write(lineBytes, 0, lineBytes.size)
                 }
             }
             framesDone++
@@ -216,31 +208,36 @@ private class Mp3TrackReader(
         }
         framesDone = jumpMs * f.sampleRate / (f.samplesPerFrame * 1000L) + count
         currentMsValue = jumpMs + count * f.samplesPerFrame * 1000L / f.sampleRate
-        line.flush()
+        out.flush()
     }
 
-    override fun pause() { try { line.stop() } catch (_: Exception) { } }
-    override fun resume() { try { line.start() } catch (_: Exception) { } }
-    override fun applyVolume(volume: Float) { applyGain(line, volume) }
+    override fun pause() { try { out.stop() } catch (_: Exception) { } }
+    override fun resume() { try { out.start() } catch (_: Exception) { } }
+    override fun applyVolume(volume: Float) { out.setVolume(volume) }
 
     override fun close() {
         try { bitstream.close() } catch (_: Exception) { }
         try { stream.close() } catch (_: Exception) { }
-        try { line.stop(); line.close() } catch (_: Exception) { }
+        try { out.close() } catch (_: Exception) { }
     }
 }
 
-/** قارئ PCM (WAV/AIFF/AU وOGG وFLAC عبر قرّاء صريحين) مع تحويل إلى PCM 16-bit عند الحاجة. */
+/**
+ * قارئ PCM (WAV/AIFF/AU وOGG وFLAC عبر قرّاء صريحين) مع تحويل إلى PCM 16-bit عند الحاجة.
+ * الكتابة في PcmOutLine — وحيد أو مزدوج (مخرجان معًا).
+ */
 private class PcmTrackReader(
     private val file: File,
-    outMixer: Mixer.Info?,
+    outMain: Mixer.Info?,
+    outSecond: Mixer.Info?,
     volume: () -> Float,
+    onSecondOutFailed: ((Throwable) -> Unit)? = null,
     private val channel: MusicChannel
 ) : TrackReader {
 
     private var ais: AudioInputStream
     private val pcmFormat: AudioFormat
-    private val line: SourceDataLine
+    private val out: PcmOutLine
     private val frameSize: Int
     private val buf = ByteArray(64 * 1024)
     private var framesDone = 0L
@@ -271,10 +268,10 @@ private class PcmTrackReader(
             else -> 0L
         }
 
-        line = AudioDevices.openSourceLine(outMixer, pcmFormat)
-        line.open(pcmFormat, 16 * 1024)
-        line.start()
-        applyGain(line, volume())
+        out = AudioDevices.openOutLine(outMain, outSecond, pcmFormat, onSecondOutFailed)
+        out.open(pcmFormat, 16 * 1024)
+        out.start()
+        out.setVolume(volume())
         channel.configure(pcmFormat.sampleRate.toInt(), pcmFormat.channels)
     }
 
@@ -286,7 +283,7 @@ private class PcmTrackReader(
         if (usable > 0) {
             // قناة المزج: المعادل + الفيدر + المقياس قبل كتابة الخط
             channel.process(buf, usable)
-            line.write(buf, 0, usable)
+            out.write(buf, 0, usable)
             framesDone += usable / frameSize
             if (pcmFormat.frameRate > 0) {
                 currentMsValue = framesDone * 1000L / pcmFormat.frameRate.toLong()
@@ -332,16 +329,16 @@ private class PcmTrackReader(
         }
         framesDone = target * pcmFormat.frameRate.toLong() / 1000L
         currentMsValue = target
-        line.flush()
+        out.flush()
     }
 
-    override fun pause() { try { line.stop() } catch (_: Exception) { } }
-    override fun resume() { try { line.start() } catch (_: Exception) { } }
-    override fun applyVolume(volume: Float) { applyGain(line, volume) }
+    override fun pause() { try { out.stop() } catch (_: Exception) { } }
+    override fun resume() { try { out.start() } catch (_: Exception) { } }
+    override fun applyVolume(volume: Float) { out.setVolume(volume) }
 
     override fun close() {
         try { ais.close() } catch (_: Exception) { }
-        try { line.stop(); line.close() } catch (_: Exception) { }
+        try { out.close() } catch (_: Exception) { }
     }
 }
 
@@ -461,19 +458,21 @@ class MusicPlayerEngine {
         channel.eq.setBands(state.bands.toFloatArray())
     }
 
-    /** مخرج التشغيل المختار (null = السماعة الافتراضية للنظام). */
-    @Volatile private var outputMixer: Mixer.Info? = null
+    /** مخرجا التشغيل المختاران (null = السماعة الافتراضية للنظام) — طلب المستخدم v0.19.0. */
+    @Volatile private var outputMain: Mixer.Info? = null
+    @Volatile private var outputSecond: Mixer.Info? = null
     @Volatile private var reopenOutput = false
     private var worker: Thread? = null
     private val workerLock = Any()
 
     /**
-     * تغيير مخرج التشغيل (السماعات) أثناء العمل: يُطبّق فورًا على المقطع الجاري
-     * بإعادة فتح سلسة تحفظ الموضع، وعلى كل مقطع لاحق.
+     * تغيير مخرجي التشغيل (السماعات) أثناء العمل: يُطبّق فورًا على المقطع الجاري
+     * بإعادة فتح سلسة تحفظ الموضع، وعلى كل مقطع لاحق. الثاني اختياري (null = وحيد).
      */
-    fun setOutput(mixerInfo: Mixer.Info?) {
-        if (outputMixer === mixerInfo && !reopenOutput) return
-        outputMixer = mixerInfo
+    fun setOutput(main: Mixer.Info?, second: Mixer.Info?) {
+        if (outputMain === main && outputSecond === second && !reopenOutput) return
+        outputMain = main
+        outputSecond = second
         if (_hasTrack.value) reopenOutput = true
     }
 
@@ -579,7 +578,8 @@ class MusicPlayerEngine {
                             nr
                         } catch (t: Throwable) {
                             // الجهاز الجديد فاشل: نعود للسماعة الافتراضية
-                            outputMixer = null
+                            outputMain = null
+                            outputSecond = null
                             try {
                                 val nr = openReader(cf)
                                 if (pos > 0) {
@@ -653,7 +653,13 @@ class MusicPlayerEngine {
 
     private fun openReader(file: File): TrackReader {
         val name = file.name.lowercase()
-        return if (name.endsWith(".mp3")) Mp3TrackReader(file, outputMixer, { _volume.value }, channel)
-        else PcmTrackReader(file, outputMixer, { _volume.value }, channel)
+        val onSecondFail: (Throwable) -> Unit = { t: Throwable ->
+            _error.value = "المخرج الثاني: " + AudioDevices.describeOutputFailure(t)
+        }
+        return if (name.endsWith(".mp3")) {
+            Mp3TrackReader(file, outputMain, outputSecond, { _volume.value }, onSecondFail, channel)
+        } else {
+            PcmTrackReader(file, outputMain, outputSecond, { _volume.value }, onSecondFail, channel)
+        }
     }
 }

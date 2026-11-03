@@ -579,6 +579,51 @@ object SelfTest {
             check(g > 0.99f && !dk.active) { "duck idle=$g" }
             check(g <= 1.0f) { "duck gain bounded" }
 
+            // ============ v0.19.0: المخرجان والمدخلان ============
+            // خلاط المدخل الثاني: طيّ القنوات + إعادة التشكيل + الجمع المحبوس
+            val pm2 = com.saidjte.schoolradio.desktop.audio.PcmMixer
+            val monoDst = FloatArray(8)
+            check(pm2.foldToMono(shortArrayOf(200, 100, -100, 100), 4, 2, monoDst) == 2) { "fold stereo frames" }
+            check(kotlin.math.abs(monoDst[0] - 150f / 32768f) < 1e-4f) { "fold avg=${monoDst[0]}" }
+            val rsDst = FloatArray(512)
+            check(pm2.resample(FloatArray(100) { it / 100f }, 100, 48000, 24000, rsDst) == 50) { "resample 48->24" }
+            check(pm2.resample(FloatArray(40) { it / 40f }, 40, 8000, 16000, rsDst) in 79..81) { "resample 8->16" }
+            val mixBase = shortArrayOf(100, 100, 100, 100)
+            check(pm2.addClamped(mixBase, mixBase.size, 2, floatArrayOf(0.5f, 0.5f), 2) == 2) { "addClamped frames" }
+            check(mixBase[0] == 16484.toShort() && mixBase[1] == 16484.toShort()) { "addClamped sum=${mixBase[0]}" }
+            val hot = shortArrayOf(32000, 32000, 32000, 32000)
+            pm2.addClamped(hot, hot.size, 2, floatArrayOf(0.5f, 0.5f), 2)
+            check(hot[0] == Short.MAX_VALUE && hot[1] == Short.MAX_VALUE) { "addClamped max" }
+            val srBase = shortArrayOf(100, 200, 100, 200)
+            pm2.addSameRate(srBase, srBase.size, 2, shortArrayOf(10, 20, 30, 40), 4, 2)
+            check(srBase[0] == 110.toShort() && srBase[1] == 220.toShort()) { "addSameRate stereo" }
+            check(!pm2.needsConversion(48000, 48000) && pm2.needsConversion(48000, 44100)) { "needsConversion" }
+
+            // الإخراج المزدوج: نفس الكتلة في الجهازين (خطوط وهمية بلا أجهزة)
+            class FakeOutLine : com.saidjte.schoolradio.desktop.audio.PcmOutLine {
+                val chunks = mutableListOf<ByteArray>()
+                var lastVolume = 0f
+                var closed = 0
+                override fun open(format: AudioFormat, bufferSize: Int) { }
+                override fun start() { }
+                override fun stop() { }
+                override fun flush() { }
+                override fun write(b: ByteArray, off: Int, len: Int) { chunks.add(b.copyOfRange(off, off + len)) }
+                override fun setVolume(v: Float) { lastVolume = v }
+                override fun close() { closed++ }
+            }
+            val fo1 = FakeOutLine()
+            val fo2 = FakeOutLine()
+            val twin = com.saidjte.schoolradio.desktop.audio.TwinPcmOut(fo1, fo2)
+            val twinData = byteArrayOf(9, 8, 7, 6)
+            twin.write(twinData, 0, twinData.size)
+            twin.setVolume(0.8f)
+            twin.close()
+            check(fo1.chunks.size == 1 && fo2.chunks.size == 1) { "twin write both" }
+            check(fo1.chunks[0].contentEquals(twinData) && fo2.chunks[0].contentEquals(twinData)) { "twin same bytes" }
+            check(kotlin.math.abs(fo1.lastVolume - 0.8f) < 1e-4f && kotlin.math.abs(fo2.lastVolume - 0.8f) < 1e-4f) { "twin volume" }
+            check(fo1.closed == 1 && fo2.closed == 1) { "twin close both" }
+
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
             tmp.listFiles()?.forEach { it.delete() }

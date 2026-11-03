@@ -223,18 +223,32 @@ fun BroadcastMicCard(vm: AppViewModel) {
     var devices by remember { mutableStateOf(AudioDevices.listMics()) }
     var outputs by remember { mutableStateOf(AudioDevices.listOutputs()) }
     var selectedDevice by remember { mutableStateOf(devices.firstOrNull()) }
+    var selectedDevice2 by remember { mutableStateOf<AudioDevices.MicDevice?>(null) }
     var selectedOut by remember { mutableStateOf(outputs.firstOrNull()) }
+    var selectedOut2 by remember { mutableStateOf<AudioDevices.OutDevice?>(null) }
     var devicesMenu by remember { mutableStateOf(false) }
+    var devices2Menu by remember { mutableStateOf(false) }
     var outMenu by remember { mutableStateOf(false) }
+    var out2Menu by remember { mutableStateOf(false) }
 
     /** إعادة تعداد أجهزة الإدخال والإخراج مع الحفاظ على الاختيار إن كان لا يزال موجودًا. */
     fun refreshDeviceLists() {
         val prevIn = selectedDevice
+        val prevIn2 = selectedDevice2
         val prevOut = selectedOut
+        val prevOut2 = selectedOut2
         devices = AudioDevices.listMics()
         outputs = AudioDevices.listOutputs()
         selectedDevice = devices.firstOrNull { it.name == prevIn?.name } ?: devices.firstOrNull()
+        selectedDevice2 = prevIn2?.let { p -> devices.firstOrNull { it.name == p.name } }
         selectedOut = outputs.firstOrNull { it.name == prevOut?.name } ?: outputs.firstOrNull()
+        selectedOut2 = prevOut2?.let { p -> outputs.firstOrNull { it.name == p.name } }
+    }
+
+    /** تطبيق المخرجين الحاليين على مشغل الموسيقى والسماع المراقب فورًا. */
+    fun applyOutputs() {
+        vm.player.setOutput(selectedOut?.mixerInfo, selectedOut2?.mixerInfo)
+        mic.setMonitorOutput(selectedOut?.mixerInfo, selectedOut2?.mixerInfo)
     }
 
     Column(
@@ -271,10 +285,52 @@ fun BroadcastMicCard(vm: AppViewModel) {
             }
         }
 
-        // محدّد المخرج (السماعات): يوجّه الموسيقى والتسجيلات والسماع المراقب
+        // المدخل الثاني (اختياري): مذيعان أو ميكروفون القاعة — يُخلط في صوت المذيع
+        // ويعالج بالسلسلة كلها. يُطبّق عند بدء البث (تغييره أثناء الهواء يحتاج إعادة بدء)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                "المخرج",
+                "المدخل ٢",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.weight(1f))
+            Box {
+                SecondaryAction(
+                    text = selectedDevice2?.let { shortenName(it.name, 14) } ?: "بلا",
+                    onClick = { refreshDeviceLists(); devices2Menu = true }
+                )
+                DropdownMenu(expanded = devices2Menu, onDismissRequest = { devices2Menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("— بلا مدخل ثانٍ —") },
+                        onClick = {
+                            selectedDevice2 = null
+                            devices2Menu = false
+                        }
+                    )
+                    devices.forEach { d ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    (if (d.mixerInfo == selectedDevice2?.mixerInfo && d.name == selectedDevice2?.name) "● " else "") + d.name,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            onClick = {
+                                selectedDevice2 = d
+                                devices2Menu = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // محدّدا المخرجين (السماعات): الرئيسي يوجّه الموسيقى والتسجيلات والسماع المراقب،
+        // والثاني اختياري — نفس الصوت يُكتب في الجهازين معًا (قاعة + سماعة المذيع مثلًا)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "المخرج ١",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
@@ -296,9 +352,48 @@ fun BroadcastMicCard(vm: AppViewModel) {
                             },
                             onClick = {
                                 selectedOut = d
-                                vm.player.setOutput(d.mixerInfo)
-                                mic.setMonitorOutput(d.mixerInfo)
+                                applyOutputs()
                                 outMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "المخرج ٢",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.weight(1f))
+            Box {
+                SecondaryAction(
+                    text = selectedOut2?.let { shortenName(it.name, 14) } ?: "بلا",
+                    onClick = { refreshDeviceLists(); out2Menu = true }
+                )
+                DropdownMenu(expanded = out2Menu, onDismissRequest = { out2Menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("— بلا مخرج ثانٍ —") },
+                        onClick = {
+                            selectedOut2 = null
+                            applyOutputs()
+                            out2Menu = false
+                        }
+                    )
+                    outputs.forEach { d ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    (if (d.mixerInfo == selectedOut2?.mixerInfo && d.name == selectedOut2?.name) "● " else "") + d.name,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            onClick = {
+                                selectedOut2 = d
+                                applyOutputs()
+                                out2Menu = false
                             }
                         )
                     }
@@ -329,7 +424,14 @@ fun BroadcastMicCard(vm: AppViewModel) {
         } else {
             PrimaryAction(
                 text = "بدء البث المباشر",
-                onClick = { mic.start(selectedDevice?.mixerInfo, selectedOut?.mixerInfo) },
+                onClick = {
+                    mic.start(
+                        selectedDevice?.mixerInfo,
+                        selectedDevice2?.mixerInfo,
+                        selectedOut?.mixerInfo,
+                        selectedOut2?.mixerInfo
+                    )
+                },
                 modifier = Modifier.fillMaxWidth()
             )
         }

@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -141,8 +142,15 @@ private fun ReadingPane(vm: AppViewModel, modifier: Modifier = Modifier) {
     val fullReading by vm.fullScriptReading.collectAsState()
 
     var fontSp by remember { mutableStateOf(34f) }
+    var showOverlay by remember { mutableStateOf(false) }
+    val readScroll = rememberScrollState()
 
     val resolved = StudioLogic.resolveScriptSection(schedule, runActive, runIndex, script, selectedId)
+
+    // عودة القراءة لقمة النص لحظة تغيّر الفقرة — لا قراءة من منتصف الفقرة السابقة
+    LaunchedEffect(resolved?.first?.id, fullReading) {
+        readScroll.animateScrollTo(0)
+    }
 
     Column(
         modifier = modifier.fillMaxHeight(),
@@ -172,6 +180,7 @@ private fun ReadingPane(vm: AppViewModel, modifier: Modifier = Modifier) {
                 )
             }
             Spacer(Modifier.weight(1f))
+            SecondaryAction(text = "شاشة القراءة", onClick = { showOverlay = true })
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -190,7 +199,7 @@ private fun ReadingPane(vm: AppViewModel, modifier: Modifier = Modifier) {
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(14.dp))
                 .background(MaterialTheme.colorScheme.surface)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(readScroll)
                 .padding(20.dp)
         ) {
             if (script.isEmpty()) {
@@ -287,6 +296,11 @@ private fun ReadingPane(vm: AppViewModel, modifier: Modifier = Modifier) {
             }
             SecondaryAction(text = "تحرير", onClick = { vm.selectTab(Tab.SCRIPT) })
         }
+    }
+
+    // شاشة القراءة التلقيمية بملء النافذة (v0.19.0)
+    if (showOverlay) {
+        ReadingOverlay(vm) { showOverlay = false }
     }
 }
 

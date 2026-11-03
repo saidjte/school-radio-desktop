@@ -1,5 +1,6 @@
 package com.saidjte.schoolradio.desktop.ui
 
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -420,8 +422,16 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
     val fullReading by vm.fullScriptReading.collectAsState()
 
     var fontSp by remember { mutableStateOf(34f) }
+    var showOverlay by remember { mutableStateOf(false) }
+    val readScroll = rememberScrollState()
 
     val resolved = StudioLogic.resolveScriptSection(schedule, runActive, runIndex, script, selectedId)
+
+    // لحظة انتقال الحلقة لفقرة تالية تعود لوحة القراءة لقمة النص الجديد —
+    // كان الموضع القديم يبقى عالقًا والمذيع يقرأ من منتصف الفقرة السابقة
+    LaunchedEffect(resolved?.first?.id) {
+        readScroll.animateScrollTo(0, tween(220))
+    }
 
     Column(
         modifier = modifier.fillMaxHeight(),
@@ -451,6 +461,7 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
                 )
             }
             Spacer(Modifier.weight(1f))
+            SecondaryAction(text = "شاشة القراءة", onClick = { showOverlay = true })
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -469,7 +480,7 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(14.dp))
                 .background(MaterialTheme.colorScheme.surface)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(readScroll)
                 .padding(20.dp)
         ) {
             val shown: ScriptSection? = resolved?.first
@@ -524,6 +535,11 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
                 onClick = { vm.selectTab(Tab.SCRIPT) }
             )
         }
+    }
+
+    // شاشة القراءة التلقيمية بملء النافذة (v0.19.0)
+    if (showOverlay) {
+        ReadingOverlay(vm) { showOverlay = false }
     }
 }
 

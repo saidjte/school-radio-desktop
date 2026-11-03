@@ -24,6 +24,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -54,6 +56,13 @@ fun ScriptTab(vm: AppViewModel) {
     var showCreate by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<ScriptSection?>(null) }
     var fontSp by remember { mutableStateOf(30f) }
+    var showOverlay by remember { mutableStateOf(false) }
+    val readScroll = rememberScrollState()
+
+    // عودة القراءة لقمة النص لحظة اختيار فقرة جديدة أو تبديل وضع «كامل»
+    LaunchedEffect(selectedId, fullReading) {
+        readScroll.animateScrollTo(0)
+    }
 
     Row(
         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -169,6 +178,7 @@ fun ScriptTab(vm: AppViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
                 )
+                SecondaryAction(text = "شاشة القراءة", onClick = { showOverlay = true })
                 SecondaryAction(text = "أ−", onClick = { fontSp = (fontSp - 4f).coerceAtLeast(16f) })
                 SecondaryAction(text = "أ+", onClick = { fontSp = (fontSp + 4f).coerceAtMost(64f) })
             }
@@ -190,7 +200,7 @@ fun ScriptTab(vm: AppViewModel) {
                     .weight(1f)
                     .clip(RoundedCornerShape(12.dp))
                     .background(MaterialTheme.colorScheme.surface)
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(readScroll)
                     .padding(18.dp)
             ) {
                 if (fullReading) {
@@ -202,19 +212,33 @@ fun ScriptTab(vm: AppViewModel) {
                         )
                     }
                     script.forEachIndexed { i, section ->
-                        Text(
-                            "${i + 1}. ${section.title.ifEmpty { "بدون عنوان" }}",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            section.body.ifEmpty { "—" },
-                            fontSize = fontSp.sp,
-                            lineHeight = (fontSp * 1.5f).sp
-                        )
-                        Spacer(Modifier.height(22.dp))
+                        // الفقرة المحددة مميّزة بخلفية فاتحة — المذيع يعرف موقعه
+                        // في القراءة الكاملة دون البحث بعينيه
+                        val isCurrent = section.id == selectedId
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                                    else Color.Transparent
+                                )
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                "${i + 1}. ${section.title.ifEmpty { "بدون عنوان" }}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                section.body.ifEmpty { "—" },
+                                fontSize = fontSp.sp,
+                                lineHeight = (fontSp * 1.5f).sp
+                            )
+                        }
+                        Spacer(Modifier.height(18.dp))
                     }
                 } else {
                     val current = vm.selectedSection
@@ -253,6 +277,11 @@ fun ScriptTab(vm: AppViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+
+    // شاشة القراءة التلقيمية بملء النافذة (v0.19.0)
+    if (showOverlay) {
+        ReadingOverlay(vm) { showOverlay = false }
     }
 
     // ============ حوارات التحرير والحذف ============
