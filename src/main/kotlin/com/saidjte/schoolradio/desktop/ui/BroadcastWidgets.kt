@@ -24,8 +24,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -211,7 +213,7 @@ fun EmptyState(
  * نسخة واحدة يحين مكان نسختين.
  */
 @Composable
-fun BroadcastMicCard(vm: AppViewModel) {
+fun BroadcastMicCard(vm: AppViewModel, modifier: Modifier = Modifier) {
     val mic = vm.mic
     val state by mic.state.collectAsState()
     val level by mic.level.collectAsState()
@@ -277,9 +279,16 @@ fun BroadcastMicCard(vm: AppViewModel) {
         persistDevices()
     }
 
-    StudioCard {
+    StudioCard(modifier = modifier) {
         SectionHeader(title = "الميكروفون")
 
+        // المحتوى بتمرير داخلي (v0.26.0): بطاقة الميكروفون تأخذ الوزن مباشرة
+        // من عمود البث (نفس طريقة بطاقتَي العمود الأيمن) فيتغير حجمها كله
+        // بالفاصل مرئيًا، ومحتواها يُمرَّر حين يضيّق الحيّز بدل أن يُقتطع
+        Column(
+            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
         // سطر المداخل (طلب v0.21.0: «في حيز البث اجعل سطرا مخصصا المداخل و سطر
         // مخصص المخارج») — المدخل ١ هو جهاز المذيع والمدخل ٢ اختياري يُخلط في
         // صوته (مذيعان أو ميكروفون القاعة)، كلاهما في سطر واحد واضح
@@ -503,6 +512,7 @@ fun BroadcastMicCard(vm: AppViewModel) {
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall
             )
+        }
         }
     }
 }

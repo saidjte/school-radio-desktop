@@ -19,6 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -47,15 +48,18 @@ import androidx.compose.ui.window.DialogProperties
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.data.ScriptStats
 import com.saidjte.schoolradio.desktop.data.StudioLogic
+import com.saidjte.schoolradio.desktop.data.TeleprompterSpeedLogic
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
 /**
- * سرعات التلقيم الحي — أربع سرعات بعد طلب المستخدم v0.20.0 «إضافة سرعة رابعة»:
- * الهادئة للاستهلال والنشرات المكتوبة بعناية، السريعة جدًا للإعلانات القصيرة.
- * التسميات يجب أن تطابق TeleprompterNames.ALL في طبقة البيانات (اختبار يمنع الانفصال).
+ * السرعات الجاهزة الخمس — طلب المستخدم v0.26.0 «أضف سرعة بطئ جدا» أضاف
+ * «بطيئة جدًا» للاستهلال البطيء (قبل الهادئة)، والتحكم الحر المتصل عبر
+ * المنزلق يديره TeleprompterSpeedLogic في طبقة البيانات — التسميات يجب
+ * أن تطابق TeleprompterNames.ALL (اختبار يمنع الانفصال).
  */
 enum class TeleprompterSpeed(val label: String, val pxPerSecond: Float) {
+    VERY_SLOW("بطيئة جدًا", 12f),
     SLOW("هادئة", 30f),
     NORMAL("متوسطة", 60f),
     FAST("سريعة", 110f),
@@ -99,12 +103,10 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
     val savedReading = remember { vm.savedReading() }
     var fontSp by remember { mutableStateOf(savedReading.fontSp ?: 40f) }
     var autoScroll by remember { mutableStateOf(false) }
-    var speed by remember {
-        mutableStateOf(
-            TeleprompterSpeed.entries.firstOrNull { it.label == savedReading.speed }
-                ?: TeleprompterSpeed.NORMAL
-        )
-    }
+    // التحكم الحر في السرعة (v0.26.0): قيمة متصلة بالبكسل/ثانية تُسترجع من
+    // المحفوظ (اسم جاهز أو رقم) ويتغير بها الزحف فورًا — والجاهزات الخمس
+    // أزرار سريعة فوق المنزلق
+    var speedPx by remember { mutableStateOf(TeleprompterSpeedLogic.resolve(savedReading.speed)) }
     var followActive by remember { mutableStateOf(savedReading.follow ?: true) }
     var clock by remember { mutableStateOf(StudioLogic.clockText(System.currentTimeMillis())) }
     val scrollState = rememberScrollState()
@@ -112,7 +114,14 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
 
     /** حفظ التفضيلات الحالية — يُستدعى عند اختيار صريح من المذيع فقط. */
     fun persistReading() {
-        vm.saveReading(fontSp, speed.label, followActive)
+        vm.saveReading(fontSp, TeleprompterSpeedLogic.encode(speedPx), followActive)
+    }
+
+    // حفظ السرعة أثناء سحب المنزلق مُهذّب: يُكتب الإعداد بعد سكون نصف ثانية
+    // لا مع كل إطار سحب — فيبقى التغيير الحر محفوظًا بين الجلسات دون إثقال القرص
+    LaunchedEffect(speedPx) {
+        delay(600)
+        persistReading()
     }
 
     // الفقرة المعروضة — فقرة واحدة: الجارية أثناء الحلقة مع المتابعة،
@@ -144,14 +153,14 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
 
     // التمرير الآلي: خطوات صغيرة متتالية فيبدو الزحف سلسًا لا قفزات —
     // وعند بلوغ نهاية النص (آخر سطر خرج من الأعلى) يتوقف التلقيم وحده
-    LaunchedEffect(autoScroll, speed) {
+    LaunchedEffect(autoScroll, speedPx) {
         if (autoScroll) {
             // جلسة انتهت سابقًا والنص عند النهاية؟ نعيده لأسفل الشاشة ليبدأ من جديد
             if (scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue) {
                 scrollState.scrollTo(0)
             }
             while (isActive) {
-                scrollState.scrollBy(speed.pxPerSecond / 20f)
+                scrollState.scrollBy(speedPx / 20f)
                 if (scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue) {
                     autoScroll = false
                     break
@@ -256,17 +265,24 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
                     filled = autoScroll,
                     onClick = { autoScroll = !autoScroll }
                 )
-                OverlayChip(
-                    text = "السرعة: ${speed.label}",
-                    onClick = {
-                        speed = when (speed) {
-                            TeleprompterSpeed.SLOW -> TeleprompterSpeed.NORMAL
-                            TeleprompterSpeed.NORMAL -> TeleprompterSpeed.FAST
-                            TeleprompterSpeed.FAST -> TeleprompterSpeed.VERY_FAST
-                            TeleprompterSpeed.VERY_FAST -> TeleprompterSpeed.SLOW
-                        }
-                        persistReading()
-                    }
+                // التحكم الحر في السرعة (v0.26.0): اسم القيمة + منزلق متصل + القراءة الرقمية
+                Text(
+                    "السرعة: ${TeleprompterSpeedLogic.displayName(speedPx)}",
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = ReadingColors.dim,
+                    fontWeight = FontWeight.Bold
+                )
+                Slider(
+                    value = speedPx,
+                    onValueChange = { speedPx = TeleprompterSpeedLogic.clamp(it) },
+                    valueRange = TeleprompterSpeedLogic.MIN_PX..TeleprompterSpeedLogic.MAX_PX,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "${speedPx.toInt()} بكسل/ث",
+                    style = androidx.compose.material3.MaterialTheme.typography.labelMedium.numeric(),
+                    color = ReadingColors.title,
+                    fontWeight = FontWeight.Bold
                 )
                 Spacer(Modifier.weight(1f))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -283,6 +299,31 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
                         color = ReadingColors.body
                     )
                 }
+            }
+
+            // السرعات الجاهزة الخمس — طلب «أضف سرعة بطئ جدا»: بطيئة جدًا أولًا،
+            // والزر الجاهز يثبت القيمة المتصلة ويحفظ فورًا (المفعّلة مضاءة)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    "سرعات جاهزة:",
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = ReadingColors.dim,
+                    fontWeight = FontWeight.Bold
+                )
+                TeleprompterSpeed.entries.forEach { preset ->
+                    OverlayChip(
+                        text = preset.label,
+                        filled = speedPx == preset.pxPerSecond,
+                        onClick = {
+                            speedPx = preset.pxPerSecond
+                            persistReading()
+                        }
+                    )
+                }
+                Spacer(Modifier.weight(1f))
             }
 
             // شريط تقدّم الحلقة + عدّاد الفقرات

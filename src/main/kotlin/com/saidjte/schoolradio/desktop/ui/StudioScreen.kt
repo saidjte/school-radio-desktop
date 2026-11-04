@@ -776,9 +776,14 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
 /**
  * عمود البث: الميكروفون وحيّز الموسيقى ووحدة المزج — طلب v0.21.0
  * «اعطي أهمية لحيز الموسيقى كي تظهر القوائم جيداً»: حيّز الموسيقى يأخذ
- * كل المساحة الباقية من العمود فتظهر القوائم بعدد صفوف كبير، وحيّز
- * الميكروفون فوقه بفاصل سحب بالفأرة (بتمرير داخلي إن ضُيّق) — وموضع
- * الفاصل يُحفظ بين الجلسات.
+ * كل المساحة الباقية من العمود فتظهر القوائم بعدد صفوف كبير.
+ *
+ * طلب v0.26.0 «اجعل طريقة التحكم في مقاس الحيزات الموجودة في العمود الأيسر
+ * تعمل بنفس طريقة التحكم في مقاس الحيزات الموجودة في العمود الأيمن»:
+ * بطاقتا الميكروفون والموسيقى تأخذان الوزن مباشرة بفاصل سحب بينهما —
+ * فالسحب يعيد تشكيل البطاقتين مرئيًا (كما في بطاقتَي التسجيلات والجدولة
+ * في العمود الأيمن تمامًا) بدل اقتطاع البطاقة داخل مجلد تمرير،
+ * وموضع الفاصل يُحفظ بين الجلسات ومحتوى الميكروفون يُمرَّر داخليًا.
  */
 @Composable
 private fun StudioBroadcastPanel(
@@ -797,15 +802,8 @@ private fun StudioBroadcastPanel(
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         SectionHeader(title = "البث")
-        // حيّز الميكروفون: بتمرير داخلي حين يضيّقه المذيع لصالح الموسيقى
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .weight(micFrac)
-                .verticalScroll(rememberScrollState())
-        ) {
-            BroadcastMicCard(vm)
-        }
+        // حيّز الميكروفون: البطاقة نفسها تأخذ الوزن فتتغير بالفاصل مرئيًا
+        BroadcastMicCard(vm, Modifier.fillMaxWidth().weight(micFrac))
         StudioVSplit(
             onDragY = { dy ->
                 onMicFrac(
@@ -817,10 +815,12 @@ private fun StudioBroadcastPanel(
             },
             onEnd = onEnd
         )
-        // حيّز الموسيقى: كل المساحة الباقية — القائمة والمكتبة تظهران جيدًا
-        Box(Modifier.fillMaxWidth().weight(1f - micFrac)) {
-            BroadcastMusicCard(vm = vm, modifier = Modifier.fillMaxSize(), expandPane = true)
-        }
+        // حيّز الموسيقى: البطاقة مباشرة بالوزن الباقي — القائمة والمكتبة تظهران جيدًا
+        BroadcastMusicCard(
+            vm = vm,
+            modifier = Modifier.fillMaxWidth().weight(1f - micFrac),
+            expandPane = true
+        )
         MixerLinkCard(vm)
     }
 }

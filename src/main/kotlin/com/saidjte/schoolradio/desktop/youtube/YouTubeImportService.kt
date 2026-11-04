@@ -241,8 +241,15 @@ class YouTubeImportService(
                 "أداة تحميل اليوتيوب غير مدمجة في هذه النسخة ولا مثبتة في النظام — أعد تنزيل النسخة الرسمية."
             )
         }
+        // إصلاح جذري لعطل Program Files (تقرير المستخدم v0.25): مجلد عمل آمن
+        // قابل للكتابة + TMP/TEMP/TMPDIR مثبتة عليه — فلا تسقط ملفات الأداة
+        // المؤقتة في مجلد التثبيت المحمي مهما كان سياق إطلاق التطبيق
+        val scratch = YtDlpProcessSpec.scratchDir(workDir, System.getProperty("java.io.tmpdir"))
         val pb = ProcessBuilder(args)
+            .directory(scratch)
             .redirectErrorStream(false)
+        val env = pb.environment()
+        YtDlpProcessSpec.envFor(scratch, env).forEach { (k, v) -> env[k] = v }
         val proc = try {
             pb.start()
         } catch (e: Exception) {

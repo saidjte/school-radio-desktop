@@ -59,12 +59,69 @@ data class AppSettings(
 )
 
 /**
- * أسماء سرعات التلقيم المعروفة — أربع سرعات بعد طلب v0.20.0 «إضافة سرعة رابعة».
+ * أسماء سرعات التلقيم المعروفة — خمس سرعات بعد طلب المستخدم v0.26.0
+ * «أضف سرعة بطئ جدا» (بطيئة جدًا قبل الهادئة)، مع التحكم الحر بالقيمة المتصلة.
  * تعيش في طبقة البيانات كي يتعقّم المخزن الاسم المحفوظ دون اعتماد على الواجهة؛
  * تسميات enum الواجهة يجب أن تطابقها (اختبار يمنع الانفصال).
  */
 object TeleprompterNames {
-    val ALL = listOf("هادئة", "متوسطة", "سريعة", "سريعة جدًا")
+    val ALL = listOf("بطيئة جدًا", "هادئة", "متوسطة", "سريعة", "سريعة جدًا")
+}
+
+/**
+ * التحكم الحر في سرعة التلقيم — طلب المستخدم v0.26.0 «أضف امكانية التحكم الحر
+ * في سرعة التلقيم في شاشة القراءة. وأضف سرعة بطئ جدا»: القيمة متصلة بالبكسل/ثانية
+ * (منزلق حر بين الحدين) إضافة إلى السرعات الجاهزة الخمس، والمحفوظ يقبل
+ * اسم سرعة جاهزة (توافق مع إعدادات v0.20–v0.25) أو قيمة رقمية داخل الحدود.
+ * نقية قابلة للاختبار بلا فتح موارد رسومية.
+ */
+object TeleprompterSpeedLogic {
+    /** أدنى وأعلى سرعة زحف بالبكسل/ثانية — بطيئة جدًا للاستهلال البطيء وسريعة للإعلانات. */
+    const val MIN_PX = 6f
+    const val MAX_PX = 260f
+
+    /** السرعات الجاهزة بالترتيب التصاعدي — يجب أن تطابق enum الواجهة وTeleprompterNames. */
+    val PRESETS: List<Pair<String, Float>> = listOf(
+        "بطيئة جدًا" to 12f,
+        "هادئة" to 30f,
+        "متوسطة" to 60f,
+        "سريعة" to 110f,
+        "سريعة جدًا" to 170f
+    )
+
+    private const val DEFAULT_PX = 60f
+
+    /** حبس القيمة داخل حدود المنزلق. */
+    fun clamp(v: Float): Float = v.coerceIn(MIN_PX, MAX_PX)
+
+    /**
+     * استرجاع السرعة من المحفوظ: اسم جاهز → قيمته، رقم داخل الحدود → القيمة،
+     * غائب/فاسد → الافتراضية (متوسطة). لا يرمي أبدًا.
+     */
+    fun resolve(saved: String?): Float {
+        if (saved == null) return DEFAULT_PX
+        val t = saved.trim()
+        PRESETS.firstOrNull { it.first == t }?.let { return it.second }
+        t.toFloatOrNull()?.let { return clamp(it) }
+        return DEFAULT_PX
+    }
+
+    /** اسم السرعة الجاهزة المطابقة تمامًا — null إن كانت قيمة حرة مخصّصة. */
+    fun presetLabelFor(v: Float): String? =
+        PRESETS.firstOrNull { it.second == v }?.first
+
+    /**
+     * التخزين: اسم الجاهزة إن طابقت تمامًا، وإلا القيمة الرقمية بفاصلة واحدة —
+     * ما يكتبه encode يقرأه resolve دائمًا (عقد دائري يغطيه اختبار).
+     */
+    fun encode(v: Float): String {
+        val c = clamp(v)
+        presetLabelFor(c)?.let { return it }
+        return java.util.Locale.ROOT.let { String.format(it, "%.1f", c) }
+    }
+
+    /** اسم العرض في الشريط العلوي: اسم الجاهزة أو «مخصّصة» للقيم الحرة. */
+    fun displayName(v: Float): String = presetLabelFor(v) ?: "مخصّصة"
 }
 
 /** مخزن الإعدادات: تحميل/حفظ settings.json ذريًا مع تعقيم الحقول. */
@@ -121,12 +178,24 @@ class SettingsStore(private val file: File) {
     /** حدود حجم خط شاشة القراءة — نفس حدود الواجهة 16..96. */
     private fun clampFontSp(v: Float?): Float? = v?.coerceIn(16f, 96f)
 
-    /** تفضيلات القراءة المحسومة: خط داخل الحدود وسرعة من الأسماء المعروفة فقط. */
+    /**
+     * تعقيم السرعة المحفوظة: اسم جاهز معروف أو قيمة رقمية داخل حدود المنزلق —
+     * ما عدا ذلك (فاسد/خارج الحدود/اسم محذوف) يُسقط فيصير الافتراضي (v0.26.0).
+     */
+    private fun cleanSpeed(s: String?): String? {
+        val t = s?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (TeleprompterNames.ALL.any { it == t }) return t
+        val v = t.toFloatOrNull() ?: return null
+        if (v < TeleprompterSpeedLogic.MIN_PX || v > TeleprompterSpeedLogic.MAX_PX) return null
+        return TeleprompterSpeedLogic.encode(v)
+    }
+
+    /** تفضيلات القراءة المحسومة: خط داخل الحدود وسرعة جاهزة أو حرة داخل الحدود. */
     fun reading(): ReadingJson {
         val r = doc.reading ?: ReadingJson()
         return ReadingJson(
             fontSp = clampFontSp(r.fontSp),
-            speed = r.speed?.takeIf { s -> TeleprompterNames.ALL.any { it == s } },
+            speed = cleanSpeed(r.speed),
             follow = r.follow
         )
     }
@@ -136,7 +205,7 @@ class SettingsStore(private val file: File) {
         doc = doc.copy(
             reading = ReadingJson(
                 fontSp = clampFontSp(r.fontSp),
-                speed = r.speed?.takeIf { s -> TeleprompterNames.ALL.any { it == s } },
+                speed = cleanSpeed(r.speed),
                 follow = r.follow
             )
         )

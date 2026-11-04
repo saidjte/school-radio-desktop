@@ -5,6 +5,7 @@ import com.saidjte.schoolradio.desktop.youtube.AudioTranscoder
 import com.saidjte.schoolradio.desktop.youtube.YouTubeJson
 import com.saidjte.schoolradio.desktop.youtube.YouTubeUrl
 import com.saidjte.schoolradio.desktop.youtube.YtDlpLocator
+import com.saidjte.schoolradio.desktop.youtube.YtDlpProcessSpec
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -152,6 +153,59 @@ class YouTubeImportTest {
         assertTrue(YouTubeJson.describeError("ERROR: Video unavailable")!!.contains("غير متاح"))
         assertTrue(YouTubeJson.describeError("unsupported URL")!!.contains("مدعوم"))
         assertNull(YouTubeJson.describeError("some unknown failure"))
+        // v0.26.0: رفض الكتابة (عطل Program Files المُبلَّغ عنه بالصورة) له رسالة عربية عملية
+        val denied = YouTubeJson.describeError(
+            "ERROR: [Errno 13] Permission denied: 'C:\\Program Files\\SchoolRadioDesktop\\tmp876lh9vg.tmp'"
+        )
+        assertTrue(denied != null && denied.contains("مجلد محمي"), "Errno 13 must be classified: $denied")
+        assertTrue(
+            YouTubeJson.describeError("OSError: Permission denied: /usr/local/bin/tool")!!.contains("مجلد محمي")
+        )
+    }
+
+    // ================= v0.26.0: مجلد العمل الآمن لعملية الأداة =================
+
+    @Test
+    fun `scratch dir prefers user data tmp and is always writable`() {
+        val work = File(System.getProperty("java.io.tmpdir"), "sr-scratch-ok-${System.nanoTime()}")
+        try {
+            val scratch = YtDlpProcessSpec.scratchDir(work, System.getProperty("java.io.tmpdir"))
+            assertEquals(File(work, "tmp").absolutePath, scratch.absolutePath, "مجلد بيانات المستخدم أولًا")
+            assertTrue(scratch.isDirectory && scratch.canWrite())
+            val env = YtDlpProcessSpec.envFor(scratch, mapOf("PATH" to "/usr/bin"))
+            assertEquals(scratch.absolutePath, env["TMP"], "TMP مثبت على المجلد الآمن")
+            assertEquals(scratch.absolutePath, env["TEMP"], "TEMP مثبت على المجلد الآمن")
+            assertEquals(scratch.absolutePath, env["TMPDIR"], "TMPDIR مثبت على المجلد الآمن")
+            assertEquals("/usr/bin", env["PATH"], "بقية البيانات تُحفظ")
+        } finally {
+            work.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `scratch dir falls back to system temp when user dir is blocked`() {
+        // مسار workDir يشير إلى ملف عادي لا مجلد — mkdirs عليه مستحيل فيرجع
+        // المرشح الثاني: TEMP النظام تحت اسم التطبيق (إصلاح عطل Program Files)
+        val blocker = File(System.getProperty("java.io.tmpdir"), "sr-scratch-blocked-${System.nanoTime()}.txt")
+        blocker.writeText("not a dir")
+        try {
+            val scratch = YtDlpProcessSpec.scratchDir(blocker, System.getProperty("java.io.tmpdir"))
+            assertTrue(scratch.isDirectory && scratch.canWrite(), "احتياط TEMP النظام قابل للكتابة")
+            assertEquals(
+                File(System.getProperty("java.io.tmpdir"), "SchoolRadioDesktop").absolutePath,
+                scratch.absolutePath
+            )
+        } finally {
+            blocker.delete()
+        }
+    }
+
+    @Test
+    fun `scratch dir never throws and always returns something usable`() {
+        // مرشحات مستحيلة كله ما عدا الأخير — تعيد الأخير بلا رمي
+        val phantom = File("/proc/school-radio-impossible-${System.nanoTime()}")
+        val scratch = YtDlpProcessSpec.scratchDir(phantom, "/proc/impossible-tmp-${System.nanoTime()}")
+        assertTrue(scratch.absolutePath.isNotBlank())
     }
 
     // ================= المحوّل الصوتي =================

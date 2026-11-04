@@ -8,6 +8,7 @@ import com.saidjte.schoolradio.desktop.data.ReadingJson
 import com.saidjte.schoolradio.desktop.data.SettingsStore
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 import com.saidjte.schoolradio.desktop.data.TeleprompterNames
+import com.saidjte.schoolradio.desktop.data.TeleprompterSpeedLogic
 import com.saidjte.schoolradio.desktop.ui.TeleprompterSpeed
 import java.io.File
 import javax.sound.sampled.AudioFormat
@@ -191,7 +192,7 @@ class DualDevicesAndReadingTest {
     fun `teleprompter speeds are ordered and sane for onair reading`() {
         val values = TeleprompterSpeed.entries.map { it.pxPerSecond }
         assertEquals(values.sorted(), values, "speeds must ascend")
-        assertTrue(values.first() >= 20f, "slowest must still move: ${values.first()}")
+        assertTrue(values.first() >= 10f, "slowest must still move: ${values.first()}")
         assertTrue(values.last() <= 200f, "fastest must stay scannable: ${values.last()}")
         assertTrue(TeleprompterSpeed.entries.all { it.label.isNotBlank() })
     }
@@ -200,15 +201,80 @@ class DualDevicesAndReadingTest {
 
     @Test
     fun `fourth teleprompter speed exists beyond fast`() {
-        assertEquals(4, TeleprompterSpeed.entries.size, "المستخدم طلب سرعة رابعة")
-        val fourth = TeleprompterSpeed.entries.last()
-        assertEquals("سريعة جدًا", fourth.label)
+        assertTrue(TeleprompterSpeed.entries.size >= 4, "المستخدم طلب سرعة رابعة")
+        val fourth = TeleprompterSpeed.entries.first { it.label == "سريعة جدًا" }
         assertTrue(fourth.pxPerSecond > TeleprompterSpeed.FAST.pxPerSecond, "الرابعة أسرع من الثالثة")
     }
 
     @Test
     fun `teleprompter labels match persisted names contract`() {
         assertEquals(TeleprompterNames.ALL, TeleprompterSpeed.entries.map { it.label })
+    }
+
+    // ================= v0.26.0: السرعة الخامسة والتحكم الحر =================
+
+    @Test
+    fun `fifth very slow speed exists before slow`() {
+        assertEquals(5, TeleprompterSpeed.entries.size, "المستخدم طلب سرعة بطيئة جدًا خامسة")
+        val fifth = TeleprompterSpeed.VERY_SLOW
+        assertEquals("بطيئة جدًا", fifth.label)
+        assertEquals(TeleprompterSpeed.entries.first(), fifth, "بطيئة جدًا أولى السرعات")
+        assertTrue(fifth.pxPerSecond < TeleprompterSpeed.SLOW.pxPerSecond, "بطيئة جدًا أبطأ من الهادئة")
+        assertEquals(12f, fifth.pxPerSecond)
+        assertTrue(TeleprompterNames.ALL.first() == "بطيئة جدًا")
+    }
+
+    @Test
+    fun `free speed logic resolve accepts presets numbers and falls back safely`() {
+        assertEquals(12f, TeleprompterSpeedLogic.resolve("بطيئة جدًا"))
+        assertEquals(30f, TeleprompterSpeedLogic.resolve("هادئة"))
+        assertEquals(60f, TeleprompterSpeedLogic.resolve("متوسطة"))
+        assertEquals(110f, TeleprompterSpeedLogic.resolve("سريعة"))
+        assertEquals(170f, TeleprompterSpeedLogic.resolve("سريعة جدًا"))
+        assertEquals(83.5f, TeleprompterSpeedLogic.resolve("83.5"), "رقم حر مقبول")
+        assertEquals(60f, TeleprompterSpeedLogic.resolve(null), "غائب → الافتراضية")
+        assertEquals(60f, TeleprompterSpeedLogic.resolve("مجهولة"), "فاسد → الافتراضية")
+        assertEquals(TeleprompterSpeedLogic.MAX_PX, TeleprompterSpeedLogic.resolve("999"), "خارج الحدود يُحبَس")
+        assertEquals(TeleprompterSpeedLogic.MIN_PX, TeleprompterSpeedLogic.resolve("0"), "الصفر يُحبَس")
+        assertEquals(60f, TeleprompterSpeedLogic.resolve("  متوسطة  "), "فراغات تُقص")
+    }
+
+    @Test
+    fun `free speed encode roundtrip matches resolve`() {
+        assertEquals("سريعة", TeleprompterSpeedLogic.encode(110f), "جاهزة تُخزَّن باسمها")
+        assertEquals("بطيئة جدًا", TeleprompterSpeedLogic.encode(12f))
+        assertEquals("83.5", TeleprompterSpeedLogic.encode(83.5f), "حرة تُخزَّن رقمًا")
+        assertEquals("260.0", TeleprompterSpeedLogic.encode(999f), "الحد الأعلى يُخزَّن رقمًا")
+        for (v in floatArrayOf(6f, 12f, 30f, 47.5f, 60f, 110f, 170f, 260f)) {
+            assertEquals(
+                TeleprompterSpeedLogic.clamp(v), TeleprompterSpeedLogic.resolve(TeleprompterSpeedLogic.encode(v)),
+                "عقد دائري عند $v"
+            )
+        }
+    }
+
+    @Test
+    fun `free speed display name distinguishes presets from custom`() {
+        assertEquals("متوسطة", TeleprompterSpeedLogic.displayName(60f))
+        assertEquals("مخصّصة", TeleprompterSpeedLogic.displayName(83.5f))
+    }
+
+    @Test
+    fun `settings accept free numeric speed and drop garbage`() {
+        val f = tmpSettings("speed-free")
+        try {
+            val s1 = SettingsStore(f)
+            s1.setReading(ReadingJson(fontSp = 40f, speed = "83.5", follow = true))
+            assertEquals("83.5", SettingsStore(f).reading().speed, "قيمة حرة داخل الحدود تُحفظ")
+            s1.setReading(ReadingJson(fontSp = 40f, speed = "بطيئة جدًا", follow = true))
+            assertEquals("بطيئة جدًا", SettingsStore(f).reading().speed, "السرعة الجاهزة الخامسة تُحفظ")
+            s1.setReading(ReadingJson(fontSp = 40f, speed = "999", follow = true))
+            assertNull(SettingsStore(f).reading().speed, "خارج الحدود يُسقط")
+            s1.setReading(ReadingJson(fontSp = 40f, speed = "مجهولة", follow = true))
+            assertNull(SettingsStore(f).reading().speed, "النص الفاسد يُسقط")
+        } finally {
+            f.delete()
+        }
     }
 
     // ================= v0.20.0: حفظ اختيار الأجهزة بين الجلسات =================

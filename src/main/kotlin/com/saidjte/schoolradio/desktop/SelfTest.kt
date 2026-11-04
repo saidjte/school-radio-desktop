@@ -665,11 +665,19 @@ object SelfTest {
             check(kotlin.math.abs(fo1.lastVolume - 0.8f) < 1e-4f && kotlin.math.abs(fo2.lastVolume - 0.8f) < 1e-4f) { "twin volume" }
             check(fo1.closed == 1 && fo2.closed == 1) { "twin close both" }
 
-            // v0.20.0: السرعة الرابعة — أربع سرعات متصاعدة وتسميات مطابقة لعقد الحفظ
+            // v0.26.0: السرعة الخامسة «بطيئة جدًا» والتحكم الحر — خمس سرعات متصاعدة
+            // وتسميات مطابقة لعقد الحفظ + عقد resolve/encode الدائري للقيمة الحرة
             val speeds = com.saidjte.schoolradio.desktop.ui.TeleprompterSpeed.entries
-            check(speeds.size == 4) { "teleprompter fourth speed: ${speeds.size}" }
+            check(speeds.size == 5) { "teleprompter fifth speed: ${speeds.size}" }
             check(speeds.zipWithNext().all { (a, b) -> a.pxPerSecond < b.pxPerSecond }) { "speeds ascend" }
             check(speeds.map { it.label } == TeleprompterNames.ALL) { "speed labels contract" }
+            val tsp = com.saidjte.schoolradio.desktop.data.TeleprompterSpeedLogic
+            check(tsp.resolve("بطيئة جدًا") == 12f) { "very slow preset" }
+            check(tsp.resolve("83.5") == 83.5f) { "free speed numeric" }
+            check(tsp.encode(83.5f) == "83.5") { "free speed encode" }
+            check(tsp.resolve(tsp.encode(47.5f)) == 47.5f) { "speed roundtrip" }
+            check(tsp.resolve("فاسد") == 60f && tsp.resolve(null) == 60f) { "speed fallback" }
+            check(tsp.displayName(83.5f) == "مخصّصة" && tsp.displayName(60f) == "متوسطة") { "speed display" }
 
             // v0.20.0: حفظ اختيار الأجهزة وتفضيلات القراءة بين الجلسات
             val devFile = File(tmp, "selftest-settings.json")
