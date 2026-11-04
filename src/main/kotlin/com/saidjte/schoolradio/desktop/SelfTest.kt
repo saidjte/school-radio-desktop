@@ -24,6 +24,7 @@ import com.saidjte.schoolradio.desktop.data.SettingsStore
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 import com.saidjte.schoolradio.desktop.data.TeleprompterNames
 import com.saidjte.schoolradio.desktop.ui.GuiTokens
+import com.saidjte.schoolradio.desktop.ui.typographyWithFamilies
 import java.io.File
 import javax.sound.sampled.AudioFormat
 import kotlin.math.PI
@@ -739,10 +740,29 @@ object SelfTest {
             check(GuiTokens.segmentColorArgb(20, lit = true) == GuiTokens.zoneRed) { "segment 20 red" }
             check(GuiTokens.segmentColorArgb(0, lit = false) != GuiTokens.zoneGreen) { "dim differs from lit" }
             // 4) الخط العربي المدمج: أوزان أربعة بمورد الجرة وسحرة TTF سليمة
-            for (w in listOf("Regular", "Medium", "SemiBold", "Bold")) {
-                val bytes = GuiTokens::class.java.classLoader.getResourceAsStream("fonts/NotoSansArabic-$w.ttf")?.readBytes()
-                check(bytes != null && bytes.size > 100_000) { "font $w packaged" }
-                check(bytes[0].toInt() == 0 && bytes[1].toInt() == 1 && bytes[2].toInt() == 0 && bytes[3].toInt() == 0) { "font $w ttf magic" }
+            val fontResources = listOf(
+                "Cairo-Regular.ttf", "Cairo-Medium.ttf", "Cairo-SemiBold.ttf", "Cairo-Bold.ttf",
+                "Changa-Medium.ttf", "Changa-SemiBold.ttf", "Changa-Bold.ttf", "Changa-ExtraBold.ttf",
+                "Orbitron-Medium.ttf", "Orbitron-SemiBold.ttf", "Orbitron-Bold.ttf", "Orbitron-ExtraBold.ttf",
+                "SpicySale-Regular.otf"
+            )
+            for (f in fontResources) {
+                val bytes = GuiTokens::class.java.classLoader.getResourceAsStream("fonts/$f")?.readBytes()
+                check(bytes != null && bytes.size > 15_000) { "font $f packaged" }
+                val ttfMagic = bytes[0].toInt() == 0 && bytes[1].toInt() == 1 && bytes[2].toInt() == 0 && bytes[3].toInt() == 0
+                val ottoMagic = bytes[0].toInt() == 0x4F && bytes[1].toInt() == 0x54 && bytes[2].toInt() == 0x54 && bytes[3].toInt() == 0x4F
+                check(ttfMagic || ottoMagic) { "font $f sfnt magic" }
+            }
+            // 4-ب) إسناد العائلات الطباعي: العناوين للعائلة العنوانية والمتون للأساس — بمنادِلين حارسين بلا موارد رسومية
+            run {
+                val mono = androidx.compose.ui.text.font.FontFamily.Monospace
+                val serif = androidx.compose.ui.text.font.FontFamily.Serif
+                val mapped = typographyWithFamilies(androidx.compose.material3.Typography(), mono, serif)
+                check(mapped.displaySmall.fontFamily == serif) { "display uses heading family" }
+                check(mapped.headlineSmall.fontFamily == serif) { "headline uses heading family" }
+                check(mapped.titleLarge.fontFamily == serif) { "title uses heading family" }
+                check(mapped.bodyMedium.fontFamily == mono) { "body uses body family" }
+                check(mapped.labelSmall.fontFamily == mono) { "label uses body family" }
             }
             // 5) أيقونة النافذة مدمجة بسحر PNG
             val iconBytes = GuiTokens::class.java.classLoader.getResourceAsStream("icon.png")?.readBytes()

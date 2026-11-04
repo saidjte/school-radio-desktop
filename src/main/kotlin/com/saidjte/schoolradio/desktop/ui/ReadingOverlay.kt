@@ -222,7 +222,7 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
                 ) {
                     Text(
                         clock,
-                        style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                        style = androidx.compose.material3.MaterialTheme.typography.labelLarge.numeric(),
                         color = ReadingColors.title,
                         fontWeight = FontWeight.Bold
                     )

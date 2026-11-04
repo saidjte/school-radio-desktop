@@ -47,6 +47,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.rememberWindowState
 import com.saidjte.schoolradio.desktop.ui.AppIcon
+import com.saidjte.schoolradio.desktop.ui.brand
 import com.saidjte.schoolradio.desktop.ui.AppIconKind
 import com.saidjte.schoolradio.desktop.ui.AppTheme
 import com.saidjte.schoolradio.desktop.ui.LocalStudioColors
@@ -197,6 +198,13 @@ private fun SideNav(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
+                // شعار لاتيني مرِح بخط الهوية Spicy Sale — توقيع بصري ثنائي اللغة (v0.24.0)
+                Text(
+                    "SCHOOL RADIO",
+                    style = MaterialTheme.typography.labelSmall.brand(),
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
         }
 
@@ -242,7 +250,7 @@ private fun SideNav(
         }
         Text(
             "v$APP_VERSION",
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelSmall.brand(),
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }

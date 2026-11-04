@@ -2,7 +2,10 @@ package com.saidjte.schoolradio.desktop
 
 import com.saidjte.schoolradio.desktop.data.MeterLogic
 import com.saidjte.schoolradio.desktop.data.MeterZone
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.font.FontFamily
 import com.saidjte.schoolradio.desktop.ui.GuiTokens
+import com.saidjte.schoolradio.desktop.ui.typographyWithFamilies
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -65,14 +68,36 @@ class GuiIdentityTest {
         }
     }
 
-    @Test
-    fun `arabic fonts are packaged with valid ttf magic`() {
-        for (w in listOf("Regular", "Medium", "SemiBold", "Bold")) {
-            val bytes = javaClass.classLoader.getResourceAsStream("fonts/NotoSansArabic-$w.ttf")?.readBytes()
-            assertTrue(bytes != null && bytes.size > 100_000, "font $w missing")
-            val magicOk = bytes!![0].toInt() == 0 && bytes[1].toInt() == 1 && bytes[2].toInt() == 0 && bytes[3].toInt() == 0
-            assertTrue(magicOk, "font $w bad magic ${bytes.toList().take(4)}")
+@Test
+    fun `bundled font system of four families is packaged with valid sfnt magic`() {
+        val fonts = listOf(
+            "Cairo-Regular.ttf", "Cairo-Medium.ttf", "Cairo-SemiBold.ttf", "Cairo-Bold.ttf",
+            "Changa-Medium.ttf", "Changa-SemiBold.ttf", "Changa-Bold.ttf", "Changa-ExtraBold.ttf",
+            "Orbitron-Medium.ttf", "Orbitron-SemiBold.ttf", "Orbitron-Bold.ttf", "Orbitron-ExtraBold.ttf",
+            "SpicySale-Regular.otf"
+        )
+        for (f in fonts) {
+            val bytes = javaClass.classLoader.getResourceAsStream("fonts/$f")?.readBytes()
+            assertTrue(bytes != null && bytes.size > 15_000, "font $f missing")
+            val ttf = bytes!![0].toInt() == 0 && bytes[1].toInt() == 1 && bytes[2].toInt() == 0 && bytes[3].toInt() == 0
+            val otto = bytes[0].toInt() == 0x4F && bytes[1].toInt() == 0x54 && bytes[2].toInt() == 0x54 && bytes[3].toInt() == 0x4F
+            assertTrue(ttf || otto, "font $f bad magic ${bytes.toList().take(4)}")
         }
+    }
+
+    @Test
+    fun `typography maps display headline title to heading family and body label to body family`() {
+        val mono = androidx.compose.ui.text.font.FontFamily.Monospace
+        val serif = androidx.compose.ui.text.font.FontFamily.Serif
+        val mapped = typographyWithFamilies(androidx.compose.material3.Typography(), mono, serif)
+        assertEquals(serif, mapped.displayLarge.fontFamily, "displayLarge")
+        assertEquals(serif, mapped.displaySmall.fontFamily, "displaySmall")
+        assertEquals(serif, mapped.headlineSmall.fontFamily, "headlineSmall")
+        assertEquals(serif, mapped.titleMedium.fontFamily, "titleMedium")
+        assertEquals(mono, mapped.bodyLarge.fontFamily, "bodyLarge")
+        assertEquals(mono, mapped.bodyMedium.fontFamily, "bodyMedium")
+        assertEquals(mono, mapped.labelLarge.fontFamily, "labelLarge")
+        assertEquals(mono, mapped.labelSmall.fontFamily, "labelSmall")
     }
 
     @Test

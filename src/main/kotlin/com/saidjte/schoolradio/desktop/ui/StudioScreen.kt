@@ -389,13 +389,13 @@ private fun StudioTopBar(vm: AppViewModel) {
             Spacer(Modifier.weight(1f))
             Text(
                 clock,
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.titleLarge.numeric(),
                 fontWeight = FontWeight.Bold
             )
             SecondaryAction(text = "الأقسام التفصيلية", onClick = { vm.selectTab(Tab.LIVE) })
             Text(
                 "v$APP_VERSION",
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodySmall.brand(),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }

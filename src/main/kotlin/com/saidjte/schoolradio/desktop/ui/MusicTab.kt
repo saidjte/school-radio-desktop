@@ -277,12 +277,12 @@ fun MusicTab(vm: AppViewModel) {
                 val shownPos = if (scrubbing) scrubMs else positionMs
                 Text(
                     formatMs(shownPos),
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodySmall.numeric()
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
                     "-" + formatMs((durationMs - shownPos).coerceAtLeast(0L)),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.numeric(),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -524,7 +524,7 @@ private fun PlaylistPane(vm: AppViewModel) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(
                                 formatMs(track.durationMs),
-                                style = MaterialTheme.typography.bodySmall,
+                                style = MaterialTheme.typography.bodySmall.numeric(),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             track.category?.let {

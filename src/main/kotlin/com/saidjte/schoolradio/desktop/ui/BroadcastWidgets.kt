@@ -422,7 +422,7 @@ fun BroadcastMicCard(vm: AppViewModel) {
                 )
                 Text(
                     formatMs(liveMs),
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleMedium.numeric(),
                     color = sc.liveTimer,
                     fontWeight = FontWeight.Bold
                 )
@@ -452,7 +452,7 @@ fun BroadcastMicCard(vm: AppViewModel) {
                 PulsingDot(color = sc.recDot, size = 10.dp)
                 Text(
                     formatMs(recordMs),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.numeric(),
                     color = sc.recordingAccent
                 )
             } else {
@@ -475,10 +475,10 @@ fun BroadcastMicCard(vm: AppViewModel) {
             )
             Text(
                 "${MixerLogic.faderPercent(micFader.micFader)}%",
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelMedium.numeric(),
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.width(42.dp)
+                modifier = Modifier.width(48.dp)
             )
             Slider(
                 value = micFader.micFader,
@@ -1019,10 +1019,10 @@ private fun MusicFaderRow(vm: AppViewModel) {
         )
         Text(
             "${MixerLogic.faderPercent(mixerState.musicFader)}%",
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelMedium.numeric(),
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.width(42.dp)
+            modifier = Modifier.width(48.dp)
         )
         Slider(
             value = mixerState.musicFader,

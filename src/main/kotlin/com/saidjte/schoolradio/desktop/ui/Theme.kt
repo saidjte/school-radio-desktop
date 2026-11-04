@@ -85,40 +85,89 @@ private val DefaultStudioColors = StudioColors(
 val LocalStudioColors = staticCompositionLocalOf { DefaultStudioColors }
 
 /**
- * الخط العربي الموحّد المدمج مع التطبيق (v0.22.0): Noto Sans Arabic بأوزان
- * أربعة مُحمَّلة من موارد الجرة فتبدو الواجهة واحدة على ويندوز ولينكس وماك
- * بلا اعتماد على خطوط النظام المتفاوتة. الأحرف اللاتينية والأرقام الغائبة
- * تعود تلقائيًا لخط النظام عبر سلسلة الاحتياط.
+ * نظام الطباعة الرباعي المدمج مع التطبيق (v0.24.0 «استخدم للخطوط: Cairo/Changa/Orbitron/Spicy Sale»):
+ * أربع عائلات بأدوار منفصلة تُحمَّل من موارد الجرة فتبدو الواجهة واحدة على ويندوز ولينكس وماك
+ * بلا اعتماد على خطوط النظام المتفاوتة:
+ * - **Cairo** المتون والنصوص (تغطية عربية+لاتينية كاملة، أربعة أوزان) — الخط الأساس.
+ * - **Changa** العناوين (display/headline/title) — حضور عربي قوي بأربعة أوزان.
+ * - **Orbitron** الأرقام والساعات والأزمنة (لاتيني هندسي) — عبر TextStyle.numeric()
+ *   على النصوص الرقمية الصرفة (الساعة، مؤقت البث، أزمنة المشغل، النسب المئوية).
+ * - **Spicy Sale** الهوية اللاتينية المرحة (وزن واحد) — شعار «SCHOOL RADIO» وشارات الإصدار.
+ * الأوزان مُجسَّدة ثابتة من الخطوط المتغيرة الرسمية فلا تختلف بين الجلسات.
  */
 @OptIn(ExperimentalTextApi::class)
 val AppFontFamily: FontFamily = FontFamily(
-    androidx.compose.ui.text.platform.Font("fonts/NotoSansArabic-Regular.ttf", FontWeight.Normal),
-    androidx.compose.ui.text.platform.Font("fonts/NotoSansArabic-Medium.ttf", FontWeight.Medium),
-    androidx.compose.ui.text.platform.Font("fonts/NotoSansArabic-SemiBold.ttf", FontWeight.SemiBold),
-    androidx.compose.ui.text.platform.Font("fonts/NotoSansArabic-Bold.ttf", FontWeight.Bold)
+    androidx.compose.ui.text.platform.Font("fonts/Cairo-Regular.ttf", FontWeight.Normal),
+    androidx.compose.ui.text.platform.Font("fonts/Cairo-Medium.ttf", FontWeight.Medium),
+    androidx.compose.ui.text.platform.Font("fonts/Cairo-SemiBold.ttf", FontWeight.SemiBold),
+    androidx.compose.ui.text.platform.Font("fonts/Cairo-Bold.ttf", FontWeight.Bold)
 )
 
-/** مطابقة كل مستويات الخط المادي على العائلة المدمجة (15 مستوى). */
-private fun typographyWithFamily(base: Typography): Typography {
-    fun TextStyle.withFamily() = copy(fontFamily = AppFontFamily)
+/** عائلة العناوين: Changa — لمستويات display/headline/title. */
+@OptIn(ExperimentalTextApi::class)
+val HeadingFontFamily: FontFamily = FontFamily(
+    androidx.compose.ui.text.platform.Font("fonts/Changa-Medium.ttf", FontWeight.Medium),
+    androidx.compose.ui.text.platform.Font("fonts/Changa-SemiBold.ttf", FontWeight.SemiBold),
+    androidx.compose.ui.text.platform.Font("fonts/Changa-Bold.ttf", FontWeight.Bold),
+    androidx.compose.ui.text.platform.Font("fonts/Changa-ExtraBold.ttf", FontWeight.ExtraBold)
+)
+
+/** عائلة الأرقام: Orbitron — للساعات والأزمنة والنسب عبر TextStyle.numeric(). */
+@OptIn(ExperimentalTextApi::class)
+val NumericFontFamily: FontFamily = FontFamily(
+    androidx.compose.ui.text.platform.Font("fonts/Orbitron-Medium.ttf", FontWeight.Medium),
+    androidx.compose.ui.text.platform.Font("fonts/Orbitron-SemiBold.ttf", FontWeight.SemiBold),
+    androidx.compose.ui.text.platform.Font("fonts/Orbitron-Bold.ttf", FontWeight.Bold),
+    androidx.compose.ui.text.platform.Font("fonts/Orbitron-ExtraBold.ttf", FontWeight.ExtraBold)
+)
+
+/** عائلة الهوية اللاتينية: Spicy Sale — للشعار اللاتيني وشارات الإصدار. */
+@OptIn(ExperimentalTextApi::class)
+val BrandFontFamily: FontFamily = FontFamily(
+    androidx.compose.ui.text.platform.Font("fonts/SpicySale-Regular.otf", FontWeight.Normal)
+)
+
+/**
+ * إسناد العائلات لمستويات الخط الخمسة عشر: العناوين (display/headline/title) لـ Changa
+ * والمتون (body/label) لـ Cairo. دالة نقية بعائلات ممرَّرة كي تُختبر بمنادِلين حارسين
+ * بلا فتح أي مورد رسومي (SelfTest وJUnit).
+ */
+internal fun typographyWithFamilies(base: Typography, body: FontFamily, heading: FontFamily): Typography {
+    fun TextStyle.with(f: FontFamily) = copy(fontFamily = f)
     return base.copy(
-        displayLarge = base.displayLarge.withFamily(),
-        displayMedium = base.displayMedium.withFamily(),
-        displaySmall = base.displaySmall.withFamily(),
-        headlineLarge = base.headlineLarge.withFamily(),
-        headlineMedium = base.headlineMedium.withFamily(),
-        headlineSmall = base.headlineSmall.withFamily(),
-        titleLarge = base.titleLarge.withFamily(),
-        titleMedium = base.titleMedium.withFamily(),
-        titleSmall = base.titleSmall.withFamily(),
-        bodyLarge = base.bodyLarge.withFamily(),
-        bodyMedium = base.bodyMedium.withFamily(),
-        bodySmall = base.bodySmall.withFamily(),
-        labelLarge = base.labelLarge.withFamily(),
-        labelMedium = base.labelMedium.withFamily(),
-        labelSmall = base.labelSmall.withFamily()
+        displayLarge = base.displayLarge.with(heading),
+        displayMedium = base.displayMedium.with(heading),
+        displaySmall = base.displaySmall.with(heading),
+        headlineLarge = base.headlineLarge.with(heading),
+        headlineMedium = base.headlineMedium.with(heading),
+        headlineSmall = base.headlineSmall.with(heading),
+        titleLarge = base.titleLarge.with(heading),
+        titleMedium = base.titleMedium.with(heading),
+        titleSmall = base.titleSmall.with(heading),
+        bodyLarge = base.bodyLarge.with(body),
+        bodyMedium = base.bodyMedium.with(body),
+        bodySmall = base.bodySmall.with(body),
+        labelLarge = base.labelLarge.with(body),
+        labelMedium = base.labelMedium.with(body),
+        labelSmall = base.labelSmall.with(body)
     )
 }
+/** مطابقة كل مستويات الخط المادي على العائلة المدمجة (15 مستوى). */
+private fun typographyWithFamily(base: Typography): Typography =
+    typographyWithFamilies(base, AppFontFamily, HeadingFontFamily)
+
+/**
+ * نمط الأرقام الموحّد (v0.24.0): يعيد النمط بعائلة Orbitron — للنصوص الرقمية
+ * الصرفة (ساعة HH:mm:ss، مؤقت البث، أزمنة المشغل، النسب المئوية) حيث تُبرز
+ * المحارف الهندسية الواسعة دقة القراءة أثناء البث.
+ */
+fun TextStyle.numeric(): TextStyle = copy(fontFamily = NumericFontFamily)
+
+/**
+ * نمط الهوية اللاتينية الموحّد (v0.24.0): Spicy Sale للشعار اللاتيني وشارات
+ * الإصدار — شخصية مرحة مكوَّرة تناسب إذاعة مدرسية.
+ */
+fun TextStyle.brand(): TextStyle = copy(fontFamily = BrandFontFamily)
 
 /**
  * سلّم طباعي مضبوط لواجهة بثّية: عناوين أكثر ثقلًا، متون مقروءة،

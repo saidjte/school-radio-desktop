@@ -119,7 +119,7 @@ private fun LiveTopBar(vm: AppViewModel) {
         Spacer(Modifier.weight(1f))
         Text(
             clock,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleLarge.numeric(),
             fontWeight = FontWeight.Bold
         )
         Text(
