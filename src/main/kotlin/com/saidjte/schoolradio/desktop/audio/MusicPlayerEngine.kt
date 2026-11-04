@@ -27,7 +27,7 @@ val PLAYABLE_EXTENSIONS = setOf("wav", "mp3", "ogg", "oga", "flac", "aif", "aiff
  * قارئ مقطع صوتي يفكّ ويكتب في خط السماع مباشرة.
  * واجهة موحّدة فوق MP3 (JLayer) و PCM (Java Sound + OGG + FLAC).
  */
-private interface TrackReader : Closeable {
+internal interface TrackReader : Closeable {
     val durationMs: Long
     val currentMs: Long
     fun seek(ms: Long)
@@ -501,6 +501,9 @@ class MusicPlayerEngine {
 
     fun play(file: File) {
         switchTo = file
+        // سعي معلّق موجّه للمقطع القديم يُبطَل هنا — فلا يتسرب إلى المقطع
+        // الجديد إن سبق العامل إلى فتحه (عقد السعي v0.27.0)
+        seekRequest = -1L
         paused = false
         stopped = false
         _isPaused.value = false
@@ -530,8 +533,20 @@ class MusicPlayerEngine {
         _isPaused.value = false
     }
 
+    /**
+     * السعي (v0.27.0 «شريط التقدم لا يعمل جيدًا»): مع طلب السعي للعامل،
+     * يُحدّث العرض المتفائل فورًا — فالشريط والزمن يبقيان حيث أفلت المستخدم
+     * إصبعه من لحظة الإفلات، بدل الارتداد للموضع القديم حتى يستهلك العامل
+     * الطلب (كان يظهر وميضًا خلفيًا أثناء التشغيل، وارتدادًا كاملًا أثناء
+     * الإيقاف المؤقت لأن readChunk لا يعمل وقتها). العامل يُرسي العرض لاحقًا
+     * على موضع القارئ الفعلي بعد تنفيذ السعي.
+     */
     fun seek(ms: Long) {
-        if (_hasTrack.value) seekRequest = ms.coerceAtLeast(0L)
+        if (_hasTrack.value) {
+            val v = ms.coerceAtLeast(0L)
+            seekRequest = v
+            _positionMs.value = v
+        }
     }
 
     fun setVolume(v: Float) {
@@ -623,6 +638,11 @@ class MusicPlayerEngine {
                 if (sq >= 0) {
                     seekRequest = -1L
                     try { r.seek(sq) } catch (_: Exception) { }
+                    // ترسيخ العرض على موضع القارئ الفعلي بعد تنفيذ السعي —
+                    // وهذا ما يجعل السعي أثناء الإيقاف المؤقت يُظهر الموضع الجديد
+                    // فورًا بدل الارتداد للقديم. وإن ورد سعي أحدث قبل الاكتمال
+                    // فالقيمة المتفائلة له تبقى (آخر نقرة تفوز).
+                    if (seekRequest < 0L) _positionMs.value = r.currentMs
                 }
                 if (volumeDirty) {
                     volumeDirty = false
@@ -674,7 +694,15 @@ class MusicPlayerEngine {
         }
     }
 
+    /**
+     * خط حقن الاختبارات والفحص الذاتي: قارئ بديل بلا عتاد صوتي — يُستدعى مرة
+     * عند كل فتح مقطع ما دام غير صفري، ويُصفَّر بعد الاختبار. في الإنتاج يبقى
+     * null دائمًا فلا يسري أثره إطلاقًا.
+     */
+    @Volatile internal var trackReaderOverride: ((File) -> TrackReader)? = null
+
     private fun openReader(file: File): TrackReader {
+        trackReaderOverride?.let { return it(file) }
         val name = file.name.lowercase()
         val onSecondFail: (Throwable) -> Unit = { t: Throwable ->
             _error.value = "المخرج الثاني: " + AudioDevices.describeOutputFailure(t)

@@ -3,7 +3,9 @@ package com.saidjte.schoolradio.desktop
 import com.saidjte.schoolradio.desktop.audio.AudioDevices
 import com.saidjte.schoolradio.desktop.audio.LevelMeter
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
+import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
+import com.saidjte.schoolradio.desktop.audio.TrackReader
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
 import com.saidjte.schoolradio.desktop.data.DevicesJson
@@ -794,6 +796,52 @@ object SelfTest {
                 check(outMp3.length() > 10_000) { "transcoded size=${outMp3.length()}" }
                 val mi = Mp3Info.analyze(outMp3)
                 check(mi != null && mi.durationMs in 2_700..3_400) { "transcoded duration=${mi?.durationMs}" }
+            }
+
+            // v0.27.0: عقد شريط التقدم القابل للسعي — العرض الفوري للموضع الجديد
+            //     عند النقر/الإفلات وثباته أثناء الإيقاف المؤقت (كان يرتد للقديم)
+            run {
+                class SeekProbe : TrackReader {
+                    val seekCalls = mutableListOf<Long>()
+                    @Volatile var current = 0L
+                    override val durationMs = 600_000L
+                    override val currentMs get() = current
+                    override fun seek(ms: Long) { seekCalls += ms; current = ms }
+                    override fun pause() { }
+                    override fun resume() { }
+                    override fun applyVolume(volume: Float) { }
+                    override fun readChunk(): Boolean { current += 250L; Thread.sleep(2); return true }
+                    override fun close() { }
+                }
+                fun awaitS(cond: () -> Boolean, msg: String) {
+                    val dl = System.currentTimeMillis() + 5_000
+                    while (System.currentTimeMillis() < dl) { if (cond()) return; Thread.sleep(10) }
+                    check(false) { msg }
+                }
+                val probe = SeekProbe()
+                val eng = MusicPlayerEngine()
+                eng.trackReaderOverride = { probe }
+                try {
+                    // بلا مقطع: السعي لا يلمس العرض إطلاقًا
+                    check(eng.positionMs.value == 0L) { "idle position" }
+                    eng.seek(30_000)
+                    check(eng.positionMs.value == 0L) { "seek without track is no-op" }
+                    // تشغيل بقارئ مزيف ثم إيقاف مؤقت والسعي — يجب أن يثبت العرض عند الهدف
+                    eng.play(File("selftest-seek/probe.mp3"))
+                    awaitS({ eng.hasTrack.value }, "hasTrack")
+                    awaitS({ eng.positionMs.value > 0L }, "ticking")
+                    eng.pause()
+                    awaitS({ eng.isPaused.value }, "paused")
+                    Thread.sleep(120)
+                    eng.seek(45_000)
+                    check(eng.positionMs.value == 45_000L) { "seek display immediate=${eng.positionMs.value}" }
+                    repeat(10) { Thread.sleep(20); check(eng.positionMs.value == 45_000L) { "seek display stable@$it=${eng.positionMs.value}" } }
+                    awaitS({ probe.seekCalls.contains(45_000L) }, "worker executed paused seek")
+                } finally {
+                    eng.trackReaderOverride = null
+                    eng.stop()
+                    eng.awaitIdle()
+                }
             }
 
             println("SELFTEST OK — version $APP_VERSION")
