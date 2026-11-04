@@ -61,6 +61,8 @@ import com.saidjte.schoolradio.desktop.ui.ScheduleTab
 import com.saidjte.schoolradio.desktop.ui.ScriptTab
 import com.saidjte.schoolradio.desktop.ui.SettingsDialog
 import com.saidjte.schoolradio.desktop.ui.StudioScreen
+import com.saidjte.schoolradio.desktop.ui.JingleWallWindow
+import com.saidjte.schoolradio.desktop.audio.FakeToneVoice
 import com.saidjte.schoolradio.desktop.audio.MicState
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 
@@ -75,6 +77,15 @@ fun main(args: Array<String>) {
         ?.substringAfter("=")
         ?.let { name -> Tab.entries.firstOrNull { it.name == name } }
     application {
+        val vm = remember { AppViewModel() }
+        // فحص بصري للأتمتة: فتح الجدار عند الإقلاع وتشغيله بصوت اختباري بلا عتاد
+        if (args.contains("--jingle-wall")) {
+            LaunchedEffect(Unit) { vm.jingleWallOpen.value = true }
+        }
+        if (args.contains("--jingle-fake")) {
+            // 240×25ms ≈ 6 ثوانٍ — تبقى حالة «جارٍ» مرئية عبر لقطات الفحص الآلي
+            LaunchedEffect(Unit) { vm.jingles.voiceFactoryOverride = { FakeToneVoice(chunks = 240, chunkMs = 25) } }
+        }
         // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
         val windowIcon = remember {
             Thread.currentThread().contextClassLoader
@@ -92,9 +103,19 @@ fun main(args: Array<String>) {
             LaunchedEffect(Unit) { window.minimumSize = java.awt.Dimension(1024, 640) }
             AppTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    AppRoot(startTab = startTab)
+                    AppRoot(startTab = startTab, vm = vm)
                 }
             }
+        }
+        // نافذة جدار الجينغل المنبثقة (v0.28.0) — مستقلة غير ماسكة: الاستوديو
+        // يظل قابلًا للعمل بكامل أدواته ما دامت مفتوحة، وإغلاقها لا يمس شيئًا
+        val wallOpen by vm.jingleWallOpen.collectAsState()
+        if (wallOpen) {
+            JingleWallWindow(vm = vm, onClose = { vm.jingleWallOpen.value = false })
+        }
+        // خروج نظيف: صوت الجينلات يُغلق قبل انصراف التطبيق
+        androidx.compose.runtime.DisposableEffect(Unit) {
+            onDispose { vm.jingles.shutdown() }
         }
     }
 }

@@ -392,6 +392,12 @@ private fun StudioTopBar(vm: AppViewModel) {
                 style = MaterialTheme.typography.titleLarge.numeric(),
                 fontWeight = FontWeight.Bold
             )
+            // جدار الجينغل (v0.28.0): يفتح نافذة منبثقة مستقلة غير ماسكة —
+            // الاستوديو المدمج يظل قابلًا للعمل بكامله ما دامت النافذة مفتوحة
+            SecondaryAction(
+                text = "جدار الجينغل",
+                onClick = { vm.jingleWallOpen.value = true }
+            )
             SecondaryAction(text = "الأقسام التفصيلية", onClick = { vm.selectTab(Tab.LIVE) })
             Text(
                 "v$APP_VERSION",

@@ -55,7 +55,9 @@ data class AppSettings(
     /** تفضيلات شاشة القراءة المحفوظة. */
     val reading: ReadingJson? = null,
     /** أبعاد حيزات شاشة الاستوديو المحفوظة (سحب الفواصل). */
-    val layout: LayoutJson? = null
+    val layout: LayoutJson? = null,
+    /** جدار الجينغل المحفوظ: المواضع المعيّنة والمستوى العام (v0.28.0). */
+    val jingle: JingleWallJson? = null
 )
 
 /**
@@ -220,6 +222,25 @@ class SettingsStore(private val file: File) {
     /** حفظ أبعاد الحيزات — يُستدعى عند إفلات الفاصل بعد السحب. */
     fun setLayout(l: LayoutJson) {
         doc = doc.copy(layout = l)
+        persist()
+    }
+
+    // ================= جدار الجينغل: المواضع والمستوى (v0.28.0) =================
+
+    /** المواضع المحفوظة كما هي — التعقيم مع الافتراضي في JingleWallLogic.resolve. */
+    fun jinglePads(): List<JinglePadJson>? = doc.jingle?.pads
+
+    /** المستوى العام المحبوس داخل الحدود — الافتراضي عند غياب الحقل. */
+    fun jingleVolume(): Float = JingleWallLogic.clampVolume(doc.jingle?.volume ?: JingleWallLogic.DEFAULT_VOLUME)
+
+    /** حفظ الجدار دفعة واحدة — يُستدعى عند كل تعيين/مسح/تغيير مستوى. */
+    fun setJingleWall(volume: Float, pads: List<JinglePadJson>) {
+        doc = doc.copy(
+            jingle = JingleWallJson(
+                volume = JingleWallLogic.clampVolume(volume),
+                pads = pads
+            )
+        )
         persist()
     }
 

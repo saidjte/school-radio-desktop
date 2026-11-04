@@ -1,0 +1,334 @@
+package com.saidjte.schoolradio.desktop.audio
+
+import com.saidjte.schoolradio.desktop.data.JingleWallLogic
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import javazoom.jl.decoder.Bitstream
+import javazoom.jl.decoder.Decoder
+import javazoom.jl.decoder.SampleBuffer
+import java.io.BufferedInputStream
+import java.io.Closeable
+import java.io.File
+import java.io.FileInputStream
+import java.util.concurrent.ConcurrentHashMap
+import javax.sound.sampled.AudioFormat
+import javax.sound.sampled.AudioInputStream
+import javax.sound.sampled.AudioSystem
+import javax.sound.sampled.Mixer
+import kotlin.concurrent.thread
+
+/**
+ * جدار الجينغل (v0.28.0 «أضف جدار الجينغل»): اثنا عشر موضعًا يقفز كل واحد
+ * بنقرة — صوتٌ قصير يُطلق من الصفر ويتوقف بالنقر الثانية، ويمكن لمواضع
+ * عدة أن تتعادل في نفس اللحظة (كالجدران الإذاعية الحقيقية) دون أن يمس بعضها.
+ *
+ * النمط نفسه المجرَّب في MusicPlayerEngine: خيط لكل صوت يملك قارئه وخطه،
+ * وأوامر متطايرة (إيقاف/مستوى) — بلا أقفال في المسار الساخن وبلا سباقات.
+ * الجينلات لا تمرّ بقناة المزج (معادل/دكّة/مرجع صدى) عمدًا: هي إشارة برنامج
+ * مستقلة بمستوى عام واحد يُحفظ بين الجلسات.
+ */
+class JingleWallEngine(
+    /** لقطة مخرجَي التشغيل المختارين — الجينلات تشارك سماعات الموسيقى نفسها. */
+    private val outputs: () -> Pair<Mixer.Info?, Mixer.Info?> = { null to null }
+) {
+
+    /** صوت جينل واحد: فك من البداية حتى النهاية بلا سعي ولا إيقاف مؤقت. */
+    internal interface Voice : AutoCloseable {
+        /** يفكّ الكتلة التالية ويكتبها في خط السماع. يعيد false عند النهاية. */
+        fun readChunk(): Boolean
+
+        /** تحديث الكسب حيًّا أثناء التشغيل. */
+        fun applyVolume(v: Float)
+    }
+
+    private class Run internal constructor(
+        val slot: Int,
+        val voice: Voice,
+        val engine: JingleWallEngine
+    ) {
+        @Volatile var stopRequested = false
+        @Volatile var lastSeenVolume = Long.MIN_VALUE
+        val thread: Thread = thread(name = "jingle-$slot", isDaemon = true) { engine.voiceLoop(this) }
+    }
+
+    private val runs = ConcurrentHashMap<Int, Run>()
+
+    private val _playing = MutableStateFlow<Set<Int>>(emptySet())
+    val playing: StateFlow<Set<Int>> = _playing.asStateFlow()
+
+    /** خطأ آخر موضع (ملف مفقود/فاشل الفتح) — يظهر على البطاقة نفسها. */
+    private val _errors = MutableStateFlow<Map<Int, String>>(emptyMap())
+    val errors: StateFlow<Map<Int, String>> = _errors.asStateFlow()
+
+    private val _volume = MutableStateFlow(JingleWallLogic.DEFAULT_VOLUME)
+    val volume: StateFlow<Float> = _volume.asStateFlow()
+
+    /** إصدار المستوى: كل تغيير يرفع العداد فتعرف الأصوات الحية أن تعيد ضبط الكسب. */
+    @Volatile private var volumeVersion = 0L
+
+    /**
+     * خط حقن الاختبارات والفحص الذاتي والفحص البصري: صوت بديل بلا عتاد صوتي.
+     * في الإنتاج يبقى null دائمًا فلا يسري أثره إطلاقًا.
+     */
+    @Volatile internal var voiceFactoryOverride: ((File) -> Voice)? = null
+
+    /**
+     * النقر على موضع: قيد التشغيل → يتوقف، متوقف → يُطلق من الصفر.
+     * نقرة سريعة متكررة تعيد الإطلاق نظيفًا (الأصوات القديمة تُغلق فورًا).
+     */
+    fun toggle(slot: Int, file: File) {
+        if (slot !in 0 until JingleWallLogic.PAD_COUNT) return
+        val existing = runs[slot]
+        if (existing != null) {
+            stopRun(existing)
+            return
+        }
+        if (voiceFactoryOverride == null && !file.isFile) {
+            // حارس رسالة المستخدم في الإنتاج فقط — وضع الحقن (الاختبارات والفحص)
+            // يمرر مسارات وهمية كما في عقد مشغل الموسيقى تمامًا
+            _errors.value = _errors.value + (slot to "الملف غير موجود")
+            return
+        }
+        start(slot, file)
+    }
+
+    /** إيقاف موضع بعينه (عند مسحه أو تعيين مقطع جديد فوقه). */
+    fun stop(slot: Int) {
+        runs[slot]?.let { stopRun(it) }
+    }
+
+    /** إيقاف كل الأصوات الجارية دفعة واحدة. */
+    fun stopAll() {
+        runs.values.forEach { stopRun(it) }
+        _playing.value = emptySet()
+    }
+
+    /** المستوى العام للجينلات — يسري على الأصوات الجارية في الكتلة التالية. */
+    fun setVolume(v: Float) {
+        _volume.value = JingleWallLogic.clampVolume(v)
+        volumeVersion++
+    }
+
+    /** انتظار انقضاء كل الأصوات (الاختبارات وإغلاق التطبيق). */
+    fun awaitIdle(timeoutMs: Long = 3000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        for (r in runs.values.toList()) {
+            val remain = (deadline - System.currentTimeMillis()).coerceAtLeast(0L)
+            try { r.thread.join(remain) } catch (_: InterruptedException) { }
+        }
+    }
+
+    /** إغلاق نهائي عند خروج التطبيق. */
+    fun shutdown() {
+        stopAll()
+        awaitIdle()
+    }
+
+    // ================= الداخلية =================
+
+    private fun start(slot: Int, file: File) {
+        // احتياط: موضع عالق قديم يُوقف قبل الإطلاق الجديد
+        runs[slot]?.let { stopRun(it) }
+        try {
+            val (main, second) = outputs()
+            val voice = voiceFactoryOverride?.invoke(file)
+                ?: JingleVoice(file, main, second, _volume.value)
+            val run = Run(slot, voice, this)
+            runs[slot] = run
+            _errors.value = _errors.value - slot
+            _playing.value = runs.keys.toSet()
+        } catch (t: Throwable) {
+            _errors.value = _errors.value + (slot to (t.message ?: "تعذّر تشغيل الجينل"))
+        }
+    }
+
+    private fun stopRun(run: Run) {
+        run.stopRequested = true
+        try { run.voice.close() } catch (_: Exception) { }
+        _playing.value = _playing.value - run.slot
+    }
+
+    /** حلقة الصوت — تعمل على خيط الـRun وحده. */
+    private fun voiceLoop(run: Run) {
+        try {
+            while (!run.stopRequested) {
+                val ver = volumeVersion
+                if (ver != run.lastSeenVolume) {
+                    run.lastSeenVolume = ver
+                    try { run.voice.applyVolume(_volume.value) } catch (_: Exception) { }
+                }
+                val more = try {
+                    run.voice.readChunk()
+                } catch (t: Throwable) {
+                    _errors.value = _errors.value + (run.slot to (t.message ?: "انقطع تشغيل الجينل"))
+                    false
+                }
+                if (!more) break
+            }
+        } finally {
+            try { run.voice.close() } catch (_: Exception) { }
+            runs.remove(run.slot, run)
+            _playing.value = runs.keys.toSet()
+        }
+    }
+}
+
+/**
+ * صوت جينل حقيقي فوق عتاد النظام: MP3 بفاكّ JLayer إطارًا بإطار،
+ * وغيره (WAV/OGG/FLAC/AIFF/AU) بمجرى PCM موحَّد 16-bit —
+ * والكتابة في PcmOutLine على مخرجَي التطبيق المختارين.
+ */
+internal class JingleVoice(
+    file: File,
+    outMain: Mixer.Info?,
+    outSecond: Mixer.Info?,
+    initialVolume: Float
+) : JingleWallEngine.Voice {
+
+    private val out: PcmOutLine
+    private val mp3: Mp3OneShot?
+    private val pcm: PcmOneShot?
+
+    init {
+        if (file.name.lowercase().endsWith(".mp3")) {
+            val one = Mp3OneShot(file)
+            mp3 = one
+            pcm = null
+            val f = one.format
+            out = AudioDevices.openOutLine(outMain, outSecond, f, null)
+            out.open(f, 16 * 1024)
+            out.start()
+            out.setVolume(initialVolume)
+        } else {
+            val one = PcmOneShot(file)
+            mp3 = null
+            pcm = one
+            val f = one.format
+            out = AudioDevices.openOutLine(outMain, outSecond, f, null)
+            out.open(f, 16 * 1024)
+            out.start()
+            out.setVolume(initialVolume)
+        }
+    }
+
+    override fun readChunk(): Boolean =
+        if (mp3 != null) mp3.readChunkInto(out) else pcm!!.readChunkInto(out)
+
+    override fun applyVolume(v: Float) {
+        try { out.setVolume(v) } catch (_: Exception) { }
+    }
+
+    override fun close() {
+        try { mp3?.close() } catch (_: Exception) { }
+        try { pcm?.close() } catch (_: Exception) { }
+        try { out.close() } catch (_: Exception) { }
+    }
+}
+
+/** فاكّ MP3 بلا سعي: من أول إطار حتى النهاية. */
+private class Mp3OneShot(file: File) : Closeable {
+    val format: AudioFormat
+    private var stream: BufferedInputStream
+    private var bitstream: Bitstream
+    private val decoder = Decoder()
+
+    init {
+        val info = Mp3Info.analyze(file)
+            ?: throw IllegalArgumentException("تعذّر تحليل ملف MP3: ${file.name}")
+        val fh = info.first
+        stream = BufferedInputStream(FileInputStream(file), 1 shl 16)
+        Mp3Info.skipId3v2(stream)
+        bitstream = Bitstream(stream)
+        format = AudioFormat(fh.sampleRate.toFloat(), 16, fh.channels, true, false)
+    }
+
+    fun readChunkInto(out: PcmOutLine): Boolean {
+        val header = try { bitstream.readFrame() } catch (_: Exception) { null } ?: return false
+        try {
+            val decoded = decoder.decodeFrame(header, bitstream)
+            if (decoded is SampleBuffer && decoded.buffer.isNotEmpty()) {
+                val shorts = decoded.buffer
+                val bytes = ByteArray(shorts.size * 2)
+                var bi = 0
+                for (s in shorts) {
+                    val v = s.toInt()
+                    bytes[bi++] = (v and 0xFF).toByte()
+                    bytes[bi++] = ((v shr 8) and 0xFF).toByte()
+                }
+                out.write(bytes, 0, bytes.size)
+            }
+        } catch (_: Exception) {
+            // إطار تالف: نتجاوزه ونكمل
+        } finally {
+            try { bitstream.closeFrame() } catch (_: Exception) { }
+        }
+        return true
+    }
+
+    override fun close() {
+        try { bitstream.close() } catch (_: Exception) { }
+        try { stream.close() } catch (_: Exception) { }
+    }
+}
+
+/** مجرى PCM موحَّد 16-bit مبهمي الترتيب لأي صيغة يدعمها النظام (OGG/FLAC/AIFF/AU). */
+private class PcmOneShot(file: File) : Closeable {
+    val format: AudioFormat
+    private val ais: AudioInputStream
+    private val frameSize: Int
+    private val buf = ByteArray(64 * 1024)
+
+    init {
+        val raw = openAudioInputStream(file)
+        val rf = raw.format
+        ais = if (rf.encoding == AudioFormat.Encoding.PCM_SIGNED && !rf.isBigEndian && rf.sampleSizeInBits == 16) {
+            raw
+        } else {
+            AudioSystem.getAudioInputStream(AudioFormat(rf.sampleRate, 16, rf.channels, true, false), raw)
+        }
+        format = ais.format
+        frameSize = format.frameSize.coerceAtLeast(1)
+    }
+
+    fun readChunkInto(out: PcmOutLine): Boolean {
+        val n = try { ais.read(buf) } catch (_: Exception) { -1 }
+        if (n < 0) return false
+        if (n == 0) return true
+        val usable = n - (n % frameSize)
+        if (usable > 0) out.write(buf, 0, usable)
+        return true
+    }
+
+    override fun close() {
+        try { ais.close() } catch (_: Exception) { }
+    }
+}
+
+/**
+ * صوت اختباري بلا عتاد: كتل زمنية خالصة تنتهي وحدها — للاختبارات الوحدوية
+ * والفحص الذاتي والفحص البصري تحت Xvfb حيث لا توجد سماعات أصلًا.
+ */
+internal class FakeToneVoice(private val chunks: Int = 80, private val chunkMs: Long = 25) : JingleWallEngine.Voice {
+    @Volatile private var closed = false
+    @Volatile var remaining = chunks
+        private set
+    val volumes = mutableListOf<Float>()
+    var chunkHook: (() -> Unit)? = null
+
+    override fun readChunk(): Boolean {
+        if (closed || remaining <= 0) return false
+        remaining--
+        chunkHook?.invoke()
+        Thread.sleep(chunkMs)
+        return remaining > 0
+    }
+
+    override fun applyVolume(v: Float) {
+        volumes += v
+    }
+
+    override fun close() {
+        closed = true
+    }
+}

@@ -499,6 +499,12 @@ class MusicPlayerEngine {
         if (_hasTrack.value) reopenOutput = true
     }
 
+    /**
+     * لقطة المخرجَين الحاليين — جدار الجينغل (v0.28.0) يشارك الموسيقى سماعاتها
+     * نفسها: كل صوت جينل جديد يُفتح على ما هو مختار لحظة إطلاقه.
+     */
+    fun outputsSnapshot(): Pair<Mixer.Info?, Mixer.Info?> = outputMain to outputSecond
+
     fun play(file: File) {
         switchTo = file
         // سعي معلّق موجّه للمقطع القديم يُبطَل هنا — فلا يتسرب إلى المقطع

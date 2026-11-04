@@ -1,6 +1,7 @@
 package com.saidjte.schoolradio.desktop
 
 import com.saidjte.schoolradio.desktop.audio.AudioDevices
+import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.LevelMeter
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
@@ -841,6 +842,107 @@ object SelfTest {
                     eng.trackReaderOverride = null
                     eng.stop()
                     eng.awaitIdle()
+                }
+            }
+
+            // v0.28.0: عقد جدار الجينغل — السبعة المدمجة من موارد الجرة،
+            //     منطق المواضع نقية مع عقد دائري، والمحرك يعمل بصوت مزيف بلا عتاد
+            run {
+                // 1) الموارد مدمجة بالجرة واستخراجها idempotent يعمل
+                check(com.saidjte.schoolradio.desktop.audio.BundledJingles.ALL.size == 7) { "bundled count" }
+                check(com.saidjte.schoolradio.desktop.audio.BundledJingles.ALL.map { it.id }.toSet().size == 7) { "bundled unique ids" }
+                val titles = com.saidjte.schoolradio.desktop.audio.BundledJingles.ALL.map { it.title }
+                check(titles.toSet().size == 7) { "bundled unique titles" }
+                for (j in com.saidjte.schoolradio.desktop.audio.BundledJingles.ALL) {
+                    val b = GuiTokens::class.java.classLoader
+                        .getResourceAsStream(com.saidjte.schoolradio.desktop.audio.BundledJingles.resourcePath(j))?.readBytes()
+                    check(b != null && b.size > 10_000) { "jingle packaged: ${j.fileName} ${b?.size ?: -1}" }
+                }
+                val jdir = File(tmp, "jingles-extract")
+                val extracted = com.saidjte.schoolradio.desktop.audio.BundledJingles.ensureExtracted(jdir)
+                check(extracted.size == 7 && extracted.all { it.isFile && it.length() > 10_000 }) { "jingles extracted" }
+                val sizes1 = extracted.map { it.length() }
+                com.saidjte.schoolradio.desktop.audio.BundledJingles.ensureExtracted(jdir)
+                check(extracted.map { it.length() } == sizes1) { "extraction idempotent" }
+
+                // 2) المنطق النقي: الافتراضي والدمج والعقد الدائري والحبس
+                val logic = com.saidjte.schoolradio.desktop.data.JingleWallLogic
+                check(logic.PAD_COUNT == 12) { "pad count" }
+                val defaults = logic.bundledDefaults(extracted, titles)
+                check(defaults.size == 12) { "defaults size" }
+                check(defaults.take(7).all { !it.isEmpty && File(it.path!!).isFile }) { "first 7 assigned" }
+                check(defaults.drop(7).all { it.isEmpty }) { "rest empty" }
+                check(defaults.map { it.index } == (0..11).toList()) { "indices ordered" }
+                // الدمج: فهرس فاسد يسقط، تكرار يرجّح الأخير، مسار فارغ يسقط، والبقية تظل افتراضيًا
+                val merged = logic.resolve(
+                    listOf(
+                        com.saidjte.schoolradio.desktop.data.JinglePadJson(index = 3, path = "/x/a.mp3", title = "خ"),
+                        com.saidjte.schoolradio.desktop.data.JinglePadJson(index = 99, path = "/bad.mp3"),
+                        com.saidjte.schoolradio.desktop.data.JinglePadJson(index = 5, path = "  "),
+                        com.saidjte.schoolradio.desktop.data.JinglePadJson(index = 3, path = "/x/b.wav", title = "ز")
+                    ),
+                    defaults
+                )
+                check(merged[3].path == "/x/b.wav" && merged[3].title == "ز") { "dup last wins" }
+                check(merged[5] == defaults[5]) { "blank path keeps default" }
+                check(merged.size == 12) { "merge size" }
+                // العقد الدائري: encode ثم resolve يعيد المسارات نفسها
+                val rt = logic.resolve(logic.encodePads(defaults), logic.emptyPads())
+                check(rt == defaults) { "round trip" }
+                check(logic.clampVolume(5f) == 1f && logic.clampVolume(-1f) == 0f) { "clamp volume" }
+
+                // 3) المخزن: حفظ واسترجاع دائري في settings.json
+                val sfile = File(tmp, "settings-jingle.json")
+                val s1 = SettingsStore(sfile)
+                s1.setJingleWall(0.55f, logic.encodePads(defaults))
+                val s2 = SettingsStore(sfile)
+                check(kotlin.math.abs(s2.jingleVolume() - 0.55f) < 1e-4f) { "jingle volume persisted" }
+                check(s2.jinglePads() == logic.encodePads(defaults)) { "jingle pads persisted" }
+
+                // 4) المحرك بصوت مزيف: تبديل/تزامن/إيقاف شامل/مستوى حي/خطأ ملف مفقود
+                fun awaitJ(cond: () -> Boolean, msg: String) {
+                    val dl = System.currentTimeMillis() + 5_000
+                    while (System.currentTimeMillis() < dl) { if (cond()) return; Thread.sleep(10) }
+                    check(false) { msg }
+                }
+                val eng = JingleWallEngine()
+                val probes = mutableListOf<com.saidjte.schoolradio.desktop.audio.FakeToneVoice>()
+                eng.voiceFactoryOverride = {
+                    com.saidjte.schoolradio.desktop.audio.FakeToneVoice(chunks = 600, chunkMs = 5).also { probes += it }
+                }
+                try {
+                    eng.toggle(0, File("selftest-jingle/a.mp3"))
+                    awaitJ({ 0 in eng.playing.value }, "playing after toggle")
+                    // نقرة ثانية توقف الجاري فورًا
+                    eng.toggle(0, File("selftest-jingle/a.mp3"))
+                    awaitJ({ 0 !in eng.playing.value }, "second click stops")
+                    // ثلاثة مواضع متزامنة
+                    eng.toggle(1, File("selftest-jingle/b.mp3"))
+                    eng.toggle(2, File("selftest-jingle/c.wav"))
+                    eng.toggle(3, File("selftest-jingle/d.ogg"))
+                    awaitJ({ eng.playing.value == setOf(1, 2, 3) }, "three concurrent: ${eng.playing.value}")
+                    // المستوى الحي: تغييره أثناء التشغيل يصل للأصوات
+                    eng.setVolume(0.42f)
+                    awaitJ({ probes.filter { it.remaining in 1..599 }.all { it.volumes.contains(0.42f) } }, "live volume applied")
+                    // ملف مفقود: خطأ على الموضع بلا انهيار — بوضع الإنتاج (بلا حقن)
+                    // لأن الحقن يقفز فوق حارس الملفات عمدًا كما في عقد مشغل الموسيقى
+                    eng.voiceFactoryOverride = null
+                    eng.toggle(4, File("selftest-jingle/missing.mp3"))
+                    awaitJ({ eng.errors.value[4]?.contains("غير موجود") == true }, "missing file error")
+                    eng.voiceFactoryOverride = {
+                        // صوت قصير (6 كتل ≈ 60ms) ليكمل الإنهاء الطبيعي سريعًا
+                        com.saidjte.schoolradio.desktop.audio.FakeToneVoice(chunks = 6, chunkMs = 5)
+                    }
+                    // الإنهاء الطبيعي للصوت القصير يزيله من الجاري
+                    eng.toggle(5, File("selftest-jingle/short.mp3"))
+                    awaitJ({ 5 !in eng.playing.value }, "natural finish removes slot")
+                    // إيقاف شامل
+                    eng.stopAll()
+                    awaitJ({ eng.playing.value.isEmpty() }, "stop all")
+                    eng.awaitIdle()
+                } finally {
+                    eng.voiceFactoryOverride = null
+                    eng.shutdown()
                 }
             }
 

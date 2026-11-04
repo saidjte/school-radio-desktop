@@ -1,6 +1,8 @@
 package com.saidjte.schoolradio.desktop
 
+import com.saidjte.schoolradio.desktop.audio.BundledJingles
 import com.saidjte.schoolradio.desktop.audio.DuckBus
+import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.MicLiveEngine
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
@@ -19,6 +21,9 @@ import com.saidjte.schoolradio.desktop.data.Backup
 import com.saidjte.schoolradio.desktop.data.DevicesJson
 import com.saidjte.schoolradio.desktop.data.ExecutionsStore
 import com.saidjte.schoolradio.desktop.data.FireStatus
+import com.saidjte.schoolradio.desktop.data.JinglePad
+import com.saidjte.schoolradio.desktop.data.JinglePadJson
+import com.saidjte.schoolradio.desktop.data.JingleWallLogic
 import com.saidjte.schoolradio.desktop.data.LibraryEntry
 import com.saidjte.schoolradio.desktop.data.LibraryMath
 import com.saidjte.schoolradio.desktop.data.MixerLogic
@@ -86,6 +91,71 @@ class AppViewModel {
 
     val mic = MicLiveEngine()
     val player = MusicPlayerEngine()
+
+    // ================= جدار الجينغل (v0.28.0 «أضف جدار الجينغل») =================
+
+    /** محرك الجدار: أصوات قصيرة متعددة معًا على مخرجَي الموسيقى نفسهما. */
+    val jingles = JingleWallEngine(outputs = { player.outputsSnapshot() })
+
+    /** فتح نافذة الجدار المنبثقة (غير حاجبة) — يقرؤها Main ويطلبها زر الاستوديو. */
+    val jingleWallOpen = MutableStateFlow(false)
+
+    private val _jinglePads = MutableStateFlow(JingleWallLogic.emptyPads())
+    val jinglePads: StateFlow<List<JinglePad>> = _jinglePads.asStateFlow()
+
+    /** استرجاع الجدار: استخراج المدمجة ثم دمج المحفوظ مع الافتراضي — بلا استثناءات. */
+    private fun loadJingleWall() {
+        try {
+            val dir = File(AppViewModel.dataDir(), "jingles")
+            val files = BundledJingles.ensureExtracted(dir)
+            val defaults = JingleWallLogic.bundledDefaults(files, BundledJingles.ALL.map { it.title })
+            _jinglePads.value = JingleWallLogic.resolve(settingsStore.jinglePads(), defaults)
+            jingles.setVolume(settingsStore.jingleVolume())
+        } catch (_: Exception) {
+            // فشل استخراج الموارد نادر (قرص ممتلئ): الجدار الفارغ أفضل من انهيار الإقلاع
+            _jinglePads.value = JingleWallLogic.emptyPads()
+        }
+    }
+
+    /** النقر على موضع: تشغيل من الصفر أو إيقاف الجاري. */
+    fun toggleJingle(slot: Int) {
+        val pad = _jinglePads.value.getOrNull(slot) ?: return
+        val f = pad.path?.let(::File) ?: return
+        jingles.toggle(slot, f)
+    }
+
+    fun stopAllJingles() = jingles.stopAll()
+
+    /** تعيين مقطع من اختيار المذيع على موضع — ملف صوتي قابل للفك فقط. */
+    fun assignJingle(slot: Int, file: File): Boolean {
+        if (slot !in 0 until JingleWallLogic.PAD_COUNT) return false
+        if (!file.isFile || file.extension.lowercase() !in PLAYABLE_EXTENSIONS) return false
+        jingles.stop(slot)
+        val pads = _jinglePads.value.toMutableList()
+        pads[slot] = JinglePad(index = slot, path = file.absolutePath, title = JingleWallLogic.titleForFile(file))
+        _jinglePads.value = pads
+        persistJingleWall()
+        return true
+    }
+
+    /** مسح تعيين موضع — يعود فارغًا متاحًا. */
+    fun clearJingle(slot: Int) {
+        if (slot !in 0 until JingleWallLogic.PAD_COUNT) return
+        jingles.stop(slot)
+        val pads = _jinglePads.value.toMutableList()
+        pads[slot] = JinglePad(index = slot)
+        _jinglePads.value = pads
+        persistJingleWall()
+    }
+
+    fun setJingleVolume(v: Float) {
+        jingles.setVolume(v)
+        persistJingleWall()
+    }
+
+    private fun persistJingleWall() {
+        settingsStore.setJingleWall(jingles.volume.value, JingleWallLogic.encodePads(_jinglePads.value))
+    }
 
     private val _playlist = MutableStateFlow<List<Track>>(emptyList())
     val playlist: StateFlow<List<Track>> = _playlist.asStateFlow()
@@ -1076,6 +1146,8 @@ class AppViewModel {
         libraryStore = MusicLibraryStore(File(dataDir(), "library.json"))
         playlistStore = PlaylistStore(File(dataDir(), "playlist.json"))
         refreshPlaylistState(loadTracks = true)
+        // جدار الجينغل: بيانات المجلد المستعاد قد تحمل مواضع ومستوى مختلفين
+        loadJingleWall()
 
         _users.value = usersStore.users()
         _currentUser.value = usersStore.currentUser()
@@ -1128,6 +1200,8 @@ class AppViewModel {
     init {
         player.onEnded = { next(auto = true) }
         player.onPlayFailed = { skipCorrupt() }
+        // جدار الجينغل: استخراج المدمجة واسترجاع المواضع والمستوى المحفوظ
+        loadJingleWall()
         // وحدة المزج: الحالة المحفوظة تُدفع إلى القنوات عند الإقلاع
         pushMixerToEngines()
         _recordingsDir.value.mkdirs()
