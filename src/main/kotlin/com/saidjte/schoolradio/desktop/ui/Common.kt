@@ -303,4 +303,13 @@ object FilePickers {
         val result = chooser.showOpenDialog(null)
         return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
     }
+
+    /** اختيار ملف كوكيز (cookies.txt) لاستيراد اليوتيوب — أي ملف نصي مسموح (v0.25.0). */
+    fun pickCookiesFile(): File? {
+        val chooser = JFileChooser()
+        chooser.dialogTitle = "اختر ملف الكوكيز (cookies.txt)"
+        chooser.fileFilter = FileNameExtensionFilter("ملف كوكيز (txt)", "txt")
+        val result = chooser.showOpenDialog(null)
+        return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+    }
 }

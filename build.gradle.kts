@@ -25,6 +25,9 @@ dependencies {
     // فكّ صيغ الموسيقى الحديثة: OGG Vorbis وFLAC — قرّاء نقية على JVM
     implementation("com.googlecode.soundlibs:vorbisspi:1.0.3.3")
     implementation("org.jflac:jflac-codec:1.5.2")
+    // استيراد اليوتيوب: فكّ AAC/M4A (JAAD — Public Domain) ثم ترميز MP3 نقي (jump3r/LAME — LGPL)
+    implementation("de.sfuhrm:jaad:0.8.7")
+    implementation("de.sciss:jump3r:1.0.5")
     implementation("com.google.code.gson:gson:2.11.0")
     testImplementation(kotlin("test"))
 }
@@ -69,6 +72,29 @@ const val APP_VERSION = "$appVersion"
 
 tasks.named("compileKotlin") {
     dependsOn("generateAppVersion")
+}
+
+// أداة تحميل اليوتيوب مدمجة لكل منصة في نسختها فقط (v0.25.0):
+// CI يبني كل جرّة على منصتها (windows/ubuntu/macos) فتحمل الجرّة أداة منصتها وحدها،
+// والـ MSI (يُبنى على ويندوز) يأخذ أداة ويندوز — بلا تفريخ في حجم الجرات الأخرى.
+val ytdlpOs: String = run {
+    val n = System.getProperty("os.name").lowercase()
+    when {
+        n.contains("win") -> "windows"
+        n.contains("mac") || n.contains("darwin") -> "macos"
+        else -> "linux"
+    }
+}
+val ytdlpBinary = rootProject.file(
+    "binaries/yt-dlp/$ytdlpOs/" + if (ytdlpOs == "windows") "yt-dlp.exe" else "yt-dlp"
+)
+
+tasks.processResources {
+    if (ytdlpBinary.isFile) {
+        from(ytdlpBinary) { into("bin") }
+        from(rootProject.file("binaries/yt-dlp/versions.txt")) { into("bin") }
+        rename { n -> if (n == "versions.txt") "ytdlp_version.txt" else n }
+    }
 }
 
 tasks.test {

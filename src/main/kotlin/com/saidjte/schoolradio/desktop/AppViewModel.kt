@@ -11,6 +11,9 @@ import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
 import com.saidjte.schoolradio.desktop.audio.StreamProbe
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
+import com.saidjte.schoolradio.desktop.youtube.YouTubeImportService
+import com.saidjte.schoolradio.desktop.youtube.YouTubeJson
+import com.saidjte.schoolradio.desktop.youtube.YtDlpLocator
 import com.saidjte.schoolradio.desktop.data.AecState
 import com.saidjte.schoolradio.desktop.data.Backup
 import com.saidjte.schoolradio.desktop.data.DevicesJson
@@ -925,6 +928,59 @@ class AppViewModel {
             .mapNotNull { it.id }
             .toSet()
     }
+
+    // ================= استيراد من اليوتيوب (v0.25.0) =================
+    // الأداة مدمجة لكل منصة، والتحويل M4A→MP3 محلي نقي — المقاطع تدخل المكتبة بأضمن صيغة.
+
+    private val youtubeService = YouTubeImportService(
+        YtDlpLocator(dataDir()),
+        File(dataDir(), "youtube").apply { mkdirs() }
+    )
+
+    val youtubeImportState get() = youtubeService.state
+    val youtubeResults get() = youtubeService.results
+
+    /** جلب بيانات رابط أو تنفيذ بحث — في خيط عمل، والنتيجة تنبض في الحوار. */
+    fun youtubeSearch(input: String) {
+        val q = input.trim()
+        if (q.isEmpty()) return
+        runScope.launch(Dispatchers.IO) {
+            try {
+                youtubeService.resolve(q)
+            } catch (t: Throwable) {
+                // الخدمة تلتقط أخطاءها — هذا حاجز أمان إضافي
+                youtubeService.fail(t.message ?: "تعذّر جلب المعلومات")
+            }
+        }
+    }
+
+    /** تحميل مقطع وتحويله وإضافته إلى المكتبة في تصنيف — في خيط عمل. */
+    fun youtubeImport(video: YouTubeJson.VideoInfo, category: String) {
+        runScope.launch(Dispatchers.IO) {
+            try {
+                youtubeService.import(video) { file, v ->
+                    // الإضافة للمكتبة تُمارَس في خيط الواجهة الافتراضي كبقية عمليات المكتبة
+                    runScope.launch(Dispatchers.Default) { onYouTubeImported(file, v, category) }
+                }
+            } catch (t: Throwable) {
+                youtubeService.fail(t.message ?: "تعذّر الاستيراد")
+            }
+        }
+    }
+
+    private fun onYouTubeImported(file: File, video: YouTubeJson.VideoInfo, category: String) {
+        val r = libraryStore.addFiles(listOf(file), category)
+        refreshLibraryState()
+        _lastLibraryMessage.value = when {
+            r.added.isNotEmpty() -> "أُضيف «${video.title.take(60)}» إلى «$category» — جاهز للبث"
+            else -> "المقطع «${video.title.take(60)}» موجود في المكتبة مسبقًا"
+        }
+    }
+
+    fun youtubeCancel() = youtubeService.cancel()
+    fun youtubeReset() = youtubeService.reset()
+    fun setYouTubeCookies(file: File?) { youtubeService.cookiesFile = file }
+    fun youtubeCookiesFile(): File? = youtubeService.cookiesFile
 
     // ================= التسجيلات + توقيع المُسجِّل =================
 

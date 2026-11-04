@@ -25,6 +25,8 @@ import com.saidjte.schoolradio.desktop.data.StudioLogic
 import com.saidjte.schoolradio.desktop.data.TeleprompterNames
 import com.saidjte.schoolradio.desktop.ui.GuiTokens
 import com.saidjte.schoolradio.desktop.ui.typographyWithFamilies
+import com.saidjte.schoolradio.desktop.youtube.AudioTranscoder
+import com.saidjte.schoolradio.desktop.youtube.YtDlpLocator
 import java.io.File
 import javax.sound.sampled.AudioFormat
 import kotlin.math.PI
@@ -768,6 +770,23 @@ object SelfTest {
             val iconBytes = GuiTokens::class.java.classLoader.getResourceAsStream("icon.png")?.readBytes()
             check(iconBytes != null && iconBytes.size > 1_000) { "icon packaged" }
             check((iconBytes[0].toInt() and 0xFF) == 0x89 && (iconBytes[1].toInt() and 0xFF) == 0x50) { "icon png magic" }
+
+            // 6) استيراد اليوتيوب (v0.25.0): أداة التحميل مدمجة لمنصة التشغيل
+            //    والمحوّل M4A→MP3 يعمل من موارد الجرة نفسها (نغمة 3 ثوانٍ صناعية)
+            run {
+                val res = YtDlpLocator.bundledResourceName()
+                val bin = GuiTokens::class.java.classLoader.getResourceAsStream(res)?.readBytes()
+                check(bin != null && bin.size > 5_000_000) { "yt-dlp bundled ($res): ${bin?.size ?: -1}" }
+                val m4aBytes = GuiTokens::class.java.classLoader.getResourceAsStream("selftest/test_tone.m4a")?.readBytes()
+                check(m4aBytes != null && m4aBytes.size > 10_000) { "selftest m4a packaged" }
+                val inp = File(tmp, "tone.m4a")
+                inp.writeBytes(m4aBytes!!)
+                val outMp3 = File(tmp, "tone.mp3")
+                AudioTranscoder.m4aToMp3(inp, outMp3, durationSec = 3)
+                check(outMp3.length() > 10_000) { "transcoded size=${outMp3.length()}" }
+                val mi = Mp3Info.analyze(outMp3)
+                check(mi != null && mi.durationMs in 2_700..3_400) { "transcoded duration=${mi?.durationMs}" }
+            }
 
             println("SELFTEST OK — version $APP_VERSION")
         } finally {

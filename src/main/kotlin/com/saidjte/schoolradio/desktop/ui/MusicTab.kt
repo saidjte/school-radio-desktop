@@ -633,6 +633,7 @@ private fun LibraryPane(vm: AppViewModel) {
     var selectedCategory by remember { mutableStateOf<String?>(null) }
     var showImportDialog by remember { mutableStateOf(false) }
     var importFiles by remember { mutableStateOf<List<java.io.File>?>(null) }
+    var showYouTubeDialog by remember { mutableStateOf(false) }
     var showNewCategory by remember { mutableStateOf(false) }
     var newCategoryText by remember { mutableStateOf("") }
     var moveTarget by remember { mutableStateOf<LibraryEntry?>(null) }
@@ -671,6 +672,10 @@ private fun LibraryPane(vm: AppViewModel) {
                     }
                 }
             }
+        )
+        PrimaryAction(
+            text = "استيراد من يوتيوب",
+            onClick = { showYouTubeDialog = true }
         )
         SecondaryAction(
             text = "تصنيف جديد",
@@ -834,6 +839,14 @@ private fun LibraryPane(vm: AppViewModel) {
                 importFiles = null
                 showImportDialog = false
             }
+        )
+    }
+
+    // حوار استيراد من اليوتيوب (v0.25.0): بحث/رابط + تحميل حي + تحويل محلي
+    if (showYouTubeDialog) {
+        YouTubeImportDialog(
+            vm = vm,
+            onDismiss = { showYouTubeDialog = false }
         )
     }
 
