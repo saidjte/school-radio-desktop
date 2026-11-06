@@ -45,6 +45,26 @@ data class LayoutJson(
     val bcMicFrac: Float? = null
 )
 
+/**
+ * إعداد الكروس فيد المحفوظ (v0.31.0 «كروس فيد بين المقاطع»): مفعّل افتراضيًا
+ * بنافذة ثلاث ثوانٍ كما في محطات البث — التلعيب المكتوب يُقَمَّع عند القراءة.
+ */
+data class CrossfadeJson(
+    val enabled: Boolean? = null,
+    val ms: Long? = null
+)
+
+/**
+ * إعدادات مؤقت الفاصل الآلي المحفوظة (v0.31.0 «مؤقت فاصل آلي»):
+ * تقدم آلي للفقرة التالية عند انتهاء الزمن، وجينل فاصل عند التحول،
+ * ونافذة التحذير بالثواني.
+ */
+data class SegmentTimerJson(
+    val autoAdvance: Boolean? = null,
+    val sting: Boolean? = null,
+    val warnSeconds: Int? = null
+)
+
 /** إعدادات التطبيق العامة — تُحفظ في settings.json. */
 data class AppSettings(
     val schoolName: String? = null,
@@ -57,7 +77,11 @@ data class AppSettings(
     /** أبعاد حيزات شاشة الاستوديو المحفوظة (سحب الفواصل). */
     val layout: LayoutJson? = null,
     /** جدار الجينغل المحفوظ: المواضع المعيّنة والمستوى العام (v0.28.0). */
-    val jingle: JingleWallJson? = null
+    val jingle: JingleWallJson? = null,
+    /** الكروس فيد بين المقاطع (v0.31.0). */
+    val crossfade: CrossfadeJson? = null,
+    /** مؤقت الفاصل الآلي (v0.31.0). */
+    val segmentTimer: SegmentTimerJson? = null
 )
 
 /**
@@ -222,6 +246,47 @@ class SettingsStore(private val file: File) {
     /** حفظ أبعاد الحيزات — يُستدعى عند إفلات الفاصل بعد السحب. */
     fun setLayout(l: LayoutJson) {
         doc = doc.copy(layout = l)
+        persist()
+    }
+
+    // ================= الكروس فيد: مفعّل ونافذة (v0.31.0) =================
+
+    /** حالة الكروس فيد المحسومة: مفعّل بنافذة محبوسة، أو معطّل. */
+    fun crossfade(): CrossfadeJson {
+        val c = doc.crossfade ?: CrossfadeJson()
+        return CrossfadeJson(
+            enabled = c.enabled ?: true,
+            ms = CrossfadeLogic.clampMs(c.ms ?: CrossfadeLogic.DEFAULT_MS)
+        )
+    }
+
+    /** حفظ إعداد الكروس فيد — يُستدعى من مفتاحه في صفحة الموسيقى. */
+    fun setCrossfade(enabled: Boolean, ms: Long) {
+        doc = doc.copy(crossfade = CrossfadeJson(enabled = enabled, ms = CrossfadeLogic.clampMs(ms)))
+        persist()
+    }
+
+    // ================= مؤقت الفاصل الآلي (v0.31.0) =================
+
+    /** إعدادات المؤقت المحسومة بالافتراضيات المهنية عند غياب الحقول. */
+    fun segmentTimer(): SegmentTimerJson {
+        val t = doc.segmentTimer ?: SegmentTimerJson()
+        return SegmentTimerJson(
+            autoAdvance = t.autoAdvance ?: true,
+            sting = t.sting ?: true,
+            warnSeconds = SegmentTimerLogic.clampWarnSeconds(t.warnSeconds ?: SegmentTimerLogic.DEFAULT_WARN_SECONDS.toInt())
+        )
+    }
+
+    /** حفظ إعدادات المؤقت دفعة واحدة. */
+    fun setSegmentTimer(autoAdvance: Boolean, sting: Boolean, warnSeconds: Int) {
+        doc = doc.copy(
+            segmentTimer = SegmentTimerJson(
+                autoAdvance = autoAdvance,
+                sting = sting,
+                warnSeconds = SegmentTimerLogic.clampWarnSeconds(warnSeconds)
+            )
+        )
         persist()
     }
 

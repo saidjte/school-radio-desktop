@@ -104,6 +104,22 @@ class JingleWallEngine(
         _playing.value = emptySet()
     }
 
+    /**
+     * جينل الفاصل الآلي (v0.31.0 «مؤقت فاصل آلي»): إطلاق صوت تنبيه خارج
+     * شبكة المواضع الاثني عشر — مؤقت الفقرات يطلقه لحظة بلوغ الزمن المخطط.
+     * إطلاق جديد يوقف السابق فلا تتكدس الفواصل، ويُلغى مع «إيقاف الكل».
+     */
+    fun sting(file: File) {
+        if (voiceFactoryOverride == null && !file.isFile) return
+        runs[STING_SLOT]?.let { stopRun(it) }
+        start(STING_SLOT, file)
+    }
+
+    /** موضع الفاصل الآلي خارج شبكة المواضع الظاهرة. */
+    companion object {
+        const val STING_SLOT = 100
+    }
+
     /** المستوى العام للجينلات — يسري على الأصوات الجارية في الكتلة التالية. */
     fun setVolume(v: Float) {
         _volume.value = JingleWallLogic.clampVolume(v)
@@ -190,25 +206,29 @@ internal class JingleVoice(
     private val mp3: Mp3OneShot?
     private val pcm: PcmOneShot?
 
+    /** المستوى العام برمحيًا (v0.31.0) — يطابق ما يُسجّل في مزيج الحصة. */
+    @Volatile private var gain = initialVolume.coerceIn(0f, 1f)
+
     init {
+        val f: AudioFormat
         if (file.name.lowercase().endsWith(".mp3")) {
             val one = Mp3OneShot(file)
             mp3 = one
             pcm = null
-            val f = one.format
-            out = AudioDevices.openOutLine(outMain, outSecond, f, null)
-            out.open(f, 16 * 1024)
-            out.start()
-            out.setVolume(initialVolume)
+            f = one.format
+            val raw = AudioDevices.openOutLine(outMain, outSecond, f, null)
+            raw.open(f, 16 * 1024)
+            raw.start()
+            out = TappingOut(raw, f.sampleRate.toInt(), f.channels) { gain }
         } else {
             val one = PcmOneShot(file)
             mp3 = null
             pcm = one
-            val f = one.format
-            out = AudioDevices.openOutLine(outMain, outSecond, f, null)
-            out.open(f, 16 * 1024)
-            out.start()
-            out.setVolume(initialVolume)
+            f = one.format
+            val raw = AudioDevices.openOutLine(outMain, outSecond, f, null)
+            raw.open(f, 16 * 1024)
+            raw.start()
+            out = TappingOut(raw, f.sampleRate.toInt(), f.channels) { gain }
         }
     }
 
@@ -216,13 +236,52 @@ internal class JingleVoice(
         if (mp3 != null) mp3.readChunkInto(out) else pcm!!.readChunkInto(out)
 
     override fun applyVolume(v: Float) {
-        try { out.setVolume(v) } catch (_: Exception) { }
+        gain = v.coerceIn(0f, 1f)
     }
 
     override fun close() {
         try { mp3?.close() } catch (_: Exception) { }
         try { pcm?.close() } catch (_: Exception) { }
         try { out.close() } catch (_: Exception) { }
+    }
+}
+
+/**
+ * خط إخراج جينل ملتقط (v0.31.0): يضرب الكتلة بالمستوى البرمحي ثم يغذي
+ * ناقل تسجيل المزيج بنفس ما يُكتب في السماعة — فتُسجّل الجينلات
+ * بمستواها المسموع فعلاً لا بكسب كامل.
+ */
+private class TappingOut(
+    private val inner: PcmOutLine,
+    private val rateHz: Int,
+    private val ch: Int,
+    private val gain: () -> Float
+) : PcmOutLine by inner {
+
+    override fun write(b: ByteArray, off: Int, len: Int) {
+        val scaled = applySoftwareGain(b, off, len)
+        if (MixBus.recording.value) {
+            MixBus.feedJingle(scaled, 0, scaled.size, rateHz, ch)
+        }
+        inner.write(scaled, 0, scaled.size)
+    }
+
+    override fun setVolume(v: Float) {
+        // المستوى برمحي عبر gain — كسب الجهاز يبقى محايدًا ليطابق التسجيل السماع
+    }
+
+    private fun applySoftwareGain(b: ByteArray, off: Int, len: Int): ByteArray {
+        val g = gain()
+        val src = if (off == 0) b else ByteArray(len).also { System.arraycopy(b, off, it, 0, len) }
+        if (g >= 0.999f) return src
+        val shorts = ShortArray(len / 2)
+        Pcm16.bytesToShorts(src, shorts.size * 2, shorts)
+        for (i in shorts.indices) {
+            shorts[i] = (shorts[i] * g).toInt().coerceIn(-32768, 32767).toShort()
+        }
+        val outB = ByteArray(len)
+        Pcm16.shortsToBytes(shorts, shorts.size, outB)
+        return outB
     }
 }
 

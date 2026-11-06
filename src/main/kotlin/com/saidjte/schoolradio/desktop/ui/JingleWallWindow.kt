@@ -45,6 +45,7 @@ import androidx.compose.ui.window.rememberWindowState
 import com.saidjte.schoolradio.desktop.APP_VERSION
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.data.JinglePad
+import com.saidjte.schoolradio.desktop.data.JingleWallLogic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -124,10 +125,12 @@ private fun JingleWallContent(vm: AppViewModel, onClose: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (playing.isNotEmpty()) {
+            // موضع الفاصل الآلي (STING_SLOT=100) خارج شبكة المواضع — لا يُعدّ في الجدار
+            val padPlaying = playing.count { it < JingleWallLogic.PAD_COUNT }
+            if (padPlaying > 0) {
                 PulsingDot(color = sc.liveDot, size = 9.dp)
                 Text(
-                    "${playing.size} جارٍ",
+                    "$padPlaying جارٍ",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold

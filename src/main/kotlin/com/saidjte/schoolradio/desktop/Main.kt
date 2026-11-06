@@ -96,6 +96,17 @@ fun main(args: Array<String>) {
                 vm.player.play(java.io.File("automation/fake-track.mp3"))
             }
         }
+        // كروس فيد للأتمتة (v0.31.0): مقطع 15 ثانية وهمي ينفد فيسأل عن «التالي»
+        // فيبدأ انتقال كروس فيد حقيقي تلتقطه لقطات الشاشة بشارة «انتقال…»
+        if (args.contains("--xfade")) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(800)
+                vm.player.crossfadeMs = 1200L
+                vm.player.trackReaderOverride = { FakeTrackVoice(totalMs = 15_000L, chunkSleepMs = 200L) }
+                vm.player.onCrossfadeNext = { java.io.File("automation/fake-next.mp3") }
+                vm.player.play(java.io.File("automation/fake-a.mp3"))
+            }
+        }
         // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
         val windowIcon = remember {
             Thread.currentThread().contextClassLoader
@@ -143,11 +154,12 @@ fun AppRoot(vm: AppViewModel = remember { AppViewModel() }, startTab: Tab? = nul
     var showSettings by remember { mutableStateOf(false) }
     val micState by vm.mic.state.collectAsState()
     val recording by vm.mic.recording.collectAsState()
+    val mixRec by vm.mixRecording.collectAsState()
     val playing by vm.player.isPlaying.collectAsState()
     val paused by vm.player.isPaused.collectAsState()
     val onAir = StudioLogic.status(
         micLive = micState == MicState.LIVE,
-        recording = recording,
+        recording = recording || mixRec,
         musicPlaying = playing && !paused
     ).onAir
 

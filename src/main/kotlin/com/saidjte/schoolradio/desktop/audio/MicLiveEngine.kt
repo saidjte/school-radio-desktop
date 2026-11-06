@@ -394,6 +394,12 @@ class MicLiveEngine {
                 _duckActive.value = DuckBus.active
                 Pcm16.shortsToBytes(shorts, sampleCount, buf)
 
+                // تغذية تسجيل المزيج (v0.31.0): صوت المذيع بعد السلسلة كاملة
+                // (مانعا الصدى + معالج المذيع + الكسب) — نفس ما يُسمع على الهواء
+                if (MixBus.recording.value) {
+                    MixBus.feedMic(buf, 0, n, actual.sampleRate.toInt(), actual.channels)
+                }
+
                 // إعادة فتح السماع المراقب على المخرجين الجديدين دون قطع البث
                 if (outMixerDirty) {
                     outMixerDirty = false

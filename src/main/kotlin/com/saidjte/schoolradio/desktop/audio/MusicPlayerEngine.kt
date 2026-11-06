@@ -1,5 +1,6 @@
 package com.saidjte.schoolradio.desktop.audio
 
+import com.saidjte.schoolradio.desktop.data.CrossfadeLogic
 import com.saidjte.schoolradio.desktop.data.MusicEqState
 import javazoom.jl.decoder.Bitstream
 import javazoom.jl.decoder.Decoder
@@ -54,6 +55,8 @@ class MusicChannel internal constructor() {
     @Volatile internal var muted = false
 
     private var channels = 2
+    /** معدل القناة الحالي — يُمرّر لناقل تسجيل المزيج مع كل كتلة (v0.31.0). */
+    @Volatile private var rateHz = 44100
     private var monoBuf = FloatArray(4096)
     private val shorts = ShortArray(1 shl 15)
 
@@ -94,6 +97,7 @@ class MusicChannel internal constructor() {
     internal fun configure(sampleRate: Int, channels: Int) {
         eq.configure(sampleRate, channels)
         this.channels = channels.coerceIn(1, 2)
+        rateHz = sampleRate.coerceAtLeast(8000)
         MusicFarEnd.tap.configure(sampleRate)
     }
 
@@ -117,6 +121,10 @@ class MusicChannel internal constructor() {
         val env = currentEnv()
         val gain = env * if (muted) 0f else fader * master * duck
         val level = eq.process(target, count, gain)
+        // تغذية تسجيل المزيج (v0.31.0): ما بعد كل الكسب — نفس ما يُسمع في السماعة
+        if (MixBus.recording.value) {
+            MixBus.feedMusic(target, count, rateHz, channels)
+        }
         pushFarEnd(target, count)
         onLevel?.invoke(level)
     }
@@ -490,8 +498,28 @@ class MusicPlayerEngine {
     @Volatile private var paused = false
     @Volatile private var stopped = true
     @Volatile private var switchTo: File? = null
+    @Volatile private var switchCrossfade = false
     @Volatile private var seekRequest = -1L
     @Volatile private var volumeDirty = false
+
+    // ================= الكروس فيد بين المقاطع (v0.31.0) =================
+
+    /**
+     * نافذة الكروس فيد بالمللي ثانية (0 = معطّل) — تُدفع من الإعدادات حيًّا.
+     * التلاشي يُنفَّذ على كسب خطَّي الإخراج (MASTER_GAIN) فتبقى قناة المزج
+     * المشتركة (معادل/فيدر/خفض/مرجع صدى) محايدة كاملًا خلال الانتقال.
+     */
+    @Volatile var crossfadeMs: Long = 0L
+
+    private val _xfading = MutableStateFlow(false)
+    /** شارة انتقال جارٍ — تضيء في المشغل لحظة التمديد وتنطفئ عند اكتماله. */
+    val xfading: StateFlow<Boolean> = _xfading.asStateFlow()
+
+    /** طلب المقطع التالي للتمديد الآلي عند اقتراب نهاية الجاري — null = لا تمديد. */
+    var onCrossfadeNext: (() -> File?)? = null
+
+    /** تأكيد بدء الكروس فيد إلى ملف — يحدّث مؤشر القائمة في ViewModel. */
+    var onCrossfadeCommitted: ((File) -> Unit)? = null
 
     init {
         channel.onLevel = { _level.value = it }
@@ -538,8 +566,16 @@ class MusicPlayerEngine {
      */
     fun outputsSnapshot(): Pair<Mixer.Info?, Mixer.Info?> = outputMain to outputSecond
 
-    fun play(file: File) {
+    fun play(file: File) { play(file, crossfade = false) }
+
+    /**
+     * تشغيل ملف مع طلب كروس فيد اختياري (v0.31.0): عند `crossfade=true` ووجود
+     * مقطع جارٍ بنافذة مفعّلة يُبدأ انتقال مزدوج (الخارج يخفت والداخل يصعد)
+     * بدل القطع الصلب — وإلا يُنفَّذ التبديل القديم حرفيًا.
+     */
+    fun play(file: File, crossfade: Boolean) {
         switchTo = file
+        switchCrossfade = crossfade
         // سعي معلّق موجّه للمقطع القديم يُبطَل هنا — فلا يتسرب إلى المقطع
         // الجديد إن سبق العامل إلى فتحه (عقد السعي v0.27.0)
         seekRequest = -1L
@@ -608,37 +644,111 @@ class MusicPlayerEngine {
 
     private fun run() {
         var reader: TrackReader? = null
+        // كروس فيد (v0.31.0): القارئ الخارج يبقى حيًّا خلال النافذة يخفت على
+        // كسب خطه بينما القارئ الجديد (reader) يصعد على كسب خطه — قناة المزج
+        // المشتركة تبقى كسبًا كاملًا فلا يُلمس المعادل ولا الخفض ولا مرجع الصدى
+        var xOut: TrackReader? = null
+        var xStartNanos = 0L
+        var xMs = 0L
+        var xAsked = false // سألنا عن «التالي» لهذا المقطع؟ — سؤال واحد لكل مقطع
         var wasPaused = false
         try {
             while (!stopped) {
                 val sw = switchTo
                 if (sw != null) {
                     switchTo = null
-                    try { reader?.close() } catch (_: Exception) { }
-                    reader = null
-                    wasPaused = false
-                    try {
-                        reader = openReader(sw)
-                        _currentFile.value = sw
-                        _title.value = sw.nameWithoutExtension
-                        _hasTrack.value = true
-                        _durationMs.value = reader.durationMs
-                        _positionMs.value = 0L
-                        _isPlaying.value = true
-                        _isPaused.value = false
-                        reopenOutput = false // فُتح للتو بالمخرج الحالي — لا حاجة لإعادة
-                        channel.resetEnv() // مقطع جديد: كسب كامل فوري بلا تلاشٍ معلّق
-                    } catch (t: Throwable) {
+                    val wantXf = switchCrossfade && crossfadeMs > 0L && reader != null && !paused && xOut == null
+                    switchCrossfade = false
+                    if (wantXf) {
+                        val old = reader!!
+                        try {
+                            val nr = openReader(sw)
+                            xAsked = false
+                            _currentFile.value = sw
+                            _title.value = sw.nameWithoutExtension
+                            _hasTrack.value = true
+                            _durationMs.value = nr.durationMs
+                            _positionMs.value = 0L
+                            _isPlaying.value = true
+                            _isPaused.value = false
+                            reopenOutput = false // فُتح للتو بالمخرج الحالي — لا حاجة لإعادة
+                            channel.resetEnv()
+                            xOut = old
+                            xStartNanos = System.nanoTime()
+                            xMs = crossfadeMs
+                            _xfading.value = true
+                            reader = nr
+                            val committed = onCrossfadeCommitted
+                            if (committed != null) committed(sw)
+                        } catch (t: Throwable) {
+                            // فشل فتح الجديد: القديم يواجه تشغيله بكسبه الكامل
+                            _error.value = t.message ?: "تعذّر تشغيل الملف"
+                            try { reader?.applyVolume(_volume.value) } catch (_: Exception) { }
+                            val failedCb = onPlayFailed
+                            if (failedCb != null) failedCb(sw)
+                        }
+                    } else {
+                        try { reader?.close() } catch (_: Exception) { }
+                        // التبديل الصلب يلغي أي كروس فيد جارٍ فورًا
+                        if (xOut != null) {
+                            try { xOut?.close() } catch (_: Exception) { }
+                            xOut = null
+                            _xfading.value = false
+                        }
                         reader = null
-                        _hasTrack.value = false
-                        _isPlaying.value = false
-                        _error.value = t.message ?: "تعذّر تشغيل الملف"
-                        val failedCb = onPlayFailed
-                        if (failedCb != null) failedCb(sw)
-                        break
+                        wasPaused = false
+                        try {
+                            reader = openReader(sw)
+                            _currentFile.value = sw
+                            _title.value = sw.nameWithoutExtension
+                            _hasTrack.value = true
+                            _durationMs.value = reader.durationMs
+                            _positionMs.value = 0L
+                            _isPlaying.value = true
+                            _isPaused.value = false
+                            xAsked = false
+                            reopenOutput = false
+                            channel.resetEnv()
+                        } catch (t: Throwable) {
+                            reader = null
+                            _hasTrack.value = false
+                            _isPlaying.value = false
+                            _error.value = t.message ?: "تعذّر تشغيل الملف"
+                            val failedCb = onPlayFailed
+                            if (failedCb != null) failedCb(sw)
+                            break
+                        }
                     }
                 }
-                // تبديل حي للمخرج: إعادة فتح سلسة تحفظ الموضع الحالي
+                // صيانة الكروس فيد الجاري: كسب الخطوط كل دورة + إغلاق الخارج عند اكتمال النافذة
+                val xo = xOut
+                if (xo != null) {
+                    val elapsed = (System.nanoTime() - xStartNanos) / 1_000_000L
+                    val outG = CrossfadeLogic.fadeOutGain(elapsed, xMs)
+                    val inG = CrossfadeLogic.fadeInGain(elapsed, xMs)
+                    try { xo.applyVolume(_volume.value * outG) } catch (_: Exception) { }
+                    try { reader?.applyVolume(_volume.value * inG) } catch (_: Exception) { }
+                    val moreX = try {
+                        xo.readChunk()
+                    } catch (_: Exception) { false }
+                    if (!moreX || outG <= 0f) {
+                        try { xo.close() } catch (_: Exception) { }
+                        xOut = null
+                        _xfading.value = false
+                        // الداخل يواجه كسبًا كاملًا فور انقضاء النافذة
+                        try { reader?.applyVolume(_volume.value) } catch (_: Exception) { }
+                        channel.resetEnv()
+                    }
+                }
+                // تبديل حي للمخرج: إعادة فتح سلسة تحفظ الموضع الحالي —
+                // ويُجهض أي كروس فيد جارٍ أولًا فلا يبقى خارج معلّق على خط قديم
+                if (xOut != null && reopenOutput) {
+                    try { xOut?.close() } catch (_: Exception) { }
+                    xOut = null
+                    _xfading.value = false
+                    try { reader?.applyVolume(_volume.value) } catch (_: Exception) { }
+                    channel.resetEnv()
+                }
                 if (reopenOutput) {
                     reopenOutput = false
                     val cf = _currentFile.value
@@ -654,6 +764,7 @@ class MusicPlayerEngine {
                             }
                             if (wasPaused) nr.pause()
                             channel.resetEnv()
+                            xAsked = false
                             nr
                         } catch (t: Throwable) {
                             // الجهاز الجديد فاشل: نعود للسماعة الافتراضية
@@ -666,6 +777,7 @@ class MusicPlayerEngine {
                                 }
                                 if (wasPaused) nr.pause()
                                 channel.resetEnv()
+                                xAsked = false
                                 nr
                             } catch (t2: Throwable) {
                                 _error.value = t2.message
@@ -692,6 +804,15 @@ class MusicPlayerEngine {
                 }
 
                 if (paused) {
+                    // الإيقاف أثناء كروس فيد: يُجهض الانتقال فورًا فلا يبقى
+                    // خارج يسمع وحده بعد تجميد الداخل — ثم مسار الإيقاف الناعم كالمعتاد
+                    if (xOut != null) {
+                        try { xOut?.close() } catch (_: Exception) { }
+                        xOut = null
+                        _xfading.value = false
+                        try { r.applyVolume(_volume.value) } catch (_: Exception) { }
+                        channel.resetEnv()
+                    }
                     if (!wasPaused) {
                         // تلاشٍ ناعم للخروج قبل التجميد (v0.29.0): نكمل التفريغ على
                         // ساعة الحائط مع نزول الغلاف في مسار process، وأي أمر أحدث
@@ -745,6 +866,42 @@ class MusicPlayerEngine {
                 if (more) {
                     // الحماية نفسها في المسار الرئيسي: طلب سعي حديث يفوز على أي تحديث كتلة
                     if (seekRequest < 0L) _positionMs.value = r.currentMs
+                    // التمديد الآلي (v0.31.0): المتبقي داخل النافذة → اسأل عن التالي
+                    // مرة واحدة لهذا المقطع، وإن وُجد يبدأ انتقال كروس فيد حقيقي:
+                    // القارئ الحالي يصير خارجًا يخفت والجديد يصير reader يصعد
+                    if (xOut == null && crossfadeMs > 0L && !xAsked && r.durationMs > 0L) {
+                        val remaining = r.durationMs - r.currentMs
+                        if (CrossfadeLogic.shouldTrigger(remaining, crossfadeMs)) {
+                            xAsked = true
+                            val nf = try { onCrossfadeNext?.invoke() } catch (_: Exception) { null }
+                            if (nf != null && nf != _currentFile.value) {
+                                try {
+                                    val nr = openReader(nf)
+                                    xAsked = false
+                                    _currentFile.value = nf
+                                    _title.value = nf.nameWithoutExtension
+                                    _durationMs.value = nr.durationMs
+                                    _positionMs.value = 0L
+                                    reopenOutput = false
+                                    channel.resetEnv()
+                                    xOut = r
+                                    xStartNanos = System.nanoTime()
+                                    xMs = crossfadeMs
+                                    _xfading.value = true
+                                    reader = nr
+                                    val committed = onCrossfadeCommitted
+                                    if (committed != null) committed(nf)
+                                    continue // الدورة القادمة تقرأ الداخل وتصوني الخارج
+                                } catch (t: Throwable) {
+                                    _error.value = t.message
+                                    val failedCb = onPlayFailed
+                                    if (failedCb != null) failedCb(nf)
+                                    // القديم يكمل؛ المحاولة تعاد عند اقتراب النهاية من جديد
+                                    xAsked = false
+                                }
+                            }
+                        }
+                    }
                 } else {
                     _isPlaying.value = false
                     val cb = onEnded
@@ -756,6 +913,7 @@ class MusicPlayerEngine {
             _error.value = t.message ?: "خطأ غير متوقع في المشغّل"
         } finally {
             try { reader?.close() } catch (_: Exception) { }
+            try { xOut?.close() } catch (_: Exception) { }
             if (stopped) {
                 _isPlaying.value = false
                 _isPaused.value = false
@@ -764,6 +922,7 @@ class MusicPlayerEngine {
                 _title.value = null
                 _positionMs.value = 0L
                 _durationMs.value = 0L
+                _xfading.value = false
             }
             synchronized(workerLock) { worker = null }
         }

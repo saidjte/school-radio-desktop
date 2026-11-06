@@ -109,6 +109,57 @@ object PcmMixer {
         return frames
     }
 
+    /**
+     * توسيع أي دخل إلى ستيريو (صيغة تسجيل المزيج الموحدة v0.31.0):
+     * أحادي يُكرَّر في القناتين، وثنائي يُنسخ كما هو — عقد موحد لكل المصادر
+     * قبل الجمع فلا يفقد الميكروفون الأحادي قيمته ولا الموسيقى الستيريو فصلها.
+     */
+    fun toStereo(src: ShortArray, count: Int, channels: Int): ShortArray {
+        if (count <= 0) return ShortArray(0)
+        return if (channels >= 2) {
+            val n = (count - count % 2)
+            val out = ShortArray(n)
+            System.arraycopy(src, 0, out, 0, n)
+            out
+        } else {
+            val frames = count
+            val out = ShortArray(frames * 2)
+            for (f in 0 until frames) {
+                val v = src[f]
+                out[2 * f] = v
+                out[2 * f + 1] = v
+            }
+            out
+        }
+    }
+
+    /**
+     * إعادة تشكيل ستيريو من معدل إلى آخر باستيفاء خطي لكل قناة —
+     * نظير resample الأحادي مع حفظ فصل القناتين (الموسيقى الستيريو
+     * تبدو ستيريو في ملف المزيج لا مدمجة).
+     * يعيد مصفوفة بأطوال إطارات الوجهة × 2.
+     */
+    fun resampleStereo(src: ShortArray, srcFrames: Int, srcRate: Int, dstRate: Int): ShortArray {
+        if (srcFrames <= 0 || srcRate <= 0 || dstRate <= 0) return ShortArray(0)
+        if (srcRate == dstRate) return src.copyOf()
+        val dstFrames = (srcFrames.toLong() * dstRate / srcRate).toInt()
+        if (dstFrames <= 0) return ShortArray(0)
+        val out = ShortArray(dstFrames * 2)
+        val step = srcRate.toDouble() / dstRate.toDouble()
+        for (i in 0 until dstFrames) {
+            val pos = i * step
+            val i0 = pos.toInt().coerceIn(0, srcFrames - 1)
+            val i1 = (i0 + 1).coerceAtMost(srcFrames - 1)
+            val frac = (pos - i0).toFloat()
+            for (c in 0 until 2) {
+                val a = src[2 * i0 + c]
+                val b = src[2 * i1 + c]
+                out[2 * i + c] = (a + (b - a) * frac).toInt().toShort()
+            }
+        }
+        return out
+    }
+
     private fun sumClamped(base: Short, add: Float): Short {
         val v = (base + add * 32768.0f).roundToInt()
         return v.coerceIn(-32768, 32767).toShort()

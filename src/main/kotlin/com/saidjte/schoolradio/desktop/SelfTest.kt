@@ -3,12 +3,15 @@ package com.saidjte.schoolradio.desktop
 import com.saidjte.schoolradio.desktop.audio.AudioDevices
 import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.LevelMeter
+import com.saidjte.schoolradio.desktop.audio.MixBus
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
+import com.saidjte.schoolradio.desktop.audio.FakeToneVoice
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
 import com.saidjte.schoolradio.desktop.audio.TrackReader
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
+import com.saidjte.schoolradio.desktop.data.CrossfadeLogic
 import com.saidjte.schoolradio.desktop.data.DevicesJson
 import com.saidjte.schoolradio.desktop.data.MeterLogic
 import com.saidjte.schoolradio.desktop.data.MeterZone
@@ -17,6 +20,7 @@ import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
 import com.saidjte.schoolradio.desktop.data.SeekLogic
 import com.saidjte.schoolradio.desktop.data.SegmentKind
+import com.saidjte.schoolradio.desktop.data.SegmentTimerLogic
 import com.saidjte.schoolradio.desktop.data.SegmentStatus
 import com.saidjte.schoolradio.desktop.data.ScriptSection
 import com.saidjte.schoolradio.desktop.data.ScriptStats
@@ -1103,6 +1107,138 @@ object SelfTest {
                 check(longRes.pages >= 2) { "long pdf pages=${longRes.pages}" }
                 org.apache.pdfbox.pdmodel.PDDocument.load(longPdf).use { pd ->
                     org.apache.pdfbox.rendering.PDFRenderer(pd).renderImage(pd.numberOfPages - 1)
+                }
+            }
+
+            // ================= v0.31.0: الكروس فيد وتسجيل المزيج والمؤقت الآلي =================
+            run {
+                // 1) عقد CrossfadeLogic النقي
+                check(CrossfadeLogic.clampMs(0L) == 0L) { "cf disabled preserved" }
+                check(CrossfadeLogic.clampMs(100L) == CrossfadeLogic.MIN_MS) { "cf clamp low" }
+                check(CrossfadeLogic.clampMs(99_000L) == CrossfadeLogic.MAX_MS) { "cf clamp high" }
+                check(CrossfadeLogic.clampMs(3_000L) == 3_000L) { "cf pass-through" }
+                check(!CrossfadeLogic.shouldTrigger(4_000L, 3_000L)) { "no trigger beyond window" }
+                check(CrossfadeLogic.shouldTrigger(3_000L, 3_000L)) { "trigger at window edge" }
+                check(!CrossfadeLogic.shouldTrigger(0L, 3_000L)) { "no trigger at exact end" }
+                check(!CrossfadeLogic.shouldTrigger(2_000L, 0L)) { "disabled never triggers" }
+                check(CrossfadeLogic.fadeOutGain(0L, 3_000L) == 1f) { "out gain start" }
+                check(CrossfadeLogic.fadeOutGain(1_500L, 3_000L) in 0.49f..0.51f) { "out gain mid" }
+                check(CrossfadeLogic.fadeOutGain(4_000L, 3_000L) == 0f) { "out gain end" }
+                check(CrossfadeLogic.fadeInGain(0L, 3_000L) == 0f) { "in gain start" }
+                check(CrossfadeLogic.fadeInGain(1_500L, 3_000L) in 0.49f..0.51f) { "in gain mid" }
+                check(CrossfadeLogic.fadeInGain(4_000L, 3_000L) == 1f) { "in gain end" }
+
+                // 2) كروس فيد ذاتي في المحرك: مقطع قصير ينتهي والقائمة تمدّده بلا قطع
+                run {
+                    class XfProbe(val tag: String, val totalMs: Long) : TrackReader {
+                        @Volatile var current = 0L
+                        @Volatile var closed = false
+                        override val durationMs = totalMs
+                        override val currentMs get() = current
+                        override fun seek(ms: Long) { current = ms.coerceIn(0L, totalMs) }
+                        override fun pause() { }
+                        override fun resume() { }
+                        override fun applyVolume(volume: Float) { }
+                        override fun readChunk(): Boolean {
+                            current += 50L
+                            Thread.sleep(2)
+                            return current < totalMs
+                        }
+                        override fun close() { closed = true }
+                    }
+                    fun awaitX(cond: () -> Boolean, msg: String) {
+                        val dl = System.currentTimeMillis() + 6_000
+                        while (System.currentTimeMillis() < dl) { if (cond()) return; Thread.sleep(10) }
+                        check(false) { msg }
+                    }
+                    val a = XfProbe("a", 2_500L) // ينفد بعد ~50 كتلة (~100ms حقيقية)
+                    val b = XfProbe("b", 60_000L)
+                    val queue = ArrayDeque(listOf(a, b))
+                    val eng = MusicPlayerEngine()
+                    eng.trackReaderOverride = { queue.removeFirst() }
+                    eng.crossfadeMs = 400L
+                    var nextAsked = 0
+                    var committedTo: String? = null
+                    eng.onCrossfadeNext = { nextAsked++; java.io.File("selftest-xf/b.wav") }
+                    eng.onCrossfadeCommitted = { committedTo = it.path }
+                    try {
+                        eng.play(java.io.File("selftest-xf/a.wav"))
+                        awaitX({ eng.hasTrack.value }, "xf track loaded")
+                        awaitX({ eng.xfading.value }, "xfading started") // التمديد الآلي بدأ
+                        check(nextAsked == 1) { "next asked once, got $nextAsked" }
+                        check(committedTo == "selftest-xf/b.wav") { "committed file=$committedTo" }
+                        awaitX({ !eng.xfading.value }, "xfading completed")
+                        check(a.closed) { "outgoing reader closed" }
+                        check(eng.hasTrack.value && eng.isPlaying.value) { "still playing after crossfade" }
+                        check(!b.closed) { "incoming alive" }
+                    } finally {
+                        eng.trackReaderOverride = null
+                        eng.stop()
+                        eng.awaitIdle()
+                    }
+                }
+
+                // 3) MixBus: مصدران بصيغتين مختلفتين في ملف WAV واحد 44.1k ستيريو
+                run {
+                    val f = File(tmp, "mix.wav")
+                    check(MixBus.start(f)) { "mix start" }
+                    check(MixBus.recording.value) { "mix active" }
+                    check(!MixBus.start(File(tmp, "mix2.wav"))) { "double start rejected" }
+                    // موسيقى ستيريو 48kHz — 100 إطار يُعاد تشكيلها إلى 44.1k
+                    val music = ShortArray(200) { i -> (((i % 40) - 20) * 900).toInt().toShort() }
+                    MixBus.feedMusic(music, music.size, 48_000, 2)
+                    // مايك أحادي 44.1kHz عبر بايتات
+                    val micBytes = ByteArray(4410) { 0 } // 2205 عينة صمت أحادية
+                    MixBus.feedMic(micBytes, 0, micBytes.size, 44_100, 1)
+                    // جينل بمستوى برمحي عبر بايتات بإزاحة
+                    val jinBytes = ByteArray(100) { i -> if (i % 2 == 0) 0x10 else 0x00 }
+                    MixBus.feedJingle(jinBytes, 0, jinBytes.size, 44_100, 2)
+                    // تغذية فارغة لا تكسر ولا تُضيف
+                    MixBus.feedMic(ByteArray(0), 0, 0, 44_100, 1)
+                    val dur = MixBus.stop()
+                    check(dur > 0L) { "mix duration=$dur" }
+                    val info = WavHeader.read(f) ?: error("mix wav header missing")
+                    check(info.sampleRate == 44_100) { "mix rate=${info.sampleRate}" }
+                    check(info.channels == 2) { "mix channels=${info.channels}" }
+                    check(info.dataBytes > 0L) { "mix dataBytes=${info.dataBytes}" }
+                    check(!MixBus.recording.value) { "mix stopped" }
+                    check(MixBus.stop() == 0L) { "double stop safe" }
+                    check(f.length() == 44L + info.dataBytes) { "mix file size ${f.length()}" }
+                }
+
+                // 4) SegmentTimerLogic: قرار حتمي — لا إطلاق بلا زمن مخطط
+                run {
+                    val d0 = SegmentTimerLogic.decide(0L, 60L, 30L)
+                    check(!d0.fire && !d0.warn && d0.remainingMs == 60_000L) { "timer start" }
+                    val dW = SegmentTimerLogic.decide(45_000L, 60L, 30L)
+                    check(!dW.fire && dW.warn) { "timer warn window" }
+                    val dOut = SegmentTimerLogic.decide(20_000L, 60L, 30L)
+                    check(!dOut.fire && !dOut.warn) { "timer calm" }
+                    val dF = SegmentTimerLogic.decide(60_000L, 60L, 30L)
+                    check(dF.fire) { "timer fires at threshold" }
+                    val dNone = SegmentTimerLogic.decide(60_000L, 0L, 30L)
+                    check(!dNone.fire && !dNone.warn && dNone.remainingMs == 0L) { "unplanned never fires" }
+                    check(SegmentTimerLogic.clampWarnSeconds(1) == 5) { "warn clamp low" }
+                    check(SegmentTimerLogic.clampWarnSeconds(500) == 120) { "warn clamp high" }
+                    check(
+                        SegmentTimerLogic.remainingLabel(SegmentTimerLogic.decide(90_000L, 60L, 30L)).startsWith("تجاوز")
+                    ) { "overdue label" }
+                }
+
+                // 5) جينل الفاصل الآلي: موضع خارج الشبكة يُطلق ويُوقف مع الكل
+                run {
+                    val eng = JingleWallEngine()
+                    eng.voiceFactoryOverride = { FakeToneVoice(chunks = 30, chunkMs = 10) }
+                    try {
+                        eng.sting(File("selftest-sting/none.mp3"))
+                        check(eng.playing.value.contains(JingleWallEngine.STING_SLOT)) { "sting playing" }
+                        check(!eng.playing.value.any { it < 12 }) { "sting outside grid" }
+                        eng.stopAll()
+                        check(eng.playing.value.isEmpty()) { "sting stopped with all" }
+                    } finally {
+                        eng.voiceFactoryOverride = null
+                        eng.shutdown()
+                    }
                 }
             }
 

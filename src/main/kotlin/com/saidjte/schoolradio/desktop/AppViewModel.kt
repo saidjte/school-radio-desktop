@@ -4,6 +4,7 @@ import com.saidjte.schoolradio.desktop.audio.BundledJingles
 import com.saidjte.schoolradio.desktop.audio.DuckBus
 import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.MicLiveEngine
+import com.saidjte.schoolradio.desktop.audio.MixBus
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
 import com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS
@@ -18,6 +19,7 @@ import com.saidjte.schoolradio.desktop.youtube.YouTubeJson
 import com.saidjte.schoolradio.desktop.youtube.YtDlpLocator
 import com.saidjte.schoolradio.desktop.data.AecState
 import com.saidjte.schoolradio.desktop.data.Backup
+import com.saidjte.schoolradio.desktop.data.CrossfadeLogic
 import com.saidjte.schoolradio.desktop.data.DevicesJson
 import com.saidjte.schoolradio.desktop.data.ExecutionsStore
 import com.saidjte.schoolradio.desktop.data.FireStatus
@@ -42,6 +44,7 @@ import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.StudioLayout
 import com.saidjte.schoolradio.desktop.data.StudioLayoutLogic
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
+import com.saidjte.schoolradio.desktop.data.SegmentTimerLogic
 import com.saidjte.schoolradio.desktop.data.ScriptSection
 import com.saidjte.schoolradio.desktop.data.ScriptStore
 import com.saidjte.schoolradio.desktop.data.ScriptTemplate
@@ -283,6 +286,67 @@ class AppViewModel {
     /** حفظ أبعاد الحيزات بعد إفلات الفاصل — تعود كما ضبطها المذيع عند الإقلاع. */
     fun saveLayout(l: StudioLayout) {
         settingsStore.setLayout(StudioLayoutLogic.toJson(l))
+    }
+
+    // ================= الكروس فيد بين المقاطع (v0.31.0) =================
+
+    private val _crossfadeEnabled = MutableStateFlow(settingsStore.crossfade().enabled ?: true)
+    val crossfadeEnabled: StateFlow<Boolean> = _crossfadeEnabled.asStateFlow()
+
+    private val _crossfadeMs = MutableStateFlow(settingsStore.crossfade().ms ?: CrossfadeLogic.DEFAULT_MS)
+    val crossfadeMs: StateFlow<Long> = _crossfadeMs.asStateFlow()
+
+    /** تفعيل/تعطيل الكروس فيد — يسري على التبديل التالي فورًا ويُحفظ. */
+    fun setCrossfadeEnabled(on: Boolean) {
+        _crossfadeEnabled.value = on
+        settingsStore.setCrossfade(on, _crossfadeMs.value)
+        pushCrossfadeToEngine()
+    }
+
+    /** نافذة الكروس فيد (500ms..10s) — تسري فورًا وتُحفظ. */
+    fun setCrossfadeMs(ms: Long) {
+        _crossfadeMs.value = CrossfadeLogic.clampMs(ms)
+        settingsStore.setCrossfade(_crossfadeEnabled.value, _crossfadeMs.value)
+        pushCrossfadeToEngine()
+    }
+
+    private fun pushCrossfadeToEngine() {
+        player.crossfadeMs = if (_crossfadeEnabled.value) _crossfadeMs.value else 0L
+    }
+
+    /** هل التبديل الحالي مؤهل لكروس فيد؟ (مفعّل + تشغيل فعلي جارٍ + ملف مختلف) */
+    private fun wantCrossfadeTo(target: File): Boolean =
+        _crossfadeEnabled.value && player.hasTrack.value && player.isPlaying.value &&
+                !player.isPaused.value && player.currentFile.value != target
+
+    /** طلب «التالي» من المحرك لحظة اقتراب النهاية — بلا أثر جانبي، والمؤشر لاحقًا عند التأكيد. */
+    @Volatile private var pendingCrossfadeIndex = -1
+
+    private fun wireCrossfade() {
+        player.onCrossfadeNext = {
+            val list = _playlist.value
+            if (list.isEmpty()) null
+            else {
+                val n = PlaylistMath.nextIndex(
+                    list.size, _currentIndex.value,
+                    _repeatMode.value, _shuffle.value, true, shuffleRandom
+                )
+                if (n < 0 || n == _currentIndex.value) null
+                else {
+                    pendingCrossfadeIndex = n
+                    list[n].file
+                }
+            }
+        }
+        player.onCrossfadeCommitted = { f ->
+            val idx = _playlist.value.indexOfFirst { it.file == f }
+            if (idx >= 0) {
+                _currentIndex.value = idx
+                _playingFromLibrary.value = false
+                playlistStore.setIndex(_activePlaylistId.value, idx)
+            }
+            consecutiveFailures = 0
+        }
     }
 
     // ================= وحدة المزج الإذاعية =================
@@ -581,6 +645,102 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         weeklyStore.touch(now)
     }
 
+    // ================= تسجيل مزيج الحصة (v0.31.0) =================
+    // مايك + موسيقى + جينلات في ملف WAV واحد — نفس عقد التوقيع والمكتبة
+
+    val mixRecording: StateFlow<Boolean> get() = MixBus.recording
+    val mixDurationMs: StateFlow<Long> get() = MixBus.durationMs
+    val mixLevel: StateFlow<Float> get() = MixBus.level
+
+    private val _mixError = MutableStateFlow<String?>(null)
+    val mixError: StateFlow<String?> = _mixError.asStateFlow()
+
+    /** بدء تسجيل المزيج إلى ملف مؤرّخ في مجلد التسجيلات. */
+    fun startMixRecording(): Boolean {
+        if (MixBus.recording.value) return false
+        val f = RecordingsScanner.newRecordingFile(_recordingsDir.value, prefix = "مزيج-الحصة", extension = "wav")
+        val ok = MixBus.start(f)
+        _mixError.value = if (ok) null else (MixBus.error.value ?: "تعذّر بدء تسجيل المزيج")
+        return ok
+    }
+
+    /** إيقاف التسجيل وحفظ الملف وتوقيعه بالمُسجّل وتحديث المكتبة. */
+    fun stopMixRecording() {
+        if (!MixBus.recording.value) return
+        val target = MixBus.targetFile
+        val dur = MixBus.stop()
+        if (target != null && dur > 0L) {
+            val u = _currentUser.value
+            MixBus.sidecarMeta(target, dur, u?.name ?: "مستخدم", (u?.role ?: Role.STUDENT).labelAr)
+        }
+        _mixError.value = null
+        refreshRecordings()
+    }
+
+    // ================= مؤقت الفاصل الآلي (v0.31.0) =================
+
+    private val _timerAutoAdvance = MutableStateFlow(settingsStore.segmentTimer().autoAdvance ?: true)
+    val timerAutoAdvance: StateFlow<Boolean> = _timerAutoAdvance.asStateFlow()
+
+    private val _timerSting = MutableStateFlow(settingsStore.segmentTimer().sting ?: true)
+    val timerSting: StateFlow<Boolean> = _timerSting.asStateFlow()
+
+    private val _timerWarnSeconds = MutableStateFlow(
+        settingsStore.segmentTimer().warnSeconds ?: SegmentTimerLogic.DEFAULT_WARN_SECONDS.toInt()
+    )
+    val timerWarnSeconds: StateFlow<Int> = _timerWarnSeconds.asStateFlow()
+
+    /** المتبقي لفقرة الحلقة الجارية (null = بلا زمن مخطط أو الحلقة موقوفة). */
+    private val _runRemainingMs = MutableStateFlow<Long?>(null)
+    val runRemainingMs: StateFlow<Long?> = _runRemainingMs.asStateFlow()
+
+    /** داخل نافذة التحذير (آخر ثواني التحذير قبل الإطلاق). */
+    private val _runWarn = MutableStateFlow(false)
+    val runWarn: StateFlow<Boolean> = _runWarn.asStateFlow()
+
+    @Volatile private var timerFiredForItem = false
+
+    fun setTimerAutoAdvance(on: Boolean) {
+        _timerAutoAdvance.value = on
+        persistSegmentTimer()
+    }
+
+    fun setTimerSting(on: Boolean) {
+        _timerSting.value = on
+        persistSegmentTimer()
+    }
+
+    private fun persistSegmentTimer() {
+        settingsStore.setSegmentTimer(_timerAutoAdvance.value, _timerSting.value, _timerWarnSeconds.value)
+    }
+
+    /** نبضة المؤقت: قرار حتمي من المنطق النقي ثم أفعاله (جينل الفاصل + تقدم آلي). */
+    private fun tickSegmentTimer() {
+        if (!_runActive.value) return
+        val item = _schedule.value.getOrNull(_runCurrentIndex.value)
+        if (item == null || item.plannedSeconds <= 0L) {
+            _runRemainingMs.value = null
+            _runWarn.value = false
+            return
+        }
+        val d = SegmentTimerLogic.decide(
+            _runElapsedMs.value, item.plannedSeconds, _timerWarnSeconds.value.toLong()
+        )
+        _runRemainingMs.value = d.remainingMs
+        _runWarn.value = d.warn && !d.fire
+        if (d.fire && !timerFiredForItem) {
+            timerFiredForItem = true
+            if (_timerSting.value) playIntervalSting()
+            if (_timerAutoAdvance.value) finishCurrentItem()
+        }
+    }
+
+    /** صوت الفاصل: المدمج «مقدمة فقرة» المستخرج مع جدار الجينغل — إطلاق خارج الشبكة. */
+    private fun playIntervalSting() {
+        val f = File(AppViewModel.dataDir(), "jingles/intro_sting.mp3")
+        jingles.sting(f)
+    }
+
     // ================= التشغيل الحي للحلقة =================
 
     private val runScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -625,6 +785,8 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         _runActive.value = false
         _runCurrentIndex.value = -1
         _runElapsedMs.value = 0L
+        _runRemainingMs.value = null
+        _runWarn.value = false
         tickerJob?.cancel()
         tickerJob = null
     }
@@ -632,12 +794,16 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     private fun beginItem() {
         itemStartedAtNanos = System.nanoTime()
         _runElapsedMs.value = 0L
+        timerFiredForItem = false
+        _runRemainingMs.value = null
+        _runWarn.value = false
         followScriptForCurrent()
         tickerJob?.cancel()
         tickerJob = runScope.launch {
             while (true) {
                 delay(200)
                 _runElapsedMs.value = (System.nanoTime() - itemStartedAtNanos) / 1_000_000L
+                tickSegmentTimer()
             }
         }
     }
@@ -668,11 +834,11 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         }
     }
 
-    /** تشغيل الملف المرتبط بفقرة الجدولة (موسيقى/تسجيل). */
+    /** تشغيل الملف المرتبط بفقرة الجدولة (موسيقى/تسجيل) — مع كروس فيد إن كان شيء يشتغل. */
     fun runPlayMedia(item: ScheduleItem) {
         val p = item.mediaPath ?: return
         val f = File(p)
-        if (f.isFile) player.play(f)
+        if (f.isFile) player.play(f, wantCrossfadeTo(f))
     }
 
     // ================= قوائم التشغيل المسماة الدائمة =================
@@ -819,7 +985,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         _playingFromLibrary.value = false
         playlistStore.setIndex(_activePlaylistId.value, index)
         consecutiveFailures = 0
-        player.play(list[index].file)
+        player.play(list[index].file, wantCrossfadeTo(list[index].file))
     }
 
     /** إزالة مقطع واحد من القائمة الجارية — إزالة الجاري يوقف التشغيل. */
@@ -914,7 +1080,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         }
         consecutiveFailures = 0
         _playingFromLibrary.value = true
-        player.play(f)
+        player.play(f, wantCrossfadeTo(f))
     }
 
     /** إدراج مقطع من المكتبة «التالي» في القائمة الجارية — بدون مقاطعة الجاري. */
@@ -1237,6 +1403,9 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     init {
         player.onEnded = { next(auto = true) }
         player.onPlayFailed = { skipCorrupt() }
+        // الكروس فيد: الإعدادات المحفوظة إلى المحرك + بوابة «التالي/التأكيد»
+        pushCrossfadeToEngine()
+        wireCrossfade()
         // جدار الجينغل: استخراج المدمجة واسترجاع المواضع والمستوى المحفوظ
         loadJingleWall()
         // وحدة المزج: الحالة المحفوظة تُدفع إلى القنوات عند الإقلاع

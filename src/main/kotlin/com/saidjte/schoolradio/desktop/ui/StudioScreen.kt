@@ -56,6 +56,7 @@ import com.saidjte.schoolradio.desktop.Tab
 import com.saidjte.schoolradio.desktop.audio.MicState
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
+import com.saidjte.schoolradio.desktop.data.SegmentTimerLogic
 import com.saidjte.schoolradio.desktop.data.ScriptSection
 import com.saidjte.schoolradio.desktop.data.ScriptStats
 import com.saidjte.schoolradio.desktop.data.SegmentStatus
@@ -338,11 +339,12 @@ private fun StudioTopBar(vm: AppViewModel) {
     val schoolName by vm.schoolName.collectAsState()
     val micState by vm.mic.state.collectAsState()
     val recording by vm.mic.recording.collectAsState()
+    val mixRec by vm.mixRecording.collectAsState()
     val playing by vm.player.isPlaying.collectAsState()
     val paused by vm.player.isPaused.collectAsState()
     val onAir = StudioLogic.status(
         micLive = micState == MicState.LIVE,
-        recording = recording,
+        recording = recording || mixRec,
         musicPlaying = playing && !paused
     ).onAir
     val sc = LocalStudioColors.current
@@ -379,9 +381,9 @@ private fun StudioTopBar(vm: AppViewModel) {
 
             // مؤشر الهواء الموحد بنبض حي
             OnAirPill(onAir = onAir)
-            if (recording) {
+            if (recording || mixRec) {
                 Text(
-                    "تسجيل جارٍ",
+                    if (recording && mixRec) "تسجيل جارٍ + مزيج" else "تسجيل جارٍ",
                     style = MaterialTheme.typography.labelLarge,
                     color = sc.recordingAccent,
                     fontWeight = FontWeight.Bold
@@ -445,6 +447,12 @@ private fun StudioSchedulePanel(vm: AppViewModel, modifier: Modifier = Modifier)
     val statuses = remember(runIndex, schedule.size) {
         ScheduleMath.statuses(runIndex, schedule.size)
     }
+    // مؤقت الفاصل الآلي (v0.31.0)
+    val timerAuto by vm.timerAutoAdvance.collectAsState()
+    val timerStingOn by vm.timerSting.collectAsState()
+    val runRemaining by vm.runRemainingMs.collectAsState()
+    val runWarn by vm.runWarn.collectAsState()
+    val sc = LocalStudioColors.current
 
     Column(
         modifier = modifier.fillMaxHeight(),
@@ -456,6 +464,29 @@ private fun StudioSchedulePanel(vm: AppViewModel, modifier: Modifier = Modifier)
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+
+        // إعدادات المؤقت الآلي: تقدم آلي عند انتهاء الزمن + جينل فاصل عند التحول —
+        // تُضبط قبل الهواء وتُحفظ بين الجلسات (v0.31.0)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "المؤقت الآلي",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.weight(1f))
+            Switch(checked = timerAuto, onCheckedChange = { vm.setTimerAutoAdvance(it) })
+            Text("تقدم آلي", style = MaterialTheme.typography.bodySmall)
+            Switch(checked = timerStingOn, onCheckedChange = { vm.setTimerSting(it) })
+            Text("جينل فاصل", style = MaterialTheme.typography.bodySmall)
         }
 
         // لوحة التحكم الحية للحلقة
@@ -510,6 +541,23 @@ private fun StudioSchedulePanel(vm: AppViewModel, modifier: Modifier = Modifier)
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             }
                         )
+                        // المؤقت الآلي (v0.31.0): المتبقي للإطلاق بلون تحذيري قرب النهاية
+                        val rem = runRemaining
+                        if (rem != null) {
+                            val d = SegmentTimerLogic.decide(
+                                runElapsedMs, c.plannedSeconds, vm.timerWarnSeconds.value.toLong()
+                            )
+                            Text(
+                                "المتبقي للفاصل: ${SegmentTimerLogic.remainingLabel(d)}",
+                                style = MaterialTheme.typography.bodyMedium.numeric(),
+                                fontWeight = FontWeight.Bold,
+                                color = when {
+                                    d.fire -> MaterialTheme.colorScheme.error
+                                    runWarn -> sc.warn
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
                     } else {
                         Text(
                             "زمن الفقرة: ${formatMs(runElapsedMs)}",
@@ -834,6 +882,8 @@ private fun StudioBroadcastPanel(
             modifier = Modifier.fillMaxWidth().weight(1f - micFrac),
             expandPane = true
         )
+        // تسجيل مزيج الحصة (v0.31.0): مايك + موسيقى + جينلات في ملف واحد
+        MixRecorderCard(vm)
         MixerLinkCard(vm)
     }
 }
@@ -907,5 +957,74 @@ private fun StudioRecordingsCard(vm: AppViewModel, modifier: Modifier = Modifier
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+    }
+}
+
+// ================= تسجيل مزيج الحصة (v0.31.0) =================
+
+/**
+ * بطاقة تسجيل مزيج الحصة («تسجيل مزيج الحصة كاملًا — مايك + موسيقى في ملف
+ * واحد»): زر واحد يشغّل ناقل المزيج فيكتب كل ما يخرج على الهواء — موسيقى
+ * ما بعد قناة المزج، وصوت المذيع بعد السلسلة الكاملة، وجينلات الجدار
+ * بمستواها — في ملف WAV واحد داخل مجلد التسجيلات، يظهر تلقائيًا في
+ * مكتبة التسجيلات موقّعًا باسم المُسجِّل. مؤقت حي + مستوى المكتوب فعلاً.
+ */
+@Composable
+private fun MixRecorderCard(vm: AppViewModel, modifier: Modifier = Modifier) {
+    val recording by vm.mixRecording.collectAsState()
+    val durationMs by vm.mixDurationMs.collectAsState()
+    val level by vm.mixLevel.collectAsState()
+    val error by vm.mixError.collectAsState()
+    val sc = LocalStudioColors.current
+
+    StudioCard(modifier = modifier.fillMaxWidth()) {
+        SectionHeader(title = "مزيج الحصة") {
+            Text(
+                "مايك + موسيقى + جينلات",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            if (recording) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "جارٍ التسجيل · ${formatMs(durationMs)}",
+                        style = MaterialTheme.typography.titleMedium.numeric(),
+                        fontWeight = FontWeight.Bold,
+                        color = sc.recordingAccent
+                    )
+                    LinearProgressIndicator(
+                        progress = { level.coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        color = sc.recordingAccent,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                }
+                SecondaryAction(text = "إيقاف وحفظ", onClick = { vm.stopMixRecording() })
+            } else {
+                Text(
+                    "يُسجّل كل ما يُسمع على الهواء في ملف واحد",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                PrimaryAction(text = "بدء التسجيل", onClick = { vm.startMixRecording() })
+            }
+        }
+        error?.let { msg ->
+            Text(
+                msg,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
     }
 }

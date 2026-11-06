@@ -230,6 +230,9 @@ fun MusicTab(vm: AppViewModel) {
                 )
             }
 
+            // كروس فيد بين المقاطع (v0.31.0): مفتاح + نوافذ جاهزة + شارة انتقال حية
+            CrossfadeControlRow(vm)
+
             // شريط الخطأ — لا فشل صامت أبدًا
             playerError?.let { msg ->
                 Row(
@@ -958,4 +961,51 @@ private fun NameDialog(
             TextButton(onClick = onDismiss) { Text("إلغاء") }
         }
     )
+}
+
+// ================= كروس فيد بين المقاطع (v0.31.0) =================
+
+/**
+ * صف التحكم في الكروس فيد: مفتاح التفعيل + رقائق النوافذ الجاهزة (1/3/5/8 ث)
+ * + شارة «انتقال…» الحية لحظة تمديد حقيقي — كل تغيير يسري فورًا ويُحفظ.
+ */
+@Composable
+private fun CrossfadeControlRow(vm: AppViewModel) {
+    val enabled by vm.crossfadeEnabled.collectAsState()
+    val ms by vm.crossfadeMs.collectAsState()
+    val xfading by vm.player.xfading.collectAsState()
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            "كروس فيد",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Switch(checked = enabled, onCheckedChange = { vm.setCrossfadeEnabled(it) })
+        if (enabled) {
+            listOf(1000L to "1 ث", 3000L to "3 ث", 5000L to "5 ث", 8000L to "8 ث").forEach { (value, label) ->
+                FilterChip(
+                    selected = ms == value,
+                    onClick = { vm.setCrossfadeMs(value) },
+                    label = { Text(label) }
+                )
+            }
+        }
+        if (xfading) {
+            Text(
+                "انتقال…",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            )
+        }
+    }
 }
