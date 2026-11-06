@@ -143,6 +143,9 @@ class MusicPlayerEngineSeekTest {
             await("position ticking") { eng.positionMs.value > 0L }
             eng.pause()
             await("paused") { eng.isPaused.value }
+            // v0.29.0: الخروج الناعم يؤخر تجميد القارئ ~350ms — ننتظر اكتماله
+            // قبل قياس الثبات (عقد الثبات نفسه: الموضع يتجمد في الإيقاف المؤقت)
+            await("worker paused after fade") { fake.pauseCalls > 0 }
             // نُمه قليلًا كتهبط الكتلة قيد التنفيذ قبل تجميد القيمة المرجعية
             Thread.sleep(150)
             val frozen = eng.positionMs.value

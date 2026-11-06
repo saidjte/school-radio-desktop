@@ -346,6 +346,8 @@ private fun StudioTopBar(vm: AppViewModel) {
         musicPlaying = playing && !paused
     ).onAir
     val sc = LocalStudioColors.current
+    // دليل الاختصارات (v0.29.0): زر في الشريط العلوي يفتح البروتوكول كاملًا
+    var showShortcuts by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -398,6 +400,8 @@ private fun StudioTopBar(vm: AppViewModel) {
                 text = "جدار الجينغل",
                 onClick = { vm.jingleWallOpen.value = true }
             )
+            // الاختصارات (v0.29.0): البروتوكول الإذاعي السريع موثّق في التطبيق نفسه
+            SecondaryAction(text = "الاختصارات", onClick = { showShortcuts = true })
             SecondaryAction(text = "الأقسام التفصيلية", onClick = { vm.selectTab(Tab.LIVE) })
             Text(
                 "v$APP_VERSION",
@@ -416,6 +420,9 @@ private fun StudioTopBar(vm: AppViewModel) {
                     )
                 )
         )
+    }
+    if (showShortcuts) {
+        ShortcutsDialog(onDismiss = { showShortcuts = false })
     }
 }
 

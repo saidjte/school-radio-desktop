@@ -67,7 +67,12 @@ fun JingleWallWindow(vm: AppViewModel, onClose: () -> Unit) {
         onCloseRequest = onClose,
         title = "جدار الجينغل — إذاعة مدرسية احترافي v$APP_VERSION",
         state = rememberWindowState(width = 820.dp, height = 620.dp),
-        icon = windowIcon?.let { BitmapPainter(it) }
+        icon = windowIcon?.let { BitmapPainter(it) },
+        // الاختصارات من نافذة الجدار أيضًا (v0.29.0): 1-9 ومسافة تعمل ما دامت
+        // النافذة مركّزة — بلا حقول نصية هنا فلا حارس تحرير
+        onPreviewKeyEvent = { ev ->
+            com.saidjte.schoolradio.desktop.ui.handleGlobalShortcut(vm, ev, guardTextEditing = false)
+        }
     ) {
         AppTheme {
             CompositionLocalProviderRtl {

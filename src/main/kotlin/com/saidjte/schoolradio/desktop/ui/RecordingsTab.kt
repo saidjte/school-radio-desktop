@@ -164,6 +164,7 @@ fun RecordingsTab(vm: AppViewModel) {
                 OutlinedTextField(
                     value = renameText,
                     onValueChange = { renameText = it },
+                    modifier = Modifier.observesTextEditing(),
                     singleLine = true
                 )
             },

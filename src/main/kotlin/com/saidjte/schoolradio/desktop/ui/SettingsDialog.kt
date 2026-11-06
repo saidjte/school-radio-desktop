@@ -82,7 +82,7 @@ fun SettingsDialog(vm: AppViewModel, onDismiss: () -> Unit) {
                         placeholder = { Text("مثال: مدرسة النور الثانوية") },
                         singleLine = true,
                         enabled = canManage,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).observesTextEditing()
                     )
                     TextButton(
                         onClick = { vm.setSchoolName(schoolText) },
@@ -177,7 +177,7 @@ fun SettingsDialog(vm: AppViewModel, onDismiss: () -> Unit) {
                         placeholder = { Text("اسم المستخدم الجديد") },
                         singleLine = true,
                         enabled = canAdminister || users.isEmpty(),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).observesTextEditing()
                     )
                     Box {
                         TextButton(

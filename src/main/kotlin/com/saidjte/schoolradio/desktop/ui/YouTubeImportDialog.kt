@@ -97,7 +97,7 @@ fun YouTubeImportDialog(
                         placeholder = { Text("رابط مقطع يوتيوب أو كلمات للبحث…") },
                         singleLine = true,
                         enabled = !busy,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).observesTextEditing()
                     )
                     if (st.phase == YouTubeImportService.Phase.RESOLVING) {
                         SecondaryAction(text = "…", enabled = false, onClick = { })

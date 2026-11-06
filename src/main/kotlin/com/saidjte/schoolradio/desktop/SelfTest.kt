@@ -26,7 +26,11 @@ import com.saidjte.schoolradio.desktop.data.ScriptSource
 import com.saidjte.schoolradio.desktop.data.SettingsStore
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 import com.saidjte.schoolradio.desktop.data.TeleprompterNames
+import androidx.compose.ui.input.key.Key
 import com.saidjte.schoolradio.desktop.ui.GuiTokens
+import com.saidjte.schoolradio.desktop.ui.ShortcutAction
+import com.saidjte.schoolradio.desktop.ui.TextEditing
+import com.saidjte.schoolradio.desktop.ui.resolveShortcut
 import com.saidjte.schoolradio.desktop.ui.typographyWithFamilies
 import com.saidjte.schoolradio.desktop.youtube.AudioTranscoder
 import com.saidjte.schoolradio.desktop.youtube.YtDlpLocator
@@ -943,6 +947,109 @@ object SelfTest {
                 } finally {
                     eng.voiceFactoryOverride = null
                     eng.shutdown()
+                }
+            }
+
+            // v0.29.0: اختصارات لوحة المفاتيح — الحلّ النقي وحارس الكتابة
+            run {
+                fun r(k: Key, ctrl: Boolean = false, alt: Boolean = false, meta: Boolean = false) =
+                    resolveShortcut(k, ctrl, alt, meta)
+                check(r(Key.Spacebar) == ShortcutAction.PlayPauseMusic) { "space action" }
+                check(r(Key.One) == ShortcutAction.FireJingle(1)) { "slot 1" }
+                check(r(Key.Nine) == ShortcutAction.FireJingle(9)) { "slot 9" }
+                check(r(Key.DirectionLeft) == ShortcutAction.SeekBack) { "seek back" }
+                check(r(Key.DirectionRight) == ShortcutAction.SeekForward) { "seek fwd" }
+                check(r(Key.N) == ShortcutAction.NextTrack) { "next" }
+                check(r(Key.P) == ShortcutAction.PreviousTrack) { "prev" }
+                check(r(Key.M) == ShortcutAction.ToggleMute) { "mute" }
+                check(r(Key.Spacebar, ctrl = true) == null) { "ctrl passes through" }
+                check(r(Key.M, alt = true) == null) { "alt passes through" }
+                check(r(Key.A) == null) { "unbound key silent" }
+                // حارس الكتابة: عدّاد ذري صامد أمام ترتيب أحداث البؤرة المتقلب
+                val te = TextEditing
+                te.reset()
+                check(!te.active) { "editing idle" }
+                te.enter(); te.enter(); te.exit()
+                check(te.active) { "guard holds while one field focused" }
+                te.exit()
+                check(!te.active) { "guard released" }
+                te.exit()
+                check(!te.active) { "counter clamped at zero" }
+                te.reset()
+            }
+
+            // v0.29.0: التلاشي الناعم — غلاف ساعة الحائط وعقد الإيقاف/الاستئناف
+            run {
+                val eng = MusicPlayerEngine()
+                class AudioProbe : TrackReader {
+                    @Volatile var current = 0L
+                    @Volatile var pauseCalls = 0
+                    @Volatile var resumeCalls = 0
+                    override val durationMs = 600_000L
+                    override val currentMs get() = current
+                    override fun seek(ms: Long) { current = ms.coerceIn(0L, durationMs) }
+                    override fun pause() { pauseCalls++ }
+                    override fun resume() { resumeCalls++ }
+                    override fun applyVolume(volume: Float) { }
+                    override fun readChunk(): Boolean {
+                        val n = 2048
+                        val s = ShortArray(n)
+                        for (i in 0 until n) {
+                            s[i] = (sin(2.0 * PI * 440.0 * (current * 24L + i) / 24_000.0) * 12000).toInt().toShort()
+                        }
+                        eng.channel.processShorts(s, n)
+                        current += 21L
+                        Thread.sleep(1)
+                        return true
+                    }
+                    override fun close() { }
+                }
+                fun awaitF(cond: () -> Boolean, msg: String) {
+                    val dl = System.currentTimeMillis() + 5_000
+                    while (System.currentTimeMillis() < dl) { if (cond()) return; Thread.sleep(10) }
+                    check(false) { msg }
+                }
+                // 1) رياضيات الغلاف على القناة مباشرة
+                val ch = eng.channel
+                check(ch.currentEnv() == 1f) { "env idle full" }
+                ch.beginFade(0f, 100)
+                Thread.sleep(40)
+                val mid = ch.currentEnv()
+                check(mid in 0.01f..0.95f) { "fade mid=$mid" }
+                Thread.sleep(120)
+                check(ch.currentEnv() == 0f) { "fade reaches silence" }
+                ch.beginFade(1f, 80)
+                Thread.sleep(140)
+                check(ch.currentEnv() == 1f) { "fade back full" }
+                ch.beginFade(1f, 0)
+                check(ch.currentEnv() == 1f) { "instant fade" }
+                ch.resetEnv()
+                check(ch.currentEnv() == 1f) { "reset env" }
+                // 2) عقد المحرك: الإيقاف ينتظر الخروج الناعم ثم يجمد، والاستئناف يصعد ناعمًا
+                val probe = AudioProbe()
+                eng.trackReaderOverride = { probe }
+                try {
+                    eng.play(File("selftest-fade/probe.wav"))
+                    awaitF({ eng.hasTrack.value && eng.level.value > 0.03f }, "audible playing")
+                    val t0 = System.currentTimeMillis()
+                    eng.pause()
+                    awaitF({ probe.pauseCalls == 1 }, "worker paused after fade")
+                    val elapsed = System.currentTimeMillis() - t0
+                    check(elapsed >= 250L) { "pause waits for fade: $elapsed" }
+                    check(eng.channel.currentEnv() == 0f) { "env silent after pause" }
+                    Thread.sleep(120)
+                    val frozen = eng.positionMs.value
+                    Thread.sleep(120)
+                    check(eng.positionMs.value == frozen) { "frozen after fade" }
+                    eng.resume()
+                    awaitF({ probe.resumeCalls == 1 }, "resumed")
+                    awaitF({ eng.level.value > 0.03f }, "audible after fade-in")
+                    Thread.sleep(400)
+                    check(eng.channel.currentEnv() == 1f) { "env full after fade-in" }
+                } finally {
+                    eng.trackReaderOverride = null
+                    eng.stop()
+                    eng.awaitIdle()
                 }
             }
 

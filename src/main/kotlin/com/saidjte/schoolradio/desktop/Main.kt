@@ -63,6 +63,7 @@ import com.saidjte.schoolradio.desktop.ui.SettingsDialog
 import com.saidjte.schoolradio.desktop.ui.StudioScreen
 import com.saidjte.schoolradio.desktop.ui.JingleWallWindow
 import com.saidjte.schoolradio.desktop.audio.FakeToneVoice
+import com.saidjte.schoolradio.desktop.audio.FakeTrackVoice
 import com.saidjte.schoolradio.desktop.audio.MicState
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 
@@ -86,6 +87,15 @@ fun main(args: Array<String>) {
             // 240×25ms ≈ 6 ثوانٍ — تبقى حالة «جارٍ» مرئية عبر لقطات الفحص الآلي
             LaunchedEffect(Unit) { vm.jingles.voiceFactoryOverride = { FakeToneVoice(chunks = 240, chunkMs = 25) } }
         }
+        // خط حقن الأتمتة (v0.29.0): مقطع موسيقى وهمي بلا عتاد صوت لفحص الاختصارات
+        // بصريًا (مسافة = تشغيل/إيقاف، الأسهم = سعي). بلا العلم يبقى null فالإنتاج سليم
+        if (args.contains("--fake-track")) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(800)
+                vm.player.trackReaderOverride = { FakeTrackVoice() }
+                vm.player.play(java.io.File("automation/fake-track.mp3"))
+            }
+        }
         // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
         val windowIcon = remember {
             Thread.currentThread().contextClassLoader
@@ -97,7 +107,12 @@ fun main(args: Array<String>) {
             onCloseRequest = { exitApplication() },
             title = "إذاعة مدرسية احترافي — نسخة الحاسوب v$APP_VERSION",
             state = rememberWindowState(placement = WindowPlacement.Maximized, width = 1280.dp, height = 800.dp),
-            icon = windowIcon?.let { BitmapPainter(it) }
+            icon = windowIcon?.let { BitmapPainter(it) },
+            // اختصارات لوحة المفاتيح (v0.29.0): على مستوى النافذة قبل المحتوى —
+            // وحارس الكتابة يُهمّلها ما دام حقل نصي في البؤرة فالحقول تكتب حرّة
+            onPreviewKeyEvent = { ev ->
+                com.saidjte.schoolradio.desktop.ui.handleGlobalShortcut(vm, ev, guardTextEditing = true)
+            }
         ) {
             // حد أدنى لحجم النافذة يحفظ تخطيط الاستوديو من الانهيار
             LaunchedEffect(Unit) { window.minimumSize = java.awt.Dimension(1024, 640) }

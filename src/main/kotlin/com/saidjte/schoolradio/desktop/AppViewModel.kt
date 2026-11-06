@@ -126,6 +126,22 @@ class AppViewModel {
 
     fun stopAllJingles() = jingles.stopAll()
 
+    /**
+     * تنفيذ اختصار لوحة المفاتيح (v0.29.0) — البوابة الوحيدة من معالج النافذة
+     * إلى أفعال الاستوديو: كل الاختصارات تمرّ من هنا فلا تكرار ولا تسريب.
+     */
+    fun applyShortcut(a: com.saidjte.schoolradio.desktop.ui.ShortcutAction) {
+        when (a) {
+            com.saidjte.schoolradio.desktop.ui.ShortcutAction.PlayPauseMusic -> player.toggle()
+            is com.saidjte.schoolradio.desktop.ui.ShortcutAction.FireJingle -> toggleJingle(a.slot - 1)
+            com.saidjte.schoolradio.desktop.ui.ShortcutAction.SeekBack -> player.seek(player.positionMs.value - 5_000L)
+            com.saidjte.schoolradio.desktop.ui.ShortcutAction.SeekForward -> player.seek(player.positionMs.value + 5_000L)
+            com.saidjte.schoolradio.desktop.ui.ShortcutAction.NextTrack -> next()
+            com.saidjte.schoolradio.desktop.ui.ShortcutAction.PreviousTrack -> previous()
+            com.saidjte.schoolradio.desktop.ui.ShortcutAction.ToggleMute -> setMusicMuted(!musicMuted.value)
+        }
+    }
+
     /** تعيين مقطع من اختيار المذيع على موضع — ملف صوتي قابل للفك فقط. */
     fun assignJingle(slot: Int, file: File): Boolean {
         if (slot !in 0 until JingleWallLogic.PAD_COUNT) return false

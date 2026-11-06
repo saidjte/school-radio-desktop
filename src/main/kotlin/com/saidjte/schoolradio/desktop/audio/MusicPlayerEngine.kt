@@ -57,6 +57,37 @@ class MusicChannel internal constructor() {
     private var monoBuf = FloatArray(4096)
     private val shorts = ShortArray(1 shl 15)
 
+    // غلاف التلاشٍ الناعم (v0.29.0): يُقيّم على ساعة الحائط لكل كتلة فمستقل
+    // عن حجم الكتلة ومعدل العينات، ويسري في مسار process فقط (القرّاء الحقيقيون)
+    @Volatile private var fadeFrom = 1f
+    @Volatile private var fadeTo = 1f
+    @Volatile private var fadeStartNanos = 0L
+    @Volatile private var fadeMs = 0L
+
+    /** بدء تلاشٍ من القيمة الحالية إلى [to] خلال [ms] ميلي ثانية (0 = فوري). */
+    internal fun beginFade(to: Float, ms: Long) {
+        fadeFrom = currentEnv()
+        fadeTo = to.coerceIn(0f, 1f)
+        fadeStartNanos = System.nanoTime()
+        fadeMs = ms.coerceAtLeast(0L)
+    }
+
+    /** إلغاء أي تلاشٍ والعودة الفورية للكسب الكامل — عند فتح مقطع جديد أو إعادة فتح المخرج. */
+    internal fun resetEnv() {
+        fadeFrom = 1f
+        fadeTo = 1f
+        fadeMs = 0L
+        fadeStartNanos = 0L
+    }
+
+    /** قيمة الغلاف الآن: 1 بلا تلاشٍ، وإلا استيفاء خطي من البداية إلى الهدف. */
+    internal fun currentEnv(): Float {
+        val ms = fadeMs
+        if (ms <= 0L) return fadeTo
+        val t = (System.nanoTime() - fadeStartNanos) / 1_000_000.0 / ms
+        return if (t >= 1.0) fadeTo else fadeFrom + (fadeTo - fadeFrom) * t.toFloat()
+    }
+
     /** مستوى الكتلة الأخير (منمّط 0..1) — يُستدعى من خيط التشغيل. */
     var onLevel: ((Float) -> Unit)? = null
 
@@ -80,9 +111,11 @@ class MusicChannel internal constructor() {
 
     private fun apply(target: ShortArray, count: Int) {
         if (count <= 0) return
-        // الخفض التلقائي: كسب الموسيقى يقرأ من ناقل الخفض قبل الفيدر والماستر
+        // الخفض التلقائي: كسب الموسيقى يقرأ من ناقل الخفض قبل الفيدر والماستر،
+        // وغلاف التلاشٍ الناعم يُضرب في الكل فتغطي النهاية الناعمة كل المسار
         val duck = if (DuckBus.enabled) DuckBus.musicGain.coerceIn(0f, 1f) else 1f
-        val gain = if (muted) 0f else fader * master * duck
+        val env = currentEnv()
+        val gain = env * if (muted) 0f else fader * master * duck
         val level = eq.process(target, count, gain)
         pushFarEnd(target, count)
         onLevel?.invoke(level)
@@ -594,6 +627,7 @@ class MusicPlayerEngine {
                         _isPlaying.value = true
                         _isPaused.value = false
                         reopenOutput = false // فُتح للتو بالمخرج الحالي — لا حاجة لإعادة
+                        channel.resetEnv() // مقطع جديد: كسب كامل فوري بلا تلاشٍ معلّق
                     } catch (t: Throwable) {
                         reader = null
                         _hasTrack.value = false
@@ -619,6 +653,7 @@ class MusicPlayerEngine {
                                 try { nr.seek(pos) } catch (_: Exception) { }
                             }
                             if (wasPaused) nr.pause()
+                            channel.resetEnv()
                             nr
                         } catch (t: Throwable) {
                             // الجهاز الجديد فاشل: نعود للسماعة الافتراضية
@@ -630,6 +665,7 @@ class MusicPlayerEngine {
                                     try { nr.seek(pos) } catch (_: Exception) { }
                                 }
                                 if (wasPaused) nr.pause()
+                                channel.resetEnv()
                                 nr
                             } catch (t2: Throwable) {
                                 _error.value = t2.message
@@ -657,14 +693,46 @@ class MusicPlayerEngine {
 
                 if (paused) {
                     if (!wasPaused) {
+                        // تلاشٍ ناعم للخروج قبل التجميد (v0.29.0): نكمل التفريغ على
+                        // ساعة الحائط مع نزول الغلاف في مسار process، وأي أمر أحدث
+                        // (سعي/تبديل/إيقاف) يجهض التلاشٍ فورًا فلا يتأخر الوبّ لأحد
+                        var endedDuringFade = false
+                        channel.beginFade(0f, FADE_OUT_MS)
+                        val deadline = System.nanoTime() + FADE_OUT_MS * 1_000_000L
+                        while (System.nanoTime() < deadline && !stopped && switchTo == null && seekRequest < 0) {
+                            val more = try {
+                                r.readChunk()
+                            } catch (t: Throwable) {
+                                _error.value = t.message
+                                false
+                            }
+                            if (more) {
+                                // حماية عقد السعي (v0.29.0): لا كتلة قيد التنفيذ تطغى
+                                // على العرض المتفائل حين طلب السعي حديثًا
+                                if (seekRequest < 0L) _positionMs.value = r.currentMs
+                            } else {
+                                endedDuringFade = true
+                                break
+                            }
+                        }
                         try { r.pause() } catch (_: Exception) { }
                         wasPaused = true
+                        if (endedDuringFade) {
+                            // انتهى المقطع أثناء التلاشٍ: عقد الانتهاء نفسه في المسار الرئيسي
+                            _isPlaying.value = false
+                            val cb = onEnded
+                            if (cb != null) cb()
+                            if (switchTo == null || stopped) break
+                            continue
+                        }
                     }
                     Thread.sleep(40)
                     continue
                 }
                 if (wasPaused) {
                     try { r.resume() } catch (_: Exception) { }
+                    // صعود ناعم عند الاستئناف (v0.29.0): الغلاف من حيث توقف إلى الكامل
+                    channel.beginFade(1f, FADE_IN_MS)
                     wasPaused = false
                 }
 
@@ -675,7 +743,8 @@ class MusicPlayerEngine {
                     false
                 }
                 if (more) {
-                    _positionMs.value = r.currentMs
+                    // الحماية نفسها في المسار الرئيسي: طلب سعي حديث يفوز على أي تحديث كتلة
+                    if (seekRequest < 0L) _positionMs.value = r.currentMs
                 } else {
                     _isPlaying.value = false
                     val cb = onEnded
@@ -706,6 +775,10 @@ class MusicPlayerEngine {
      * null دائمًا فلا يسري أثره إطلاقًا.
      */
     @Volatile internal var trackReaderOverride: ((File) -> TrackReader)? = null
+
+    /** مدتا التلاشٍ الناعم (v0.29.0): خروج 350ms عند الإيقاف المؤقت وصعود 300ms عند الاستئناف. */
+    private val FADE_OUT_MS = 350L
+    private val FADE_IN_MS = 300L
 
     private fun openReader(file: File): TrackReader {
         trackReaderOverride?.let { return it(file) }

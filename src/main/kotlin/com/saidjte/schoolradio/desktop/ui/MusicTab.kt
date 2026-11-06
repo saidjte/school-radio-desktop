@@ -451,7 +451,7 @@ private fun PlaylistPane(vm: AppViewModel) {
             onValueChange = { queueQuery = it },
             placeholder = { Text("بحث في مقاطع القائمة (عنوان أو تصنيف)…") },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().observesTextEditing()
         )
     }
 
@@ -698,7 +698,7 @@ private fun LibraryPane(vm: AppViewModel) {
         onValueChange = { vm.setLibraryQuery(it) },
         placeholder = { Text("بحث في المكتبة (عنوان أو تصنيف)…") },
         singleLine = true,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth().observesTextEditing()
     )
 
     // رقائق التصنيفات بعدد مقاطع كل تصنيف
@@ -859,6 +859,7 @@ private fun LibraryPane(vm: AppViewModel) {
                 OutlinedTextField(
                     value = newCategoryText,
                     onValueChange = { newCategoryText = it },
+                    modifier = Modifier.observesTextEditing(),
                     placeholder = { Text("اسم التصنيف") },
                     singleLine = true
                 )
@@ -945,6 +946,7 @@ private fun NameDialog(
             OutlinedTextField(
                 value = value,
                 onValueChange = onValueChange,
+                modifier = Modifier.observesTextEditing(),
                 placeholder = { Text(placeholder) },
                 singleLine = true
             )

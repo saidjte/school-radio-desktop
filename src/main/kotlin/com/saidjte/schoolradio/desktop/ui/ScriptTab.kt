@@ -349,7 +349,7 @@ private fun SectionEditorDialog(
                     onValueChange = { t = it },
                     label = { Text("عنوان الفقرة") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().observesTextEditing()
                 )
                 OutlinedTextField(
                     value = b,
@@ -357,7 +357,7 @@ private fun SectionEditorDialog(
                     label = { Text("نص الفقرة") },
                     minLines = 6,
                     maxLines = 14,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().observesTextEditing()
                 )
             }
         },

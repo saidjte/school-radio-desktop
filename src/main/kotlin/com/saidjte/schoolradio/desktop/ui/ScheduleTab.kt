@@ -126,7 +126,7 @@ fun ScheduleTab(vm: AppViewModel) {
                     onValueChange = { v -> if (v.length <= 5) startText = v },
                     placeholder = { Text(episodeStart?.let { ScheduleMath.clockOf(it) } ?: "08:15") },
                     singleLine = true,
-                    modifier = Modifier.width(120.dp)
+                    modifier = Modifier.width(120.dp).observesTextEditing()
                 )
                 SecondaryAction(
                     text = "تعيين",
@@ -469,7 +469,7 @@ private fun SegmentEditorDialog(
                     onValueChange = { t = it },
                     label = { Text("عنوان الفقرة") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().observesTextEditing()
                 )
                 Box {
                     SecondaryAction(text = "النوع: ${kind.label}", onClick = { kindMenu = true })
@@ -493,7 +493,7 @@ private fun SegmentEditorDialog(
                         label = { Text("دقائق") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).observesTextEditing()
                     )
                     OutlinedTextField(
                         value = seconds,
@@ -501,7 +501,7 @@ private fun SegmentEditorDialog(
                         label = { Text("ثوانٍ") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).observesTextEditing()
                     )
                 }
                 if (kind == SegmentKind.MUSIC || kind == SegmentKind.RECORDING) {
@@ -585,7 +585,7 @@ private fun SegmentEditorDialog(
                     onValueChange = { note = it },
                     label = { Text("ملاحظة (اختياري)") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().observesTextEditing()
                 )
             }
         },
@@ -816,7 +816,7 @@ private fun WeeklyEventDialog(vm: AppViewModel, onDismiss: () -> Unit) {
                     onValueChange = { title = it },
                     label = { Text("اسم الموعد") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().observesTextEditing()
                 )
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("اليوم:", style = MaterialTheme.typography.bodyMedium)
@@ -843,14 +843,14 @@ private fun WeeklyEventDialog(vm: AppViewModel, onDismiss: () -> Unit) {
                         value = hourText,
                         onValueChange = { v -> if (v.length <= 2) hourText = v.filter { it.isDigit() } },
                         singleLine = true,
-                        modifier = Modifier.width(70.dp)
+                        modifier = Modifier.width(70.dp).observesTextEditing()
                     )
                     Text(":", style = MaterialTheme.typography.titleMedium)
                     OutlinedTextField(
                         value = minuteText,
                         onValueChange = { v -> if (v.length <= 2) minuteText = v.filter { it.isDigit() } },
                         singleLine = true,
-                        modifier = Modifier.width(70.dp)
+                        modifier = Modifier.width(70.dp).observesTextEditing()
                     )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
