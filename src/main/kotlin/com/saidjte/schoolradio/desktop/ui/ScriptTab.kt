@@ -11,13 +11,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -39,8 +42,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.saidjte.schoolradio.desktop.AppViewModel
+import com.saidjte.schoolradio.desktop.data.ScriptPdfExporter
 import com.saidjte.schoolradio.desktop.data.ScriptSection
 import com.saidjte.schoolradio.desktop.data.ScriptStats
+import com.saidjte.schoolradio.desktop.data.ScriptTemplate
+import com.saidjte.schoolradio.desktop.data.ScriptTemplateCatalog
+import java.awt.Desktop
+import kotlin.concurrent.thread
 
 /**
  * سكريبت المذيع: تحرير فقرات النص (إضافة/تحرير/حذف/ترتيب) + لوحة قراءة
@@ -58,6 +66,13 @@ fun ScriptTab(vm: AppViewModel) {
     var fontSp by remember { mutableStateOf(30f) }
     var showOverlay by remember { mutableStateOf(false) }
     val readScroll = rememberScrollState()
+
+    // قوالب السكريبت وتصدير PDF (v0.30.0)
+    var showTemplates by remember { mutableStateOf(false) }
+    var replaceTarget by remember { mutableStateOf<ScriptTemplate?>(null) }
+    var exportBusy by remember { mutableStateOf(false) }
+    var exportDone by remember { mutableStateOf<ScriptPdfExporter.Result?>(null) }
+    var exportError by remember { mutableStateOf<String?>(null) }
 
     // عودة القراءة لقمة النص لحظة اختيار فقرة جديدة أو تبديل وضع «كامل»
     LaunchedEffect(selectedId, fullReading) {
@@ -84,11 +99,31 @@ fun ScriptTab(vm: AppViewModel) {
                     modifier = Modifier.weight(1f)
                 )
                 PrimaryAction(text = "فقرة جديدة", onClick = { showCreate = true })
+                // قوالب السكريبت (v0.30.0): هياكل برامج جاهزة تُولّد فقراتها بضغطة
+                SecondaryAction(text = "قوالب جاهزة", onClick = { showTemplates = true })
+                // تصدير PDF (v0.30.0): وثيقة A4 عربية جاهزة للطباعة والاعتماد الإداري
+                SecondaryAction(
+                    text = "تصدير PDF",
+                    enabled = script.isNotEmpty() && !exportBusy,
+                    onClick = {
+                        val f = FilePickers.pickPdfSave(ScriptPdfExporter.suggestedFileName()) ?: return@SecondaryAction
+                        exportBusy = true
+                        thread(name = "script-pdf-export") {
+                            try {
+                                exportDone = vm.exportScriptPdf(f)
+                            } catch (e: Exception) {
+                                exportError = e.message ?: "فشل إنشاء ملف PDF"
+                            } finally {
+                                exportBusy = false
+                            }
+                        }
+                    }
+                )
             }
 
             if (script.isEmpty()) {
                 Text(
-                    "المجموع: لا فقرات بعد — أضف أول فقرة لتبدأ كتابة سكريبت الحلقة.",
+                    "المجموع: لا فقرات بعد — أضف أول فقرة، أو ابدأ من «قوالب جاهزة» لتوليد سكريبت حلقة كامل بضغطة.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
@@ -284,6 +319,116 @@ fun ScriptTab(vm: AppViewModel) {
         ReadingOverlay(vm) { showOverlay = false }
     }
 
+    // ============ حوار قوالب السكريبت (v0.30.0) ============
+    if (showTemplates) {
+        AlertDialog(
+            onDismissRequest = { showTemplates = false },
+            title = { Text("قوالب السكريبت الجاهزة") },
+            text = {
+                LazyColumn(
+                    modifier = Modifier.height(440.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(ScriptTemplateCatalog.all, key = { it.id }) { t ->
+                        TemplateCard(
+                            template = t,
+                            onAppend = {
+                                vm.applyScriptTemplate(t, replaceExisting = false)
+                                showTemplates = false
+                            },
+                            onReplace = {
+                                showTemplates = false
+                                if (script.isEmpty()) {
+                                    vm.applyScriptTemplate(t, replaceExisting = true)
+                                } else {
+                                    replaceTarget = t
+                                }
+                            }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showTemplates = false }) { Text("إغلاق") }
+            }
+        )
+    }
+
+    // تأكيد الاستبدال: الفقرات الحالية كلها ستُحذف ولا تراجع بعدها
+    if (replaceTarget != null) {
+        val t = replaceTarget!!
+        AlertDialog(
+            onDismissRequest = { replaceTarget = null },
+            title = { Text("استبدال السكريبت الحالي؟") },
+            text = {
+                Text(
+                    "سيتم حذف الفقرات الحالية (${script.size}) وتوليد فقرات قالب «${t.name}» " +
+                            "(${t.sectionCount} فقرة) مكانها. هذا الإجراء لا تراجع بعده — " +
+                            "وإن أردت الاحتفاظ بالحالي فاختر «إلحاق» بدل الاستبدال."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.applyScriptTemplate(t, replaceExisting = true)
+                    replaceTarget = null
+                }) { Text("استبدال", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { replaceTarget = null }) { Text("إلغاء") }
+            }
+        )
+    }
+
+    // ============ حوارات تصدير PDF (v0.30.0) ============
+    if (exportBusy) {
+        AlertDialog(
+            onDismissRequest = { /* التوليد سريع ولا يُجهض — يكتمل ويُظهر النتيجة */ },
+            title = { Text("جارٍ إنشاء ملف PDF") },
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp)
+                    Text("تُنسّق الصفحات العربية الآن...")
+                }
+            },
+            confirmButton = { }
+        )
+    }
+    exportDone?.let { r ->
+        AlertDialog(
+            onDismissRequest = { exportDone = null },
+            title = { Text("تم إنشاء ملف PDF") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("${r.pages} صفحة · ${r.words} كلمة · ${formatMs(r.estimatedSeconds * 1000)} زمن قراءة")
+                    Text(
+                        r.file.absolutePath,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    runCatching { Desktop.getDesktop().open(r.file) }
+                    exportDone = null
+                }) { Text("فتح الملف") }
+            },
+            dismissButton = {
+                TextButton(onClick = { exportDone = null }) { Text("إغلاق") }
+            }
+        )
+    }
+    exportError?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { exportError = null },
+            title = { Text("فشل تصدير PDF") },
+            text = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = { exportError = null }) { Text("حسنًا") }
+            }
+        )
+    }
+
     // ============ حوارات التحرير والحذف ============
     if (showCreate) {
         SectionEditorDialog(
@@ -368,4 +513,60 @@ private fun SectionEditorDialog(
             TextButton(onClick = onDismiss) { Text("إلغاء") }
         }
     )
+}
+
+/**
+ * بطاقة قالب سكريبت (v0.30.0): اسم ووصف وعدد فقرات وزمن تقديري،
+ * وفعلان: إلحاق بالنهاية (آمن دائمًا) أو استبدال الكل (مع تأكيد).
+ */
+@Composable
+private fun TemplateCard(
+    template: ScriptTemplate,
+    onAppend: () -> Unit,
+    onReplace: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            template.name,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            template.description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            "${template.sectionCount} فقرات · زمن تقديري " +
+                    formatMs(template.estimatedSeconds() * 1000) +
+                    " · ${template.totalWords()} كلمة",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onReplace) {
+                Text("استبدال الكل", style = MaterialTheme.typography.labelLarge)
+            }
+            TextButton(onClick = onAppend) {
+                Text(
+                    "إلحاق بالنهاية",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
 }

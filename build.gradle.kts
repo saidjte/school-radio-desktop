@@ -29,6 +29,10 @@ dependencies {
     implementation("de.sfuhrm:jaad:0.8.7")
     implementation("de.sciss:jump3r:1.0.5")
     implementation("com.google.code.gson:gson:2.11.0")
+    // تصدير PDF للسكريبت (v0.30.0): PDFBox + جسر Graphics2D يرسم التشكيل
+    // العربي أشكالًا متجهة (دعم RTL كامل) — كلاهما Apache 2.0 ومحلي 100%
+    implementation("org.apache.pdfbox:pdfbox:2.0.31")
+    implementation("de.rototor.pdfbox:graphics2d:0.47")
     testImplementation(kotlin("test"))
 }
 

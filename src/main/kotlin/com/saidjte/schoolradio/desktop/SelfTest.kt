@@ -21,6 +21,9 @@ import com.saidjte.schoolradio.desktop.data.SegmentStatus
 import com.saidjte.schoolradio.desktop.data.ScriptSection
 import com.saidjte.schoolradio.desktop.data.ScriptStats
 import com.saidjte.schoolradio.desktop.data.ScriptStore
+import com.saidjte.schoolradio.desktop.data.ScriptTemplateCatalog
+import com.saidjte.schoolradio.desktop.data.ScriptTemplatesLogic
+import com.saidjte.schoolradio.desktop.data.ScriptPdfExporter
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
 import com.saidjte.schoolradio.desktop.data.ScriptSource
 import com.saidjte.schoolradio.desktop.data.SettingsStore
@@ -1050,6 +1053,56 @@ object SelfTest {
                     eng.trackReaderOverride = null
                     eng.stop()
                     eng.awaitIdle()
+                }
+            }
+
+            // v0.30.0: قوالب السكريبت — كتالوج سليم ومسودات مرتبة ومخزن دفعة واحدة
+            run {
+                check(ScriptTemplateCatalog.all.size >= 6) { "catalog size=${ScriptTemplateCatalog.all.size}" }
+                val errs = ScriptTemplatesLogic.catalogErrors()
+                check(errs.isEmpty()) { "catalog errors=$errs" }
+                check(ScriptTemplateCatalog.all.map { it.id }.toSet().size == ScriptTemplateCatalog.all.size) { "dup ids" }
+                val t = ScriptTemplateCatalog.byId("morning-bulletin")!!
+                val drafts = ScriptTemplatesLogic.drafts(t)
+                check(drafts.size == t.sections.size && drafts.all { it.first.isNotBlank() && it.second.isNotBlank() })
+                check(t.estimatedSeconds() > 0 && t.totalWords() > 0) { "template stats" }
+                check(ScriptTemplatesLogic.pdfUnsafeChars().isEmpty()) { "unsafe pdf chars" }
+
+                val store = ScriptStore(File(tmp, "st-script.json"))
+                val batch = store.addAll(drafts.take(3))
+                check(store.sections().size == 3 && batch.map { it.id } == listOf(1L, 2L, 3L)) { "addAll ids" }
+                store.clear()
+                check(store.sections().isEmpty()) { "clear" }
+                val again = store.addAll(drafts.take(2))
+                check(again.first().id == 4L) { "nextId monotonic after clear: ${again.first().id}" }
+                check(store.addAll(emptyList()).isEmpty() && store.sections().size == 2) { "addAll empty" }
+
+                // v0.30.0: تصدير PDF — وثيقة صالحة متعددة الصفحات تُقرأ وتُرسم
+                val pdfFile = File(tmp, "st-script.pdf")
+                val res = ScriptPdfExporter.export(store.sections(), "مدرسة الفحص الذاتي", java.time.LocalDate.of(2026, 11, 6), pdfFile)
+                check(res.pages >= 1 && res.bytes > 10_000) { "pdf result pages=${res.pages} bytes=${res.bytes}" }
+                check(res.words == store.sections().sumOf { ScriptStats.wordCount(it.body) }) { "pdf words" }
+                org.apache.pdfbox.pdmodel.PDDocument.load(pdfFile).use { pd ->
+                    check(pd.numberOfPages == res.pages) { "pdf pages=${pd.numberOfPages}" }
+                    // رسم صفحة كاملة يتطلب تحليل كل الأشكال المتجهة — أي عطل تشكيل يقع هنا
+                    org.apache.pdfbox.rendering.PDFRenderer(pd).renderImage(0)
+                }
+                val suggested = ScriptPdfExporter.suggestedFileName(java.time.LocalDate.of(2026, 11, 6))
+                check(suggested.startsWith("سكريبت المذيع ") && suggested.endsWith("2026-11-06.pdf")) { "suggested=$suggested" }
+                // سكريبت فارغ: صفحة واحدة برسالة مهذبة لا انهيار
+                val emptyPdf = File(tmp, "st-empty.pdf")
+                val emptyRes = ScriptPdfExporter.export(emptyList(), null, java.time.LocalDate.of(2026, 11, 6), emptyPdf)
+                check(emptyRes.pages == 1 && emptyRes.bytes > 3_000) { "empty pdf pages=${emptyRes.pages}" }
+                // سكريبت طويل: انسياب صفحات حقيقي (12 فقرة نصية)
+                val longSections = (1..12).map { k ->
+                    ScriptSection(k.toLong(), "فقرة اختبار الطول $k",
+                        "نص تجريبي طويل للتحقق من لف الأسطر العربية وعبور حدود الصفحة. ".repeat(14))
+                }
+                val longPdf = File(tmp, "st-long.pdf")
+                val longRes = ScriptPdfExporter.export(longSections, null, java.time.LocalDate.of(2026, 11, 6), longPdf)
+                check(longRes.pages >= 2) { "long pdf pages=${longRes.pages}" }
+                org.apache.pdfbox.pdmodel.PDDocument.load(longPdf).use { pd ->
+                    org.apache.pdfbox.rendering.PDFRenderer(pd).renderImage(pd.numberOfPages - 1)
                 }
             }
 

@@ -31,6 +31,25 @@ class ScriptStore(private val file: File) {
         return s
     }
 
+    /**
+     * إضافة فقرات دفعة واحدة (قوالب السكريبت v0.30.0): حفظ واحد في النهاية
+     * فلا يُكتب الملف لكل فقرة، والمعرفات تُسند هنا من العداد المتراكم.
+     */
+    fun addAll(items: List<Pair<String, String>>): List<ScriptSection> {
+        if (items.isEmpty()) return emptyList()
+        val added = items.map { ScriptSection(nextId++, it.first.trim(), it.second.trim()) }
+        doc = doc.copy(sections = doc.sections + added)
+        persist()
+        return added
+    }
+
+    /** تفريغ السكريبت كاملًا (تطبيق قالب بالاستبدال) — المعرفات تبقى متراكمة. */
+    fun clear() {
+        if (doc.sections.isEmpty()) return
+        doc = doc.copy(sections = emptyList())
+        persist()
+    }
+
     fun update(id: Long, title: String, body: String): Boolean {
         val i = doc.sections.indexOfFirst { it.id == id }
         if (i < 0) return false

@@ -295,6 +295,19 @@ object FilePickers {
         return f
     }
 
+    /** حفظ سكريبت المذيع كملف PDF (v0.30.0) — الامتداد يُستكمل تلقائيًا. */
+    fun pickPdfSave(defaultName: String): File? {
+        val chooser = JFileChooser()
+        chooser.dialogTitle = "حفظ سكريبت المذيع PDF"
+        chooser.fileFilter = FileNameExtensionFilter("مستند PDF", "pdf")
+        chooser.selectedFile = File(defaultName)
+        val result = chooser.showSaveDialog(null)
+        if (result != JFileChooser.APPROVE_OPTION) return null
+        var f = chooser.selectedFile
+        if (!f.name.lowercase().endsWith(".pdf")) f = File(f.parentFile, f.name + ".pdf")
+        return f
+    }
+
     /** فتح نسخة احتياطية JSON. */
     fun pickJsonOpen(): File? {
         val chooser = JFileChooser()

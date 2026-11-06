@@ -44,6 +44,9 @@ import com.saidjte.schoolradio.desktop.data.StudioLayoutLogic
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
 import com.saidjte.schoolradio.desktop.data.ScriptSection
 import com.saidjte.schoolradio.desktop.data.ScriptStore
+import com.saidjte.schoolradio.desktop.data.ScriptTemplate
+import com.saidjte.schoolradio.desktop.data.ScriptTemplatesLogic
+import com.saidjte.schoolradio.desktop.data.ScriptPdfExporter
 import com.saidjte.schoolradio.desktop.data.SegmentKind
 import com.saidjte.schoolradio.desktop.data.SettingsStore
 import com.saidjte.schoolradio.desktop.data.StudioLogic
@@ -428,6 +431,24 @@ class AppViewModel {
     val selectedSection: ScriptSection?
         get() = _script.value.firstOrNull { it.id == _selectedSectionId.value }
             ?: _script.value.firstOrNull()
+
+    /**
+     * تطبيق قالب سكريبت جاهز (v0.30.0 «قوالب السكريبت»): الإلحاق يضيف فقراته
+     * للنهاية، والاستبدال يفرّغ الحالي أولًا — وكلاهما حفظ دفعة واحدة ويحدد
+n     * الفقرة الأولى المولّدة لتبدأ لوحة القراءة منها مباشرة.
+     */
+    fun applyScriptTemplate(template: ScriptTemplate, replaceExisting: Boolean) {
+        if (replaceExisting) scriptStore.clear()
+        val added = scriptStore.addAll(ScriptTemplatesLogic.drafts(template))
+        _script.value = scriptStore.sections()
+        _selectedSectionId.value = added.firstOrNull()?.id ?: _selectedSectionId.value
+    }
+
+    /** توليد ملف PDF للسكريبت الحالي (v0.30.0 «تصدير PDF») — يستدعى من خيط خلفي. */
+    fun exportScriptPdf(file: File): ScriptPdfExporter.Result {
+        val school = try { settingsStore.schoolName() } catch (_: Exception) { null }
+        return ScriptPdfExporter.export(_script.value, school, java.time.LocalDate.now(), file)
+    }
 
     // ================= جدولة الفقرات =================
     // تعديل الجدولة محصور بمعلم فأعلى — التشغيل الحي متاح للجميع
