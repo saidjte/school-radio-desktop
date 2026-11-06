@@ -62,12 +62,17 @@ import com.saidjte.schoolradio.desktop.ui.ScriptTab
 import com.saidjte.schoolradio.desktop.ui.SettingsDialog
 import com.saidjte.schoolradio.desktop.ui.StudioScreen
 import com.saidjte.schoolradio.desktop.ui.JingleWallWindow
+import com.saidjte.schoolradio.desktop.ui.OnAirWindow
 import com.saidjte.schoolradio.desktop.audio.FakeToneVoice
 import com.saidjte.schoolradio.desktop.audio.FakeTrackVoice
 import com.saidjte.schoolradio.desktop.audio.MicState
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 
+/** أعلام الإقلاع للأتمتة — يقرؤها AppViewModel عند البناء قبل أي كوروتين. */
+object LaunchFlags { var args: List<String> = emptyList() }
+
 fun main(args: Array<String>) {
+    LaunchFlags.args = args.toList()
     // وضع الفحص الذاتي: تشغيل النواة دون واجهة رسومية (للأتمتة والتحقق)
     if (args.contains("selftest")) {
         SelfTest.run()
@@ -107,6 +112,10 @@ fun main(args: Array<String>) {
                 vm.player.play(java.io.File("automation/fake-a.mp3"))
             }
         }
+        // وضع «على الهواء» للأتمتة (v0.32.0): فتح شاشة الطلاب عند الإقلاع
+        if (args.contains("--onair")) {
+            LaunchedEffect(Unit) { vm.onAirDisplayOpen.value = true }
+        }
         // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
         val windowIcon = remember {
             Thread.currentThread().contextClassLoader
@@ -139,9 +148,18 @@ fun main(args: Array<String>) {
         if (wallOpen) {
             JingleWallWindow(vm = vm, onClose = { vm.jingleWallOpen.value = false })
         }
-        // خروج نظيف: صوت الجينلات يُغلق قبل انصراف التطبيق
+        // نافذة «على الهواء» لشاشة ثانية (v0.32.0) — مستقلة غير ماسكة كالجدار:
+        // الاستوديو يظل عاملاً بكامل أدواته ما دامت مفتوحة
+        val onAirOpen by vm.onAirDisplayOpen.collectAsState()
+        if (onAirOpen) {
+            OnAirWindow(vm = vm, onClose = { vm.onAirDisplayOpen.value = false })
+        }
+        // خروج نظيف: الجلسة الأخيرة تُحفظ أولًا (v0.32.0) ثم صوت الجينلات يُغلق
         androidx.compose.runtime.DisposableEffect(Unit) {
-            onDispose { vm.jingles.shutdown() }
+            onDispose {
+                vm.persistSessionNow()
+                vm.jingles.shutdown()
+            }
         }
     }
 }

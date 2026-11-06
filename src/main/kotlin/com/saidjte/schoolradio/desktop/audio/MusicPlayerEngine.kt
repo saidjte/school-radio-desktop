@@ -608,6 +608,34 @@ class MusicPlayerEngine {
         _isPaused.value = false
     }
 
+    // ================= استعادة الجلسة الأخيرة (v0.32.0) =================
+
+    /**
+     * الموضع المحفوظ لاستعادة الجلسة — يستهلكه العامل فور فتح المقطع ثم يُصفّر.
+     * (−1 = لا استعادة — تشغيل عادي من الصفر).
+     */
+    @Volatile private var restoreAtMs = -1L
+
+    /**
+     * تحميل مقطع موقوفًا عند موضع محفوظ (v0.32.0 «استعادة الجلسة الأخيرة
+     * كاملة… والموضع»): يفتح القارئ ويسقي إلى الموضع ويجمّد الخط دون أي صوت
+     * — الضغطة الأولى على التشغيل تكمل من حيث توقف المذيع لا من الصفر.
+     * يُستدعى عند الإقلاع فقط قبل أي تشغيل، ولا يبدأ صوتًا إطلاقًا.
+     */
+    fun preparePaused(file: File, positionMs: Long): Boolean {
+        if (!file.isFile) return false
+        restoreAtMs = positionMs.coerceAtLeast(0L)
+        switchTo = file
+        switchCrossfade = false
+        seekRequest = -1L
+        paused = true
+        stopped = false
+        _isPaused.value = true
+        _error.value = null
+        ensureWorker()
+        return true
+    }
+
     /**
      * السعي (v0.27.0 «شريط التقدم لا يعمل جيدًا»): مع طلب السعي للعامل،
      * يُحدّث العرض المتفائل فورًا — فالشريط والزمن يبقيان حيث أفلت المستخدم
@@ -703,9 +731,28 @@ class MusicPlayerEngine {
                             _title.value = sw.nameWithoutExtension
                             _hasTrack.value = true
                             _durationMs.value = reader.durationMs
-                            _positionMs.value = 0L
-                            _isPlaying.value = true
-                            _isPaused.value = false
+                            // استعادة الجلسة (v0.32.0): فتح موقوفًا عند الموضع المحفوظ —
+                            // القارئ يسقي إلى الموضع ويجمّد، وwasPaused=true فلا مسار
+                            // تلاشٍ ولا صوت يخرج حتى أول استئناف من المذيع
+                            val restoreTo = restoreAtMs
+                            restoreAtMs = -1L
+                            if (restoreTo >= 0L) {
+                                if (restoreTo > 0L) {
+                                    try { reader.seek(restoreTo) } catch (_: Exception) { }
+                                }
+                                _positionMs.value = reader.currentMs
+                                try { reader.pause() } catch (_: Exception) { }
+                                paused = true
+                                wasPaused = true
+                                // عقد المحرك: isPlaying يبقى true حتى نهاية المقطع —
+                                // حالة «الآن» تُحسب بـ playing && !paused فالصمت إيقاف مؤقت لا توقف كامل
+                                _isPlaying.value = true
+                                _isPaused.value = true
+                            } else {
+                                _positionMs.value = 0L
+                                _isPlaying.value = true
+                                _isPaused.value = false
+                            }
                             xAsked = false
                             reopenOutput = false
                             channel.resetEnv()

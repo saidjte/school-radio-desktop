@@ -396,6 +396,9 @@ private fun StudioTopBar(vm: AppViewModel) {
                 style = MaterialTheme.typography.titleLarge.numeric(),
                 fontWeight = FontWeight.Bold
             )
+            // وضع «على الهواء» (v0.32.0): ملء الشاشة لشاشة ثانية يتابعها الطلاب —
+            // نافذة مستقلة كجدار الجينغل فلا تعرقل عمل الاستوديو المدمج
+            SecondaryAction(text = "على الهواء", onClick = { vm.onAirDisplayOpen.value = true })
             // جدار الجينغل (v0.28.0): يفتح نافذة منبثقة مستقلة غير ماسكة —
             // الاستوديو المدمج يظل قابلًا للعمل بكامله ما دامت النافذة مفتوحة
             SecondaryAction(

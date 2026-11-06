@@ -6,6 +6,7 @@ import com.saidjte.schoolradio.desktop.audio.LevelMeter
 import com.saidjte.schoolradio.desktop.audio.MixBus
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.FakeToneVoice
+import com.saidjte.schoolradio.desktop.audio.FakeTrackVoice
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
 import com.saidjte.schoolradio.desktop.audio.TrackReader
@@ -31,6 +32,11 @@ import com.saidjte.schoolradio.desktop.data.ScriptPdfExporter
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
 import com.saidjte.schoolradio.desktop.data.ScriptSource
 import com.saidjte.schoolradio.desktop.data.SettingsStore
+import com.saidjte.schoolradio.desktop.data.SessionJson
+import com.saidjte.schoolradio.desktop.data.SessionRestore
+import com.saidjte.schoolradio.desktop.data.SessionStore
+import com.saidjte.schoolradio.desktop.data.OnAirDisplayLogic
+import com.saidjte.schoolradio.desktop.data.ScreenRect
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 import com.saidjte.schoolradio.desktop.data.TeleprompterNames
 import androidx.compose.ui.input.key.Key
@@ -1239,6 +1245,96 @@ object SelfTest {
                         eng.voiceFactoryOverride = null
                         eng.shutdown()
                     }
+                }
+            }
+
+            // ================= v0.32.0: استعادة الجلسة الأخيرة ووضع «على الهواء» =================
+            run {
+                // 1) SessionRestore: التعقيم والقرار
+                val r1 = SessionRestore.resolve(
+                    SessionJson(trackPath = "/pl/b.mp3", positionMs = 45_000L, selectedSectionId = 7L),
+                    listOf("/pl/a.mp3", "/pl/b.mp3"), setOf(7L, 8L)
+                )
+                check(r1 != null && r1.playlistIndex == 1 && r1.positionMs == 45_000L) { "restore playlist match" }
+                check(SessionRestore.clampPosition(-1000L, 30_000L) == 0L) { "clamp negative" }
+                check(SessionRestore.clampPosition(99_000L, 30_000L) == 30_000L) { "clamp over-duration" }
+                check(
+                    SessionRestore.resolve(SessionJson(trackPath = "/nowhere/x.mp3"), listOf("/pl/a"), emptySet()) == null
+                ) { "missing track and no section → nothing to restore" }
+                val r2 = SessionRestore.resolve(
+                    SessionJson(trackPath = "/nowhere/x.mp3", selectedSectionId = 3L),
+                    listOf("/pl/a"), setOf(3L)
+                )
+                check(r2 != null && r2.playlistIndex == -1 && r2.selectedSectionId == 3L) { "script-only restore" }
+                val r3 = SessionRestore.resolve(
+                    SessionJson(trackPath = " /pl/a.mp3 ", selectedSectionId = 99L),
+                    listOf("/pl/a.mp3"), setOf(1L)
+                )
+                check(r3 != null && r3.playlistIndex == 0 && r3.selectedSectionId == null) {
+                    "deleted section dropped, trimmed path matched"
+                }
+
+                // 2) SessionStore: دورة حفظية على القرص
+                run {
+                    val f = File(tmp, "session.json")
+                    val st = SessionStore(f)
+                    st.save(SessionJson(trackPath = "/pl/a.mp3", positionMs = 77_000L, savedAt = 1L))
+                    check(SessionStore(f).session().positionMs == 77_000L) { "session round trip" }
+                    f.writeText("{broken")
+                    check(SessionStore(f).session().trackPath == null) { "broken session tolerated" }
+                }
+
+                // 3) المحرك: فتح موقوفًا عند الموضع المحفوظ ثم الاستئناف يكمل
+                // (مقطع طويل كي لا ينفد أثناء فحص التقدم — سرعة القارئ الوهمي عالية)
+                run {
+                    val eng = MusicPlayerEngine()
+                    eng.trackReaderOverride = { FakeTrackVoice(totalMs = 120_000L, chunkSleepMs = 2L) }
+                    try {
+                        val f = File(tmp, "st-restore.mp3")
+                        f.writeBytes(ByteArray(0))
+                        check(eng.preparePaused(f, 5_000L)) { "prepare accepts" }
+                        var tries = 0
+                        while (!eng.hasTrack.value && tries < 100) { Thread.sleep(20); tries++ }
+                        check(eng.hasTrack.value && eng.isPaused.value && eng.isPlaying.value) { "restored paused (isPlaying kept)" }
+                        tries = 0
+                        while (eng.positionMs.value != 5_000L && tries < 100) { Thread.sleep(20); tries++ }
+                        check(eng.positionMs.value == 5_000L) { "restored position=${eng.positionMs.value}" }
+                        eng.resume()
+                        Thread.sleep(500)
+                        check(eng.isPlaying.value && eng.positionMs.value > 5_000L) { "resume continues" }
+                        check(!eng.preparePaused(File(tmp, "missing.mp3"), 1_000L)) { "missing rejected" }
+                    } finally {
+                        eng.trackReaderOverride = null
+                        eng.stop()
+                        eng.awaitIdle()
+                    }
+                }
+
+                // 4) الشاشة الثانية: الاختيار النقي
+                run {
+                    val a = ScreenRect(0, 0, 1920, 1080)
+                    val b = ScreenRect(1920, 0, 1280, 1024)
+                    check(OnAirDisplayLogic.pickSecondary(listOf(a, b), 0) == b) { "secondary picked" }
+                    check(OnAirDisplayLogic.pickSecondary(listOf(a, b), 1) == a) { "default second → first" }
+                    check(OnAirDisplayLogic.pickSecondary(listOf(a), 0) == null) { "single screen null" }
+                }
+
+                // 5) نموذج شاشة الطلاب: الفقرة والمتبقي والتالية والموسيقى
+                run {
+                    val m = OnAirDisplayLogic.buildModel(
+                        runActive = true, runIndex = 0, runElapsedMs = 15_000L,
+                        remainingMs = 5_000L, warn = true,
+                        scheduleTitles = listOf("افتتاح الحلقة", "نشرة الأخبار"),
+                        schedulePlannedSeconds = listOf(20L, 60L),
+                        musicTitle = "نشيد", musicPositionMs = 10_000L, musicDurationMs = 100_000L,
+                        musicPlaying = true, micLive = true, recording = false
+                    )
+                    check(m.onAir && m.headline == "افتتاح الحلقة") { "model run item" }
+                    check(m.timeText == "00:15 من 00:20") { "model time text=${m.timeText}" }
+                    check(m.remainingText == "المتبقي 00:05" && m.warn && !m.fired) { "model remaining" }
+                    check(m.nextTitle == "نشرة الأخبار") { "model next" }
+                    check(m.musicTitle == "نشيد") { "model music strip" }
+                    check(OnAirDisplayLogic.mmss(75_000L) == "01:15") { "mmss" }
                 }
             }
 

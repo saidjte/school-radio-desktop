@@ -51,6 +51,9 @@ import com.saidjte.schoolradio.desktop.data.ScriptTemplate
 import com.saidjte.schoolradio.desktop.data.ScriptTemplatesLogic
 import com.saidjte.schoolradio.desktop.data.ScriptPdfExporter
 import com.saidjte.schoolradio.desktop.data.SegmentKind
+import com.saidjte.schoolradio.desktop.data.SessionJson
+import com.saidjte.schoolradio.desktop.data.SessionRestore
+import com.saidjte.schoolradio.desktop.data.SessionStore
 import com.saidjte.schoolradio.desktop.data.SettingsStore
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 import com.saidjte.schoolradio.desktop.data.User
@@ -105,6 +108,14 @@ class AppViewModel {
 
     /** فتح نافذة الجدار المنبثقة (غير حاجبة) — يقرؤها Main ويطلبها زر الاستوديو. */
     val jingleWallOpen = MutableStateFlow(false)
+
+    // ================= وضع «على الهواء» لشاشة ثانية (v0.32.0) =================
+
+    /**
+     * فتح نافذة العرض للطلاب — ملء الشاشة على الشاشة الثانية (يقرؤها Main ويطلبها
+     * زر الشريط العلوي): عرض حيّ للفقرة الجارية والموسيقى والساعة ما يراه الطلاب.
+     */
+    val onAirDisplayOpen = MutableStateFlow(false)
 
     private val _jinglePads = MutableStateFlow(JingleWallLogic.emptyPads())
     val jinglePads: StateFlow<List<JinglePad>> = _jinglePads.asStateFlow()
@@ -478,6 +489,7 @@ class AppViewModel {
 
     fun selectSection(id: Long) {
         _selectedSectionId.value = id
+        scheduleSessionSave()
     }
 
     /**
@@ -490,6 +502,7 @@ class AppViewModel {
         val cur = list.indexOfFirst { it.id == _selectedSectionId.value }
         val idx = if (cur < 0) 0 else (cur + delta).coerceIn(0, list.size - 1)
         _selectedSectionId.value = list[idx].id
+        scheduleSessionSave()
     }
 
     val selectedSection: ScriptSection?
@@ -1022,6 +1035,14 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     @Volatile private var consecutiveFailures = 0
 
     private fun skipCorrupt() {
+        // أثناء استعادة الجلسة (v0.32.0): فشل فتح المقطع المحفوظ لا يشغّل سلسلة
+        // تخطي التالف — المحرك يتوقف والجلسة تبقى مستعادة للقائمة والسكريبت
+        if (restoringSession) {
+            restoringSession = false
+            consecutiveFailures = 0
+            player.stop()
+            return
+        }
         val size = _playlist.value.size
         consecutiveFailures++
         if (size > 0 && consecutiveFailures < size) {
@@ -1392,6 +1413,82 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         }
     }
 
+    // ================= استعادة الجلسة الأخيرة (v0.32.0) =================
+    // القائمة تُذكر في playlist.json أصلًا — وsession.json يكمل الباقي:
+    // المقطع الجاري وموضعه لحظة الإغلاق والفقرة المحددة ووضع القراءة الكاملة.
+
+    private var sessionStore = SessionStore(File(dataDir(), "session.json"))
+
+    /** آخر لقطة حُفظت — للمقارنة فلا كتابة بلا تغيّر فعلي. */
+    @Volatile private var lastSessionSnapshot: SessionJson? = null
+
+    /** أثناء استعادة الجلسة: فشل فتح المقطع المحفوظ لا يشغّل سلسلة تخطي التالف. */
+    @Volatile private var restoringSession = false
+
+    private var sessionSaveJob: Job? = null
+
+    /** لقطة الجلسة الحالية — بلا طابع زمني كي تقارن بالمحفوظة عدلاً. */
+    private fun sessionSnapshot(): SessionJson = SessionJson(
+        trackPath = player.currentFile.value?.absolutePath,
+        positionMs = if (player.hasTrack.value) player.positionMs.value else null,
+        selectedSectionId = _selectedSectionId.value,
+        fullScriptReading = fullScriptReading.value
+    )
+
+    /** حفظ الجلسة الآن — عند الإغلاق ومن دورة الحفظ الدورية. */
+    fun persistSessionNow() {
+        val snap = sessionSnapshot()
+        lastSessionSnapshot = snap
+        runCatching { sessionStore.save(snap.copy(savedAt = System.currentTimeMillis())) }
+    }
+
+    /** حفظ مؤجّل 400ms — يجمع التغييرات المتسارعة (تنقّل الفقرات) في كتابة واحدة. */
+    private fun scheduleSessionSave() {
+        sessionSaveJob?.cancel()
+        sessionSaveJob = runScope.launch {
+            delay(400)
+            val snap = sessionSnapshot()
+            if (snap != lastSessionSnapshot) persistSessionNow()
+        }
+    }
+
+    /**
+     * استعادة الجلسة الأخيرة عند الإقلاع (v0.32.0) — تُستدعى بعد تحميل القائمة
+     * والسكريبت فتكتمل الصورة: الفقرة المحددة ووضع القراءة، ثم المقطع الجاري
+     * يُحمّل موقوفًا عند موضع الإغلاق — الضغطة الأولى تكمل لا تُعيد من الصفر.
+     * كل فشل (ملف مفقود/ملف تالف/جلسة فارغة) يعود بأمانة للإقلاع الطبيعي.
+     */
+    private fun restoreLastSession() {
+        val saved = runCatching { sessionStore.session() }.getOrNull() ?: return
+        val scriptIds = _script.value.map { it.id }.toSet()
+        val paths = _playlist.value.map { it.file.absolutePath }
+        val r = runCatching { SessionRestore.resolve(saved, paths, scriptIds) }.getOrNull() ?: return
+
+        // السكريبت: الفقرة المحددة ووضع القراءة الكاملة
+        if (r.selectedSectionId != null) {
+            _selectedSectionId.value = r.selectedSectionId
+            fullScriptReading.value = r.fullReading
+        }
+
+        // الموضع: المقطع الجاري لحظة الإغلاق
+        val path = saved.trackPath?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val f = File(path)
+        if (!f.isFile) return
+        // توحيد مؤشر القائمة مع المقطع المستعاد — القائمة والموضع وجهان لعملة واحدة
+        if (r.playlistIndex >= 0 && _currentIndex.value != r.playlistIndex) {
+            _currentIndex.value = r.playlistIndex
+            playlistStore.setIndex(_activePlaylistId.value, r.playlistIndex)
+        }
+        restoringSession = true
+        val ok = player.preparePaused(f, r.positionMs)
+        if (ok) {
+            // نافذة أمان قصيرة: بعد نجاح الفتح تعود حراسة التخطي طبيعية
+            runScope.launch { delay(3000); restoringSession = false }
+        } else {
+            restoringSession = false
+        }
+    }
+
     fun durationOf(f: File): Long = when (f.extension.lowercase()) {
         "wav" -> WavHeader.read(f)?.let {
             WavFileWriter.durationMsOf(it.dataBytes, it.sampleRate, it.channels, it.bitsPerSample)
@@ -1432,10 +1529,26 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
             _executions.value = executionsStore.entries()
         }
         refreshLibraryState()
+        // استعادة الجلسة الأخيرة (v0.32.0): قارئ وهمي للأتمتة ثم الاستعادة ثم دورة الحفظ
+        if (LaunchFlags.args.contains("--restore-fake")) {
+            player.trackReaderOverride = {
+                com.saidjte.schoolradio.desktop.audio.FakeTrackVoice(totalMs = 15_000L, chunkSleepMs = 120L)
+            }
+        }
+        restoreLastSession()
+        // ساعة الحاسوب الحية: كل ثانية (v0.22.0)
         runScope.launch {
             while (true) {
                 delay(1000)
                 _clockText.value = StudioLogic.clockText(System.currentTimeMillis())
+            }
+        }
+        // دورة حفظ الجلسة: كل 4 ثوانٍ عند تغيّر فعلي (موضع متقدم/فقرة جديدة)
+        runScope.launch {
+            while (true) {
+                delay(4_000)
+                val snap = sessionSnapshot()
+                if (snap != lastSessionSnapshot) persistSessionNow()
             }
         }
         // نبضة الجدولة الأسبوعية: كل 20 ثانية
