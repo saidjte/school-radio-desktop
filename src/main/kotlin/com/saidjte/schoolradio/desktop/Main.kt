@@ -61,6 +61,7 @@ import com.saidjte.schoolradio.desktop.ui.ScheduleTab
 import com.saidjte.schoolradio.desktop.ui.ScriptTab
 import com.saidjte.schoolradio.desktop.ui.SettingsDialog
 import com.saidjte.schoolradio.desktop.ui.StudioScreen
+import com.saidjte.schoolradio.desktop.ui.MontagePage
 import com.saidjte.schoolradio.desktop.ui.JingleWallWindow
 import com.saidjte.schoolradio.desktop.ui.OnAirWindow
 import com.saidjte.schoolradio.desktop.audio.FakeToneVoice
@@ -78,7 +79,7 @@ fun main(args: Array<String>) {
         SelfTest.run()
         return
     }
-    // صفحة بداية للأتمتة والفحص البصري: --tab=LIVE | SCHEDULE | SCRIPT | MUSIC | RECORDINGS
+    // صفحة بداية للأتمتة والفحص البصري: --tab=LIVE | SCHEDULE | SCRIPT | MUSIC | RECORDINGS | MONTAGE
     val startTab = args.firstOrNull { it.startsWith("--tab=") }
         ?.substringAfter("=")
         ?.let { name -> Tab.entries.firstOrNull { it.name == name } }
@@ -115,6 +116,10 @@ fun main(args: Array<String>) {
         // وضع «على الهواء» للأتمتة (v0.32.0): فتح شاشة الطلاب عند الإقلاع
         if (args.contains("--onair")) {
             LaunchedEffect(Unit) { vm.onAirDisplayOpen.value = true }
+        }
+        // المونتاج للأتمتة (v0.33.0): مقاطع عرض تجريبية بنوافذ قص حية
+        if (args.contains("--montage-demo")) {
+            LaunchedEffect(Unit) { vm.montageDemo() }
         }
         // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
         val windowIcon = remember {
@@ -208,6 +213,7 @@ fun AppRoot(vm: AppViewModel = remember { AppViewModel() }, startTab: Tab? = nul
                         Tab.MUSIC -> MusicTab(vm)
                         Tab.MIXER -> MixerPage(vm)
                         Tab.RECORDINGS -> RecordingsTab(vm)
+                        Tab.MONTAGE -> MontagePage(vm)
                     }
                 }
             }
@@ -224,6 +230,7 @@ private fun tabIcon(t: Tab): AppIconKind = when (t) {
     Tab.MUSIC -> AppIconKind.MUSIC
     Tab.MIXER -> AppIconKind.MIXER
     Tab.RECORDINGS -> AppIconKind.RECORDINGS
+    Tab.MONTAGE -> AppIconKind.MONTAGE
 }
 
 @Composable

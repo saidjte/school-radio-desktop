@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.dp
  * أيقونات الواجهة المرسومة متجهيًا داخل التطبيق — بلا اعتماديات خارجية وبثبات كامل
  * على كل الأنظمة. تعمل داخل Canvas فلا تتأثر باتجاه التخطيط RTL.
  */
-enum class AppIconKind { STUDIO, LIVE, SCHEDULE, SCRIPT, MUSIC, MIXER, RECORDINGS }
+enum class AppIconKind { STUDIO, LIVE, SCHEDULE, SCRIPT, MUSIC, MIXER, RECORDINGS, MONTAGE }
 
 @Composable
 fun AppIcon(
@@ -41,6 +41,7 @@ fun AppIcon(
             AppIconKind.MUSIC -> drawNote(tint)
             AppIconKind.MIXER -> drawMixer(tint)
             AppIconKind.RECORDINGS -> drawDisc(tint)
+            AppIconKind.MONTAGE -> drawMontage(tint)
         }
     }
 }
@@ -178,6 +179,27 @@ private fun DrawScope.drawDisc(tint: Color) {
     drawCircle(tint, radius = w * 0.4f, center = c, style = meterStroke(tint, sw))
     drawCircle(tint, radius = w * 0.16f, center = c, style = meterStroke(tint, sw))
     drawCircle(tint, radius = w * 0.05f, center = c)
+}
+
+/** المونتاج (v0.33.0): شريط فيلم بخانتين وثقوب جانبية. */
+private fun DrawScope.drawMontage(tint: Color) {
+    val w = size.width
+    val h = size.height
+    val sw = w * 0.055f
+    drawRoundRect(
+        color = tint,
+        topLeft = Offset(w * 0.08f, h * 0.2f),
+        size = Size(w * 0.84f, h * 0.6f),
+        cornerRadius = CornerRadius(w * 0.1f),
+        style = meterStroke(tint, sw)
+    )
+    // الفاصل بين الخانتين
+    drawLine(tint, Offset(w * 0.5f, h * 0.2f), Offset(w * 0.5f, h * 0.8f), strokeWidth = sw * 0.8f, cap = StrokeCap.Round)
+    // ثقوب الشريط أعلى وأسفل
+    listOf(0.2f, 0.35f, 0.65f, 0.8f).forEach { x ->
+        drawCircle(tint, radius = w * 0.035f, center = Offset(w * x, h * 0.31f))
+        drawCircle(tint, radius = w * 0.035f, center = Offset(w * x, h * 0.69f))
+    }
 }
 
 /** شعار البث: نقطة مركزية وموجات تنطلق من الجهتين داخل مربع متدرج. */

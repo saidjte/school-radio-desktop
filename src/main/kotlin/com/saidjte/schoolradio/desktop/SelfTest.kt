@@ -4,6 +4,8 @@ import com.saidjte.schoolradio.desktop.audio.AudioDevices
 import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.LevelMeter
 import com.saidjte.schoolradio.desktop.audio.MixBus
+import com.saidjte.schoolradio.desktop.audio.MontageDemo
+import com.saidjte.schoolradio.desktop.audio.MontageRender
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.FakeToneVoice
 import com.saidjte.schoolradio.desktop.audio.FakeTrackVoice
@@ -16,6 +18,10 @@ import com.saidjte.schoolradio.desktop.data.CrossfadeLogic
 import com.saidjte.schoolradio.desktop.data.DevicesJson
 import com.saidjte.schoolradio.desktop.data.MeterLogic
 import com.saidjte.schoolradio.desktop.data.MeterZone
+import com.saidjte.schoolradio.desktop.data.MontageClip
+import com.saidjte.schoolradio.desktop.data.MontageLogic
+import com.saidjte.schoolradio.desktop.data.MontageProject
+import com.saidjte.schoolradio.desktop.data.MontageStore
 import com.saidjte.schoolradio.desktop.data.ReadingJson
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
@@ -1335,6 +1341,88 @@ object SelfTest {
                     check(m.nextTitle == "نشرة الأخبار") { "model next" }
                     check(m.musicTitle == "نشيد") { "model music strip" }
                     check(OnAirDisplayLogic.mmss(75_000L) == "01:15") { "mmss" }
+                }
+            }
+
+            // ================= v0.33.0: صفحة المونتاج =================
+            run {
+                // 1) المنطق النقي: المدد والفواصل ونوافذ القص والتلاشين والتعقيم
+                val ca = MontageClip(id = "a", path = "/x/a.wav", title = "a", durationMs = 4000, startMs = 1000, endMs = 3000)
+                val cb = MontageClip(id = "b", path = "/x/b.wav", title = "b", durationMs = 6000, startMs = 0, endMs = 2000)
+                check(MontageLogic.clipDurationMs(ca) == 2000L) { "clip duration" }
+                check(MontageLogic.totalDurationMs(emptyList(), 500) == 0L) { "empty total" }
+                check(MontageLogic.totalDurationMs(listOf(ca), 500) == 2000L) { "single total" }
+                check(MontageLogic.totalDurationMs(listOf(ca, cb), 500) == 4500L) { "two+gap total" }
+                check(MontageLogic.gapAfter(0, 2, 500) == 500L && MontageLogic.gapAfter(1, 2, 500) == 0L) { "gapAfter" }
+                check(MontageLogic.clampWindow(0, 0, 4000) == (0L to 4000L)) { "empty window → full" }
+                check(MontageLogic.clampWindow(-5, 99_999, 4000) == (0L to 4000L)) { "window clamp" }
+                check(MontageLogic.clampWindow(1000, 2000, 4000) == (1000L to 2000L)) { "window intact" }
+                check(MontageLogic.fadeGainAt(0, 2000, 500, 500) == 0f) { "fade at start" }
+                check(Math.abs(MontageLogic.fadeGainAt(250, 2000, 500, 500) - 0.5f) < 0.01f) { "fade mid ramp" }
+                check(MontageLogic.fadeGainAt(1000, 2000, 500, 500) == 1f) { "fade plateau" }
+                check(Math.abs(MontageLogic.fadeGainAt(1750, 2000, 500, 500) - 0.5f) < 0.01f) { "fade out ramp" }
+                check(MontageLogic.fadeGainAt(1000, 2000, 0, 0) == 1f) { "no fades" }
+                check(MontageLogic.fadeGainAt(0, 0, 500, 500) == 0f) { "zero window" }
+                val san = MontageLogic.sanitize(
+                    listOf(
+                        ca.copy(path = "missing.wav"),
+                        cb.copy(path = File(tmp, "sanitize-real.wav").apply { writeBytes(ByteArray(10)) }.path,
+                                volumePercent = 9999, fadeInMs = -10, fadeOutMs = 99_999)
+                    )
+                )
+                check(san.size == 1 && san[0].volumePercent == 200 && san[0].fadeInMs == 0L && san[0].fadeOutMs == 10_000L) { "sanitize" }
+
+                // 2) المخزن: دورة حفظ/استرجاع ذرّية
+                run {
+                    val msf = File(tmp, "montage.json")
+                    MontageStore(msf).save(MontageProject(clips = listOf(ca), gapMs = 750, title = "ت"))
+                    val back = MontageStore(msf).project()
+                    check(back.gapMs == 750L && back.clips.first().id == "a") { "montage store roundtrip" }
+                }
+
+                // 3) التصيير: قص وتلاشٍ وفاصل من مصادر مختلفة المعدل والقنوات إلى WAV واحد 44.1k ستيريو
+                run {
+                    val mdir = File(tmp, "montage")
+                    val demo = MontageDemo.make(mdir)
+                    val proj = MontageProject(
+                        clips = listOf(
+                            MontageClip(id = "a", path = demo[0].path, title = "a", durationMs = 4000, startMs = 1000, endMs = 3000, fadeInMs = 500, fadeOutMs = 500),
+                            MontageClip(id = "c", path = demo[2].path, title = "c", durationMs = 3000, startMs = 500, endMs = 2500)
+                        ),
+                        gapMs = 500
+                    )
+                    val mout = File(mdir, "out.wav")
+                    val pvals = mutableListOf<Float>()
+                    val mr = MontageRender.render(proj, mout, onProgress = { pvals.add(it) })
+                    check(mr.ok) { mr.message ?: "render failed" }
+                    val mh = WavHeader.read(mout) ?: error("montage header")
+                    check(mh.sampleRate == 44100 && mh.channels == 2 && mh.bitsPerSample == 16) { "montage format" }
+                    check(Math.abs(mr.durationMs - 4500) <= 40) { "montage duration=${mr.durationMs}" }
+                    check(pvals.isNotEmpty() && pvals.last() >= 0.99f) { "progress end=${pvals.lastOrNull()}" }
+                    // عينات خام: تلاشٍ داخلي يبدأ قرب الصفر، صمت الفاصل، ذروة المقطع الثاني
+                    val raw = java.nio.file.Files.readAllBytes(mout.toPath())
+                    fun sampleAt(frame: Int): Int {
+                        val off = 44 + frame * 4
+                        if (off + 1 >= raw.size) return 0
+                        val lo = raw[off].toInt() and 0xFF
+                        val hi = raw[off + 1].toInt()
+                        return (hi shl 8) or lo
+                    }
+                    var headMax = 0
+                    for (f in 0 until 20) headMax = maxOf(headMax, Math.abs(sampleAt(f)))
+                    check(headMax < 400) { "fade-in head=$headMax" }
+                    var gapMax = 0
+                    for (f in 88_400 until 110_000) gapMax = maxOf(gapMax, Math.abs(sampleAt(f)))
+                    check(gapMax <= 4) { "gap silence=$gapMax" }
+                    var lateMax = 0
+                    for (f in 112_000 until 150_000) lateMax = maxOf(lateMax, Math.abs(sampleAt(f)))
+                    check(lateMax > 3000) { "late clip amplitude=$lateMax" }
+
+                    // 4) الإلغاء والفشل برسالة عربية واضحة
+                    val pc = MontageRender.render(proj, File(mdir, "cancel.wav"), cancelled = { true })
+                    check(!pc.ok && pc.message!!.contains("أُلغي")) { "cancel message" }
+                    val pf = MontageRender.render(MontageProject(), File(mdir, "empty.wav"))
+                    check(!pf.ok && pf.message != null) { "empty project fails" }
                 }
             }
 

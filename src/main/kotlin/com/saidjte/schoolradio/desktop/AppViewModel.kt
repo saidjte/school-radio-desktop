@@ -5,6 +5,7 @@ import com.saidjte.schoolradio.desktop.audio.DuckBus
 import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.MicLiveEngine
 import com.saidjte.schoolradio.desktop.audio.MixBus
+import com.saidjte.schoolradio.desktop.audio.MontageRender
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
 import com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS
@@ -32,6 +33,10 @@ import com.saidjte.schoolradio.desktop.data.MixerLogic
 import com.saidjte.schoolradio.desktop.data.MixerState
 import com.saidjte.schoolradio.desktop.data.MusicEqState
 import com.saidjte.schoolradio.desktop.data.DuckState
+import com.saidjte.schoolradio.desktop.data.MontageClip
+import com.saidjte.schoolradio.desktop.data.MontageLogic
+import com.saidjte.schoolradio.desktop.data.MontageProject
+import com.saidjte.schoolradio.desktop.data.MontageStore
 import com.saidjte.schoolradio.desktop.data.MusicLibraryStore
 import com.saidjte.schoolradio.desktop.data.NamedPlaylist
 import com.saidjte.schoolradio.desktop.data.PlaylistMath
@@ -87,7 +92,8 @@ enum class Tab(val label: String) {
     SCRIPT("سكريبت المذيع"),
     MUSIC("الموسيقى"),
     MIXER("وحدة المزج"),
-    RECORDINGS("التسجيلات")
+    RECORDINGS("التسجيلات"),
+    MONTAGE("المونتاج")
 }
 
 data class Track(val file: File, val title: String, val durationMs: Long, val category: String? = null)
@@ -1344,6 +1350,211 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         refreshRecordings()
     }
 
+    // ================= صفحة المونتاج (v0.33.0 «أضف صفحة المونتاج») =================
+    // مشروع تحرير صوتي كامل دون اتصال: مقاطع مرتّبة تُقص وتُوضع لها مستويات
+    // وتلاشين وفواصل، ثم تصيير في ملف WAV واحد 44.1k ستيريو — التصيير في خيط
+    // عمل مع تقدم حي وإلغاء، والمشروع محفوظ آليًا في montage.json.
+
+    private var montageStore = MontageStore(File(dataDir(), "montage.json"))
+    private val _montageProject = MutableStateFlow(montageStore.project())
+    val montageProject: StateFlow<MontageProject> = _montageProject.asStateFlow()
+
+    /** تقدم التصيير الجاري: null = خامل، وإلا 0..1 — الواجهة تشترط خمولًا قبل إطلاق جديد. */
+    private val _montageRenderProgress = MutableStateFlow<Float?>(null)
+    val montageRenderProgress: StateFlow<Float?> = _montageRenderProgress.asStateFlow()
+
+    private var montageRenderJob: Job? = null
+    @Volatile private var montageRenderCancelled = false
+
+    /** آخر ملف صُدِّر في هذه الجلسة — لزر «أضف المصدَّر إلى قائمة البث». */
+    private val _lastMontageExport = MutableStateFlow<File?>(null)
+    val lastMontageExport: StateFlow<File?> = _lastMontageExport.asStateFlow()
+
+    private fun persistMontage() {
+        runCatching { montageStore.save(_montageProject.value) }
+    }
+
+    /** ساعة mm:ss لرسائل المونتاج. */
+    private fun montageClock(ms: Long): String =
+        "%02d:%02d".format(ms / 60000L, (ms / 1000L) % 60L)
+
+    /**
+     * إضافة ملفات إلى نهاية المشروع: القابلة للفك وغير المكررة فقط — المدد
+     * تُحسب في خيط عمل ثم تُحبس نوافذ القص ويُحفظ المشروع.
+     */
+    fun addMontageFiles(files: List<File>) {
+        val existing = _montageProject.value.clips.map { it.path }.toSet()
+        val fresh = files.filter {
+            it.isFile && it.extension.lowercase() in RecordingsScanner.AUDIO_EXTENSIONS &&
+                    it.absolutePath !in existing
+        }
+        if (fresh.isEmpty()) return
+        val now = _montageProject.value
+        val pending = fresh.map { f ->
+            MontageClip(
+                id = MontageLogic.newClipId(),
+                path = f.absolutePath,
+                title = f.nameWithoutExtension
+            )
+        }
+        _montageProject.value = now.copy(clips = (now.clips + pending).take(MontageLogic.MAX_CLIPS))
+        persistMontage()
+        runScope.launch(Dispatchers.IO) {
+            val resolved = fresh.associate { it.absolutePath to durationOf(it) }
+            val clips = _montageProject.value.clips.map { c ->
+                val d = resolved[c.path] ?: return@map c
+                val (s, e) = MontageLogic.clampWindow(c.startMs, c.endMs, d)
+                c.copy(durationMs = d, startMs = s, endMs = e)
+            }
+            _montageProject.value = _montageProject.value.copy(clips = clips)
+            persistMontage()
+        }
+    }
+
+    /** تحرير مقطع (قص/مستوى/تلاشٍ) — الحبوس تُطبق هنا والمشروع يُحفظ. */
+    fun updateMontageClip(clipId: String, transform: (MontageClip) -> MontageClip) {
+        val clips = _montageProject.value.clips.map {
+            if (it.id == clipId) {
+                val t = transform(it)
+                val (s, e) = MontageLogic.clampWindow(t.startMs, t.endMs, t.durationMs)
+                t.copy(
+                    startMs = s, endMs = e,
+                    volumePercent = MontageLogic.clampVolume(t.volumePercent),
+                    fadeInMs = MontageLogic.clampFade(t.fadeInMs),
+                    fadeOutMs = MontageLogic.clampFade(t.fadeOutMs)
+                )
+            } else it
+        }
+        _montageProject.value = _montageProject.value.copy(clips = clips)
+        persistMontage()
+    }
+
+    /** ترتيب: نقل مقطع خطوة لأعلى (+1) أو لأسفل (−1) في القائمة. */
+    fun moveMontageClip(clipId: String, delta: Int) {
+        val clips = _montageProject.value.clips.toMutableList()
+        val i = clips.indexOfFirst { it.id == clipId }
+        if (i < 0) return
+        val j = i + delta
+        if (j < 0 || j >= clips.size) return
+        val tmp = clips[i]; clips[i] = clips[j]; clips[j] = tmp
+        _montageProject.value = _montageProject.value.copy(clips = clips)
+        persistMontage()
+    }
+
+    fun removeMontageClip(clipId: String) {
+        _montageProject.value = _montageProject.value.copy(
+            clips = _montageProject.value.clips.filterNot { it.id == clipId }
+        )
+        persistMontage()
+    }
+
+    fun clearMontage() {
+        _montageProject.value = _montageProject.value.copy(clips = emptyList())
+        persistMontage()
+    }
+
+    fun setMontageGap(ms: Long) {
+        _montageProject.value = _montageProject.value.copy(gapMs = MontageLogic.clampGap(ms))
+        persistMontage()
+    }
+
+    fun setMontageTitle(name: String) {
+        _montageProject.value = _montageProject.value.copy(title = name.trim().take(80))
+        persistMontage()
+    }
+
+    /**
+     * إطلاق تصيير المونتاج: المعاينة تعمل في المشغل نفسه (نفس قناة الموسيقى)،
+     * والتصدير يكتب في مجلد التسجيلات ويوقَّع باسم المذيع ويظهر في مكتبة
+     * التسجيلات فورًا. الحارس: لا تصييران معًا.
+     */
+    fun renderMontage(preview: Boolean) {
+        if (_montageRenderProgress.value != null) return
+        val p = _montageProject.value
+        if (p.clips.none { File(it.path).isFile }) {
+            _lastLibraryMessage.value = "أضف مقاطع موجودة على القرص أولًا"
+            return
+        }
+        val target = if (preview)
+            File(File(dataDir(), "montage"), "preview.wav")
+        else
+            RecordingsScanner.newRecordingFile(_recordingsDir.value, prefix = "مونتاج")
+        montageRenderCancelled = false
+        _montageRenderProgress.value = 0f
+        montageRenderJob = runScope.launch(Dispatchers.IO) {
+            val r = MontageRender.render(
+                p, target,
+                onProgress = { pr -> _montageRenderProgress.value = pr },
+                cancelled = { montageRenderCancelled }
+            )
+            _montageRenderProgress.value = null
+            when {
+                r.ok && preview -> {
+                    player.play(target)
+                    _lastLibraryMessage.value =
+                        "المعاينة جاهزة (${montageClock(r.durationMs)}) — تعمل في المشغل نفسه"
+                }
+                r.ok -> {
+                    signRecording(target, r.durationMs)
+                    _lastMontageExport.value = target
+                    _lastLibraryMessage.value =
+                        "صُدِّر المونتاج «${target.name}» — مدته ${montageClock(r.durationMs)} — جاهز في التسجيلات"
+                }
+                montageRenderCancelled -> _lastLibraryMessage.value = "أُلغي التصيير"
+                else -> _lastLibraryMessage.value = r.message ?: "فشل التصيير"
+            }
+        }
+    }
+
+    fun cancelMontageRender() {
+        if (_montageRenderProgress.value == null) return
+        montageRenderCancelled = true
+        montageRenderJob?.cancel()
+        _montageRenderProgress.value = null
+        _lastLibraryMessage.value = "أُلغي التصيير"
+    }
+
+    /** إضافة الملف المصدَّر إلى القائمة الجارية بلا تشغيل فوري — قرار البث للمذيع. */
+    fun addMontageExportToPlaylist(file: File): Boolean {
+        if (!file.isFile) return false
+        if (_playlist.value.any { it.file == file }) return false
+        val track = trackFor(file)
+        _playlist.value = _playlist.value + track
+        playlistStore.setPaths(
+            _activePlaylistId.value,
+            _playlist.value.map { it.file.path },
+            _currentIndex.value
+        )
+        _lastLibraryMessage.value = "أُضيف «${file.nameWithoutExtension}» إلى قائمة البث"
+        return true
+    }
+
+    /** مقاطع عرض تجريبية للفحص البصري والأتمتة — نوافذ قص وتلاشين حقيقية بلا عتاد. */
+    fun montageDemo() {
+        val dir = File(System.getProperty("java.io.tmpdir"), "montage-demo-${System.currentTimeMillis()}")
+        val files = com.saidjte.schoolradio.desktop.audio.MontageDemo.make(dir)
+        addMontageFiles(files)
+        runScope.launch(Dispatchers.IO) {
+            // انتظر حل المدد ثم ضع نوافذ قص حية تُظهر قوة الصفحة
+            var guard = 0
+            while (_montageProject.value.clips.any { it.durationMs == 0L } && guard < 60) {
+                delay(100); guard++
+            }
+            val clips = _montageProject.value.clips
+            if (clips.size >= 3 && clips.all { it.durationMs > 0L }) {
+                _montageProject.value = _montageProject.value.copy(
+                    gapMs = 500L,
+                    clips = listOf(
+                        clips[0].copy(startMs = 500, endMs = clips[0].durationMs - 500, fadeInMs = 400, fadeOutMs = 400),
+                        clips[1].copy(startMs = 1000, endMs = clips[1].durationMs, volumePercent = 70),
+                        clips[2].copy(startMs = 0, endMs = clips[2].durationMs, fadeInMs = 300)
+                    )
+                )
+                persistMontage()
+            }
+        }
+    }
+
     // ================= النسخ الاحتياطي JSON =================
     // للمشرف فقط — فحص إصدار وصياغة قبل الاستبدال + نسخ أمان .bak (مثل نسخة الهاتف)
 
@@ -1370,6 +1581,9 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         libraryStore = MusicLibraryStore(File(dataDir(), "library.json"))
         playlistStore = PlaylistStore(File(dataDir(), "playlist.json"))
         refreshPlaylistState(loadTracks = true)
+        // المونتاج: مشروع المستعاد من النسخة الاحتياطية
+        montageStore = MontageStore(File(dataDir(), "montage.json"))
+        _montageProject.value = montageStore.project()
         // جدار الجينغل: بيانات المجلد المستعاد قد تحمل مواضع ومستوى مختلفين
         loadJingleWall()
 

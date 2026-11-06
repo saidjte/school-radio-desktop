@@ -145,13 +145,15 @@ class StudioTest {
     fun `navigation restores integrated studio first with focused pages after it`() {
         // فلسفة v0.6.0: عودة الاستوديو المدمج شاشةً افتراضية كاملة، مع بقاء صفحات التركيز والإدارة المستقلة
         // v0.10.0: «وحدة المزج» صفحة تركيز سادسة بين الموسيقى والتسجيلات
+        // v0.33.0: «المونتاج» صفحة التحرير والتصدير السابعة بعد التسجيلات
         assertEquals(
-            listOf("STUDIO", "LIVE", "SCHEDULE", "SCRIPT", "MUSIC", "MIXER", "RECORDINGS"),
+            listOf("STUDIO", "LIVE", "SCHEDULE", "SCRIPT", "MUSIC", "MIXER", "RECORDINGS", "MONTAGE"),
             Tab.entries.map { it.name }
         )
         assertEquals("الاستوديو المدمج", Tab.entries.first().label)
         assertEquals("البث المباشر", Tab.entries.first { it.name == "LIVE" }.label)
         assertEquals("وحدة المزج", Tab.entries.first { it.name == "MIXER" }.label)
+        assertEquals("المونتاج", Tab.entries.first { it.name == "MONTAGE" }.label)
     }
 
     @Test
