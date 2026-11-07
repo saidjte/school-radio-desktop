@@ -33,7 +33,10 @@ import com.saidjte.schoolradio.desktop.data.MixerLogic
 import com.saidjte.schoolradio.desktop.data.MixerState
 import com.saidjte.schoolradio.desktop.data.MusicEqState
 import com.saidjte.schoolradio.desktop.data.DuckState
+import com.saidjte.schoolradio.desktop.data.Json
 import com.saidjte.schoolradio.desktop.data.MontageClip
+import com.saidjte.schoolradio.desktop.data.MontageEnvelope
+import com.saidjte.schoolradio.desktop.data.MontageHistory
 import com.saidjte.schoolradio.desktop.data.MontageLogic
 import com.saidjte.schoolradio.desktop.data.MontageProject
 import com.saidjte.schoolradio.desktop.data.MontageStore
@@ -72,6 +75,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -1354,6 +1358,11 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     // مشروع تحرير صوتي كامل دون اتصال: مقاطع مرتّبة تُقص وتُوضع لها مستويات
     // وتلاشين وفواصل، ثم تصيير في ملف WAV واحد 44.1k ستيريو — التصيير في خيط
     // عمل مع تقدم حي وإلغاء، والمشروع محفوظ آليًا في montage.json.
+    //
+    // v0.34.0 «الترقية الاحترافية» (البنود 1–15): سجل تراجع/إعادة وتحديد ورأس
+    // تشغيل محفوظ مع الجلسة، كروس فيد موحّد بين المتجاورة، مغلّفات ويڤ فورم
+    // وVU ومناطق التشبع، تقسيم عند الرأس وتطبيع وحلقة A/B ومعاينة من أي نقطة،
+    // وحفظ/فتح ملف مشروع.
 
     private var montageStore = MontageStore(File(dataDir(), "montage.json"))
     private val _montageProject = MutableStateFlow(montageStore.project())
@@ -1370,8 +1379,79 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     private val _lastMontageExport = MutableStateFlow<File?>(null)
     val lastMontageExport: StateFlow<File?> = _lastMontageExport.asStateFlow()
 
+    // ---- v0.34.0: حالة الاحتراف ----
+
+    /** سجل التراجع/الإعادة — لقطة قبل كل تغيير (وأثناء السحب لقطة واحدة). */
+    private val montageHistory = MontageHistory()
+
+    private val _montageCanUndo = MutableStateFlow(false)
+    val montageCanUndo: StateFlow<Boolean> = _montageCanUndo.asStateFlow()
+    private val _montageCanRedo = MutableStateFlow(false)
+    val montageCanRedo: StateFlow<Boolean> = _montageCanRedo.asStateFlow()
+
+    /** المقطع المحدد — هدف الحذف والتطبيع والاختصارات. */
+    private val _montageSelectedClipId = MutableStateFlow<String?>(null)
+    val montageSelectedClipId: StateFlow<String?> = _montageSelectedClipId.asStateFlow()
+
+    /** رأس التشغيل على الخط الزمني — يُحفظ في المشروع ويُستعاد مع الجلسة. */
+    private val _montagePlayheadMs = MutableStateFlow(_montageProject.value.playheadMs)
+    val montagePlayheadMs: StateFlow<Long> = _montagePlayheadMs.asStateFlow()
+
+    /** حلقة A/B: بداية ونهاية بالمللي ثانية — null = غير مضبوطة. */
+    private val _montageLoopStart = MutableStateFlow<Long?>(null)
+    val montageLoopStart: StateFlow<Long?> = _montageLoopStart.asStateFlow()
+    private val _montageLoopEnd = MutableStateFlow<Long?>(null)
+    val montageLoopEnd: StateFlow<Long?> = _montageLoopEnd.asStateFlow()
+    private val _montageLoopEnabled = MutableStateFlow(false)
+    val montageLoopEnabled: StateFlow<Boolean> = _montageLoopEnabled.asStateFlow()
+
+    /** مغلّفات المقاطع (ويڤ فورم/VU/تشبع) بحسب المقطع — تُحسب في خيط عمل. */
+    private val _montageEnvelopes = MutableStateFlow<Map<String, MontageEnvelope>>(emptyMap())
+    val montageEnvelopes: StateFlow<Map<String, MontageEnvelope>> = _montageEnvelopes.asStateFlow()
+    private var envelopeStamps: Map<String, String> = emptyMap()
+    private var envelopeJob: Job? = null
+
+    /** عند الإقلاع: مغلّفات المشروع المستعاد من الجلسة تُبنى فورًا فالويڤ فورم لا يولد فارغًا. */
+    init { refreshMontageStates() }
+
+    /** ختم المشروع الذي صُيِّرت معاينته الحالية — تُعاد استعمالها إن لم يتغير المشروع. */
+    @Volatile private var montagePreviewStamp: String? = null
+    private val montagePreviewFile: File
+        get() = File(File(dataDir(), "montage"), "preview.wav")
+
     private fun persistMontage() {
         runCatching { montageStore.save(_montageProject.value) }
+    }
+
+    /**
+     * بوابة كل تغيير في المشروع: لقطة تراجع، حفظ ذرّي، ثم تحديث حالات
+     * الاحتراف (التحديد الصالح/المغلّفات) — كل التعديلات تمرّ من هنا فلا
+     * مسار يتسلل بلا تاريخ ولا بلا حفظ.
+     */
+    private fun applyMontage(after: MontageProject, record: Boolean = true) {
+        val before = _montageProject.value
+        if (before == after) return
+        if (record) montageHistory.record(before)
+        _montageProject.value = after
+        persistMontage()
+        refreshMontageStates()
+    }
+
+    /** لقطة يدوية عند بدء سحبٍ متعدد التعديلات (قصّ بالمقابض) — تغيير واحد تاريخيًا. */
+    fun pushMontageHistory() {
+        montageHistory.pushCurrent(_montageProject.value)
+        refreshMontageStates()
+    }
+
+    private fun refreshMontageStates() {
+        _montageCanUndo.value = montageHistory.canUndo
+        _montageCanRedo.value = montageHistory.canRedo
+        val p = _montageProject.value
+        val ids = p.clips.map { it.id }.toSet()
+        if (_montageSelectedClipId.value !in ids) {
+            _montageSelectedClipId.value = p.clips.firstOrNull()?.id
+        }
+        requestMontageEnvelopes()
     }
 
     /** ساعة mm:ss لرسائل المونتاج. */
@@ -1380,7 +1460,8 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
 
     /**
      * إضافة ملفات إلى نهاية المشروع: القابلة للفك وغير المكررة فقط — المدد
-     * تُحسب في خيط عمل ثم تُحبس نوافذ القص ويُحفظ المشروع.
+     * تُحسب في خيط عمل ثم تُحبس نوافذ القص ويُحفظ المشروع (الاستكمال بلا
+     * لقطة تراجع فالحل نفسه ليس تعديلًا بشريًا).
      */
     fun addMontageFiles(files: List<File>) {
         val existing = _montageProject.value.clips.map { it.path }.toSet()
@@ -1397,8 +1478,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
                 title = f.nameWithoutExtension
             )
         }
-        _montageProject.value = now.copy(clips = (now.clips + pending).take(MontageLogic.MAX_CLIPS))
-        persistMontage()
+        applyMontage(now.copy(clips = (now.clips + pending).take(MontageLogic.MAX_CLIPS)))
         runScope.launch(Dispatchers.IO) {
             val resolved = fresh.associate { it.absolutePath to durationOf(it) }
             val clips = _montageProject.value.clips.map { c ->
@@ -1406,13 +1486,12 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
                 val (s, e) = MontageLogic.clampWindow(c.startMs, c.endMs, d)
                 c.copy(durationMs = d, startMs = s, endMs = e)
             }
-            _montageProject.value = _montageProject.value.copy(clips = clips)
-            persistMontage()
+            applyMontage(_montageProject.value.copy(clips = clips), record = false)
         }
     }
 
     /** تحرير مقطع (قص/مستوى/تلاشٍ) — الحبوس تُطبق هنا والمشروع يُحفظ. */
-    fun updateMontageClip(clipId: String, transform: (MontageClip) -> MontageClip) {
+    fun updateMontageClip(clipId: String, transform: (MontageClip) -> MontageClip, record: Boolean = true) {
         val clips = _montageProject.value.clips.map {
             if (it.id == clipId) {
                 val t = transform(it)
@@ -1425,11 +1504,10 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
                 )
             } else it
         }
-        _montageProject.value = _montageProject.value.copy(clips = clips)
-        persistMontage()
+        applyMontage(_montageProject.value.copy(clips = clips), record)
     }
 
-    /** ترتيب: نقل مقطع خطوة لأعلى (+1) أو لأسفل (−1) في القائمة. */
+    /** ترتيب: نقل مقطع خطوة لأعلى (+1) أو لأسفل (−1) — والسحب على الخط الزمني يستعمله تِباعًا. */
     fun moveMontageClip(clipId: String, delta: Int) {
         val clips = _montageProject.value.clips.toMutableList()
         val i = clips.indexOfFirst { it.id == clipId }
@@ -1437,38 +1515,328 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         val j = i + delta
         if (j < 0 || j >= clips.size) return
         val tmp = clips[i]; clips[i] = clips[j]; clips[j] = tmp
-        _montageProject.value = _montageProject.value.copy(clips = clips)
-        persistMontage()
+        applyMontage(_montageProject.value.copy(clips = clips))
     }
 
     fun removeMontageClip(clipId: String) {
-        _montageProject.value = _montageProject.value.copy(
-            clips = _montageProject.value.clips.filterNot { it.id == clipId }
+        applyMontage(
+            _montageProject.value.copy(
+                clips = _montageProject.value.clips.filterNot { it.id == clipId }
+            )
         )
-        persistMontage()
     }
 
     fun clearMontage() {
-        _montageProject.value = _montageProject.value.copy(clips = emptyList())
-        persistMontage()
+        applyMontage(_montageProject.value.copy(clips = emptyList()))
     }
 
     fun setMontageGap(ms: Long) {
-        _montageProject.value = _montageProject.value.copy(gapMs = MontageLogic.clampGap(ms))
-        persistMontage()
+        applyMontage(_montageProject.value.copy(gapMs = MontageLogic.clampGap(ms)))
+    }
+
+    /** كروس فيد موحّد بين المتجاورة (v0.34.0 — البند 5) — أكبر من صفر يُغني عن الفاصل. */
+    fun setMontageCrossfade(ms: Long) {
+        val v = MontageLogic.clampCrossfade(ms)
+        applyMontage(_montageProject.value.copy(crossfadeMs = v))
+        if (v > 0L) {
+            _lastLibraryMessage.value =
+                "الكروس فيد ${v}ms بين كل مقطعين متجاورين — يُغني عن الفاصل عند الحدود"
+        }
     }
 
     fun setMontageTitle(name: String) {
-        _montageProject.value = _montageProject.value.copy(title = name.trim().take(80))
+        applyMontage(_montageProject.value.copy(title = name.trim().take(80)))
+    }
+
+    // ---- v0.34.0: التراجع/الإعادة (البند 3) والتحديد والرأس ----
+
+    fun undoMontage() {
+        val prev = montageHistory.undo(_montageProject.value)
+        if (prev == null) {
+            _lastLibraryMessage.value = "لا يوجد ما يُتراجع عنه"
+            return
+        }
+        _montageProject.value = prev
         persistMontage()
+        refreshMontageStates()
+        _lastLibraryMessage.value = "تم التراجع — Ctrl+Y للإعادة"
+    }
+
+    fun redoMontage() {
+        val next = montageHistory.redo(_montageProject.value)
+        if (next == null) {
+            _lastLibraryMessage.value = "لا يوجد ما يُعاد"
+            return
+        }
+        _montageProject.value = next
+        persistMontage()
+        refreshMontageStates()
+        _lastLibraryMessage.value = "تمت الإعادة"
+    }
+
+    fun selectMontageClip(clipId: String?) {
+        _montageSelectedClipId.value = clipId
+    }
+
+    /**
+     * ضبط رأس التشغيل: التنقل اليدوي يُحفظ في المشروع (استعادة الجلسة)،
+     * ونبضة التشغيل الحيّة لا تُكتب كل مرة كي لا يُغرق القرص — تُثبّت عند
+     * الإيقاف وعند مغادرة الصفحة.
+     */
+    fun setMontagePlayhead(ms: Long, persist: Boolean = true) {
+        val p = _montageProject.value
+        val total = MontageLogic.totalDurationMs(p.clips, p.gapMs, p.crossfadeMs)
+        val v = ms.coerceIn(0L, total)
+        _montagePlayheadMs.value = v
+        if (persist) {
+            _montageProject.value = p.copy(playheadMs = v)
+            persistMontage()
+        }
+    }
+
+    // ---- v0.34.0: التقسيم (البند 2) والحذف الممتد والتطبيع (البند 7) ----
+
+    /** تقسيم المقطع الحاوي للرأس عند الرأس (مفتاح S) — الرأس يبقى عند نقطة الفصل. */
+    fun splitMontageAtPlayhead() {
+        val p = _montageProject.value
+        val head = _montagePlayheadMs.value
+        val starts = MontageLogic.clipStartMs(p.clips, p.gapMs, p.crossfadeMs)
+        val idx = p.clips.indices.firstOrNull { i ->
+            val s = starts[i]
+            head > s && head < s + MontageLogic.clipDurationMs(p.clips[i])
+        }
+        if (idx == null) {
+            _lastLibraryMessage.value = "ضع الرأس داخل مقطع أولًا كي تُقسّمه"
+            return
+        }
+        val clip = p.clips[idx]
+        val pair = MontageLogic.splitClipAt(clip, head - starts[idx])
+        if (pair == null) {
+            _lastLibraryMessage.value = "التقسيم عند حافة المقطع لا يُنتج مقطعين"
+            return
+        }
+        val clips = p.clips.toMutableList()
+        clips.removeAt(idx)
+        clips.add(idx, pair.second)
+        clips.add(idx, pair.first)
+        applyMontage(p.copy(clips = clips))
+        _montageSelectedClipId.value = pair.second.id
+        _lastLibraryMessage.value = "انقسم «${clip.title}» إلى مقطعين عند الرأس"
+    }
+
+    /** حذف المقطع المحدد — الخط الزمني التسلسلي يُغلق مكانه تلقائيًا (حذف ممتد). */
+    fun deleteSelectedMontageClip() {
+        val id = _montageSelectedClipId.value
+        if (id == null) {
+            _lastLibraryMessage.value = "حدّد مقطعًا أولًا (نقرًا عليه)"
+            return
+        }
+        val title = _montageProject.value.clips.firstOrNull { it.id == id }?.title ?: return
+        removeMontageClip(id)
+        _lastLibraryMessage.value = "حُذف «$title» وأُغلق مكانه"
+    }
+
+    /**
+     * تطبيع المقطع (البند 7): الذروة الخام تُقاس من المصدر في خيط عمل،
+     * والمستوى يُضبط ليلامس هدف التطبيع — محبوسًا 1..200٪.
+     */
+    fun normalizeMontageClip(clipId: String) {
+        val clip = _montageProject.value.clips.firstOrNull { it.id == clipId } ?: return
+        if (!File(clip.path).isFile) {
+            _lastLibraryMessage.value = "ملف المقطع مفقود فلا تطبيع ممكن"
+            return
+        }
+        runScope.launch(Dispatchers.IO) {
+            val raw = MontageRender.computeRawPeak(clip)
+            val newVol = MontageLogic.normalizedVolumePercent(raw)
+            val old = clip.volumePercent
+            updateMontageClip(clipId, { it.copy(volumePercent = newVol) })
+            _lastLibraryMessage.value =
+                if (raw > 0) "تطبيع «${clip.title}»: الذروة الخام $raw والمستوى $old٪ ← $newVol٪"
+                else "تطبيع «${clip.title}»: الذروة صفر — أُبقي المستوى كما هو"
+        }
+    }
+
+    fun normalizeSelectedMontageClip() {
+        val id = _montageSelectedClipId.value
+        if (id == null) {
+            _lastLibraryMessage.value = "حدّد مقطعًا أولًا (نقرًا عليه)"
+            return
+        }
+        normalizeMontageClip(id)
+    }
+
+    // ---- v0.34.0: مغلّفات العرض (ويڤ فورم + VU + تشبع — البندان 1 و8) ----
+
+    /**
+     * طلب إعادة حساب المغلّفات: فقط المقاطع التي تغيّر ختمها (النافذة أو
+     * المستوى أو التلاشين) تُعاد — والبقية من الكاش فالسحب الحيّ رشيق.
+     */
+    private fun requestMontageEnvelopes() {
+        val p = _montageProject.value
+        val wanted = p.clips.associate { c ->
+            c.id to "${c.path}|${c.startMs}|${c.endMs}|${c.durationMs}|${c.volumePercent}|${c.fadeInMs}|${c.fadeOutMs}"
+        }
+        val missing = wanted.filter { (id, stamp) -> envelopeStamps[id] != stamp }
+        envelopeStamps = envelopeStamps.filterKeys { it in wanted }
+        if (missing.isEmpty()) return
+        envelopeJob?.cancel()
+        envelopeJob = runScope.launch(Dispatchers.IO) {
+            for ((id, stamp) in missing) {
+                if (!isActive) break
+                val clip = _montageProject.value.clips.firstOrNull { it.id == id } ?: continue
+                val env = MontageRender.computeEnvelope(clip, montageEnvelopeBuckets(clip))
+                envelopeStamps = envelopeStamps + (id to stamp)
+                _montageEnvelopes.value = _montageEnvelopes.value + (id to env)
+            }
+        }
+    }
+
+    /** نقاط دلاء المغلّف بحسب المدة — كثافة عرض ثابتة بصريًا على كل الأطوال. */
+    private fun montageEnvelopeBuckets(clip: MontageClip): Int {
+        val ms = MontageLogic.clipDurationMs(clip)
+        return when {
+            ms <= 0L -> 16
+            ms <= 5_000L -> 80
+            ms <= 30_000L -> 200
+            else -> 400
+        }
+    }
+
+    // ---- v0.34.0: المعاينة من أي نقطة (البند 9) وحلقة A/B ----
+
+    /** ختم محتوى المشروع — المعاينة تُعاد فقط عند تغيّره فعليًا. */
+    private fun montageStamp(p: MontageProject): String =
+        p.clips.joinToString("|") {
+            "${it.id}:${it.startMs}-${it.endMs}:${it.volumePercent}:${it.fadeInMs}-${it.fadeOutMs}"
+        } + "#${p.gapMs}#${p.crossfadeMs}"
+
+    /**
+     * تشغيل/إيقاف المعاينة من موضع الرأس: إن كانت معاينة المشروع الحالي جاهزة
+     * فُتحت موقوفة عند الرأس مباشرة، وإلا صُيِّرت أولًا ثم فُتحت عند الرأس —
+     * بأي الحالتين أول ضغطة تكمل من الرأس لا تعيد من الصفر.
+     */
+    fun toggleMontagePreview() {
+        val p = _montageProject.value
+        if (p.clips.none { File(it.path).isFile }) {
+            _lastLibraryMessage.value = "أضف مقاطع موجودة على القرص أولًا"
+            return
+        }
+        // إن كانت المعاينة تعمل بالفعل — إيقاف/تشغيل فقط
+        if (player.currentFile.value == montagePreviewFile && player.hasTrack.value) {
+            player.toggle()
+            if (!player.isPlaying.value) setMontagePlayhead(player.positionMs.value)
+            return
+        }
+        val stamp = montageStamp(p)
+        if (montagePreviewStamp == stamp && montagePreviewFile.isFile &&
+            player.preparePaused(montagePreviewFile, _montagePlayheadMs.value)
+        ) {
+            player.toggle()
+            _lastLibraryMessage.value =
+                "معاينة من ${montageClock(_montagePlayheadMs.value)} — مسافة للإيقاف"
+        } else {
+            renderMontage(preview = true, thenPlayFromPlayhead = true)
+        }
+    }
+
+    /** إيقاف المعاينة نهائيًا — يُثبّت الرأس حيث وصل (يُستعاد مع الجلسة). */
+    fun stopMontagePreview() {
+        if (player.currentFile.value == montagePreviewFile && player.hasTrack.value) {
+            val pos = player.positionMs.value
+            player.stop()
+            setMontagePlayhead(pos)
+        }
+    }
+
+    fun setMontageLoopStartAtPlayhead() {
+        _montageLoopStart.value = _montagePlayheadMs.value
+        _lastLibraryMessage.value = "بداية الحلقة عند ${montageClock(_montageLoopStart.value ?: 0L)}"
+    }
+
+    fun setMontageLoopEndAtPlayhead() {
+        _montageLoopEnd.value = _montagePlayheadMs.value
+        _lastLibraryMessage.value = "نهاية الحلقة عند ${montageClock(_montageLoopEnd.value ?: 0L)}"
+    }
+
+    fun toggleMontageLoop() {
+        val s = _montageLoopStart.value
+        val e = _montageLoopEnd.value
+        if (s == null || e == null || e <= s) {
+            _lastLibraryMessage.value = "اضبط A ثم B بنقطتين صالحتين كي تعمل الحلقة"
+            return
+        }
+        _montageLoopEnabled.value = !_montageLoopEnabled.value
+        _lastLibraryMessage.value =
+            if (_montageLoopEnabled.value) "الحلقة تعمل: ${montageClock(s)} ← ${montageClock(e)}"
+            else "أُوقفت الحلقة"
+    }
+
+    fun clearMontageLoop() {
+        _montageLoopEnabled.value = false
+        _montageLoopStart.value = null
+        _montageLoopEnd.value = null
+        _lastLibraryMessage.value = "مُسحت الحلقة"
+    }
+
+    /**
+     * نبضة الحلقة تُستدعى دوريًا من صفحة المونتاج أثناء التشغيل — قرار نقّي
+     * على المحرك: تجاوز النهاية يعود للبداية بسعيٍ محسوب.
+     */
+    fun montageLoopTick() {
+        if (!_montageLoopEnabled.value) return
+        val s = _montageLoopStart.value ?: return
+        val e = _montageLoopEnd.value ?: return
+        if (player.currentFile.value != montagePreviewFile || !player.isPlaying.value) return
+        val target = MontageLogic.loopSeekMs(player.positionMs.value, s, e) ?: return
+        player.seek(target)
+        _montagePlayheadMs.value = target
+    }
+
+    // ---- v0.34.0: حفظ/فتح ملف المشروع (البند 11) ----
+
+    /** حفظ نسخة المشروع في ملف يختاره المذيع — JSON غير إتلافي قابل لإعادة الفتح. */
+    fun exportMontageProject(file: File) {
+        if (Json.save(file, _montageProject.value)) {
+            _lastLibraryMessage.value = "حُفظ المشروع في «${file.name}»"
+        } else {
+            _lastLibraryMessage.value = "تعذّر حفظ المشروع في «${file.name}»"
+        }
+    }
+
+    /** فتح ملف مشروع: لقطة تراجع ثم استبدال كامل — الفساد يُردّ بأمان. */
+    fun importMontageProject(file: File) {
+        if (!file.isFile) {
+            _lastLibraryMessage.value = "ملف المشروع غير موجود"
+            return
+        }
+        val loaded = runCatching {
+            Json.gson.fromJson(file.readText(Charsets.UTF_8), MontageProject::class.java)
+        }.getOrNull()
+        if (loaded == null) {
+            _lastLibraryMessage.value = "ملف المشروع تالف فلم يُفتح"
+            return
+        }
+        applyMontage(loaded)
+        _montagePlayheadMs.value = loaded.playheadMs.coerceAtLeast(0L)
+        _lastLibraryMessage.value = "فُتح المشروع «${file.nameWithoutExtension}» — ${loaded.clips.size} مقاطع"
+    }
+
+    /** اسم ملف مشروع افتراضي مسمّى بالتاريخ — لحفظ نسخ منظمة. */
+    fun montageProjectDefaultName(): String {
+        val t = java.time.LocalDateTime.now()
+        return "مشروع-مونتاج-%04d%02d%02d-%02d%02d.json".format(
+            t.year, t.monthValue, t.dayOfMonth, t.hour, t.minute
+        )
     }
 
     /**
      * إطلاق تصيير المونتاج: المعاينة تعمل في المشغل نفسه (نفس قناة الموسيقى)،
      * والتصدير يكتب في مجلد التسجيلات ويوقَّع باسم المذيع ويظهر في مكتبة
-     * التسجيلات فورًا. الحارس: لا تصييران معًا.
+     * التسجيلات فورًا. الحارس: لا تصييران معًا. thenPlayFromPlayhead يفتح
+     * المعاينة موقوفة عند الرأس — «معاينة من أي نقطة» (البند 9).
      */
-    fun renderMontage(preview: Boolean) {
+    fun renderMontage(preview: Boolean, thenPlayFromPlayhead: Boolean = false) {
         if (_montageRenderProgress.value != null) return
         val p = _montageProject.value
         if (p.clips.none { File(it.path).isFile }) {
@@ -1479,6 +1847,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
             File(File(dataDir(), "montage"), "preview.wav")
         else
             RecordingsScanner.newRecordingFile(_recordingsDir.value, prefix = "مونتاج")
+        if (preview) montagePreviewStamp = null // ما يُصيَّر الآن هو الأحدث دائمًا
         montageRenderCancelled = false
         _montageRenderProgress.value = 0f
         montageRenderJob = runScope.launch(Dispatchers.IO) {
@@ -1490,9 +1859,21 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
             _montageRenderProgress.value = null
             when {
                 r.ok && preview -> {
-                    player.play(target)
-                    _lastLibraryMessage.value =
-                        "المعاينة جاهزة (${montageClock(r.durationMs)}) — تعمل في المشغل نفسه"
+                    if (thenPlayFromPlayhead) {
+                        montagePreviewStamp = montageStamp(p)
+                        if (player.preparePaused(target, _montagePlayheadMs.value)) {
+                            player.toggle()
+                            _lastLibraryMessage.value =
+                                "المعاينة جاهزة — تشغيل من ${montageClock(_montagePlayheadMs.value)} — مسافة للإيقاف"
+                        } else {
+                            player.play(target)
+                            _lastLibraryMessage.value = "المعاينة جاهزة (${montageClock(r.durationMs)})"
+                        }
+                    } else {
+                        player.play(target)
+                        _lastLibraryMessage.value =
+                            "المعاينة جاهزة (${montageClock(r.durationMs)}) — تعمل في المشغل نفسه"
+                    }
                 }
                 r.ok -> {
                     signRecording(target, r.durationMs)
@@ -1514,7 +1895,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         _lastLibraryMessage.value = "أُلغي التصيير"
     }
 
-    /** إضافة الملف المصدَّر إلى القائمة الجارية بلا تشغيل فوري — قرار البث للمذيع. */
+    /** إضافة الملف المصدَّر إلى القائمة الجارية بلا تشغيل فوري — قرار البث للمذيع (البند 13). */
     fun addMontageExportToPlaylist(file: File): Boolean {
         if (!file.isFile) return false
         if (_playlist.value.any { it.file == file }) return false
@@ -1542,19 +1923,49 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
             }
             val clips = _montageProject.value.clips
             if (clips.size >= 3 && clips.all { it.durationMs > 0L }) {
-                _montageProject.value = _montageProject.value.copy(
-                    gapMs = 500L,
-                    clips = listOf(
-                        clips[0].copy(startMs = 500, endMs = clips[0].durationMs - 500, fadeInMs = 400, fadeOutMs = 400),
-                        clips[1].copy(startMs = 1000, endMs = clips[1].durationMs, volumePercent = 70),
-                        clips[2].copy(startMs = 0, endMs = clips[2].durationMs, fadeInMs = 300)
-                    )
+                applyMontage(
+                    _montageProject.value.copy(
+                        gapMs = 500L,
+                        crossfadeMs = 0L,
+                        clips = listOf(
+                            clips[0].copy(startMs = 500, endMs = clips[0].durationMs - 500, fadeInMs = 400, fadeOutMs = 400),
+                            clips[1].copy(startMs = 1000, endMs = clips[1].durationMs, volumePercent = 70),
+                            clips[2].copy(startMs = 0, endMs = clips[2].durationMs, fadeInMs = 300)
+                        )
+                    ),
+                    record = false
                 )
-                persistMontage()
             }
         }
     }
 
+    /**
+     * تنفيذ اختصارات صفحة المونتاج (البند 10) — بوابة واحدة من معالج النافذة
+     * كالاستوديو تمامًا، فلا مسار مفتاحٍ يتسلل خارج البروتوكول.
+     */
+    fun applyMontageShortcut(a: com.saidjte.schoolradio.desktop.ui.MontageShortcutAction) {
+        when (a) {
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.PreviewPlayPause -> toggleMontagePreview()
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.SplitAtPlayhead -> splitMontageAtPlayhead()
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.DeleteSelected -> deleteSelectedMontageClip()
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.Undo -> undoMontage()
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.Redo -> redoMontage()
+            is com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.PlayheadMove ->
+                setMontagePlayhead(_montagePlayheadMs.value + a.deltaMs)
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.SelectPrev -> {
+                val p = _montageProject.value
+                val i = p.clips.indexOfFirst { it.id == _montageSelectedClipId.value }
+                val t = if (i <= 0) 0 else i - 1
+                _montageSelectedClipId.value = p.clips.getOrNull(t)?.id
+            }
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.SelectNext -> {
+                val p = _montageProject.value
+                val i = p.clips.indexOfFirst { it.id == _montageSelectedClipId.value }
+                val t = if (i < 0) 0 else (i + 1).coerceAtMost(p.clips.size - 1)
+                _montageSelectedClipId.value = p.clips.getOrNull(t)?.id
+            }
+        }
+    }
     // ================= النسخ الاحتياطي JSON =================
     // للمشرف فقط — فحص إصدار وصياغة قبل الاستبدال + نسخ أمان .bak (مثل نسخة الهاتف)
 

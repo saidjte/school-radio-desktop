@@ -28,7 +28,9 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.input.key.isShiftPressed
 import com.saidjte.schoolradio.desktop.AppViewModel
+import com.saidjte.schoolradio.desktop.Tab
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -121,10 +123,79 @@ fun Modifier.observesTextEditing(): Modifier = composed {
 fun handleGlobalShortcut(vm: AppViewModel, event: KeyEvent, guardTextEditing: Boolean): Boolean {
     if (event.type != KeyEventType.KeyDown) return false
     if (guardTextEditing && TextEditing.active) return false
+    // صفحة المونتاج تملك بروتوكولها الخاص (v0.34.0) — فلا مسافة تُطلق الموسيقى
+    // ولا أرقام تُطلق جينلات والاستوديو بعيد، والعكس صحيح.
+    if (vm.tab.value == Tab.MONTAGE) return handleMontageShortcut(vm, event)
     val action = resolveShortcut(
         event.key, event.isCtrlPressed, event.isAltPressed, event.isMetaPressed
     ) ?: return false
     vm.applyShortcut(action)
+    return true
+}
+
+// ================= اختصارات صفحة المونتاج (v0.34.0 — البند 10) =================
+// مفتاح التحرير السريع: تشتغل حين صفحة المونتاج هي الحالية فقط فلا تسرق
+// مسافة/الأسهم من الاستوديو، وتنطفئ آليًا في أي حقل نصي.
+
+sealed interface MontageShortcutAction {
+    /** مسافة: تشغيل/إيقاف المعاينة من موضع الرأس. */
+    data object PreviewPlayPause : MontageShortcutAction
+
+    /** S: تقسيم المقطع الحاوي للرأس عند الرأس. */
+    data object SplitAtPlayhead : MontageShortcutAction
+
+    /** Delete/Backspace: حذف المقطع المحدد (والخط الزمني يُغلق مكانَه). */
+    data object DeleteSelected : MontageShortcutAction
+
+    /** Ctrl+Z: تراجع عن آخر تعديل. */
+    data object Undo : MontageShortcutAction
+
+    /** Ctrl+Y أو Ctrl+Shift+Z: إعادة آخر تراجع. */
+    data object Redo : MontageShortcutAction
+
+    /** ←/→: تحريك رأس التشغيل — 100ms عاديًا و10ms مع Shift (دقة نتح). */
+    data class PlayheadMove(val deltaMs: Long) : MontageShortcutAction
+
+    /** ↑/↓: تحديد المقطع السابق/التالي. */
+    data object SelectPrev : MontageShortcutAction
+
+    /** ↑/↓: تحديد المقطع السابق/التالي. */
+    data object SelectNext : MontageShortcutAction
+}
+
+/**
+ * حلّ مفتاح صفحة المونتاج: مفاتيح حرة (مسافة/S/Delete/الأسهم) ومركّبة
+ * (Ctrl+Z/Y) — يُحتكم إليها فقط حين المونتاج هي الصفحة الحالية.
+ */
+fun resolveMontageShortcut(
+    key: Key, ctrl: Boolean, shift: Boolean, alt: Boolean, meta: Boolean
+): MontageShortcutAction? {
+    if (alt || meta) return null
+    return when {
+        key == Key.Spacebar && !ctrl && !shift -> MontageShortcutAction.PreviewPlayPause
+        key == Key.S && !ctrl && !shift -> MontageShortcutAction.SplitAtPlayhead
+        (key == Key.Delete || key == Key.Backspace) && !ctrl && !shift -> MontageShortcutAction.DeleteSelected
+        key == Key.Z && ctrl && shift -> MontageShortcutAction.Redo
+        key == Key.Z && ctrl && !shift -> MontageShortcutAction.Undo
+        key == Key.Y && ctrl -> MontageShortcutAction.Redo
+        key == Key.DirectionLeft && !ctrl -> MontageShortcutAction.PlayheadMove(if (shift) -10L else -100L)
+        key == Key.DirectionRight && !ctrl -> MontageShortcutAction.PlayheadMove(if (shift) 10L else 100L)
+        key == Key.DirectionUp && !ctrl && !shift -> MontageShortcutAction.SelectPrev
+        key == Key.DirectionDown && !ctrl && !shift -> MontageShortcutAction.SelectNext
+        else -> null
+    }
+}
+
+/**
+ * معالج مفاتيح صفحة المونتاج — يُنفّذ على [vm] ويعيد true عند الاستهلاك.
+ * يحرس التحرير النصي كالبروتوكول العام تمامًا.
+ */
+fun handleMontageShortcut(vm: AppViewModel, event: KeyEvent): Boolean {
+    if (event.type != KeyEventType.KeyDown) return false
+    val action = resolveMontageShortcut(
+        event.key, event.isCtrlPressed, event.isShiftPressed, event.isAltPressed, event.isMetaPressed
+    ) ?: return false
+    vm.applyMontageShortcut(action)
     return true
 }
 
@@ -178,6 +249,44 @@ fun ShortcutsDialog(onDismiss: () -> Unit) {
                         style = MaterialTheme.typography.labelLarge.numeric(),
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+            Text(
+                "اختصارات صفحة المونتاج — تعمل حين تكون صفحة المونتاج مفتوحة:",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            val montageRows = listOf(
+                "مسافة" to "تشغيل / إيقاف المعاينة من موضع الرأس",
+                "S" to "تقسيم المقطع عند موضع رأس التشغيل",
+                "Delete" to "حذف المقطع المحدد ويُغلق الخط مكانه",
+                "← / →" to "تحريك رأس التشغيل 100ms (مع Shift: 10ms بدقة)",
+                "↑ / ↓" to "تحديد المقطع السابق / التالي",
+                "Ctrl+Z / Ctrl+Y" to "تراجع / إعادة آخر تعديل"
+            )
+            montageRows.forEach { (keys, label) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        keys,
+                        modifier = Modifier
+                            .width(120.dp)
+                            .background(
+                                MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelLarge.numeric(),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.tertiary
                     )
                     Text(
                         label,

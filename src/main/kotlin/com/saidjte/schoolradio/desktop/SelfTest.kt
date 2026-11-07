@@ -19,6 +19,7 @@ import com.saidjte.schoolradio.desktop.data.DevicesJson
 import com.saidjte.schoolradio.desktop.data.MeterLogic
 import com.saidjte.schoolradio.desktop.data.MeterZone
 import com.saidjte.schoolradio.desktop.data.MontageClip
+import com.saidjte.schoolradio.desktop.data.MontageHistory
 import com.saidjte.schoolradio.desktop.data.MontageLogic
 import com.saidjte.schoolradio.desktop.data.MontageProject
 import com.saidjte.schoolradio.desktop.data.MontageStore
@@ -1423,6 +1424,110 @@ object SelfTest {
                     check(!pc.ok && pc.message!!.contains("أُلغي")) { "cancel message" }
                     val pf = MontageRender.render(MontageProject(), File(mdir, "empty.wav"))
                     check(!pf.ok && pf.message != null) { "empty project fails" }
+                }
+            }
+
+            // ================= v0.34.0: الترقية الاحترافية للمونتاج =================
+            run {
+                // 1) رياضيات الكروس فيد والخط الزمني وقوة متساوية
+                val xa = MontageClip(id = "xa", path = "/x/a.wav", title = "a", durationMs = 3000, startMs = 0, endMs = 3000)
+                val xb = MontageClip(id = "xb", path = "/x/b.wav", title = "b", durationMs = 3000, startMs = 0, endMs = 3000)
+                check(MontageLogic.totalDurationMs(listOf(xa, xb), 500, 0L) == 6500L) { "total gap" }
+                check(MontageLogic.totalDurationMs(listOf(xa, xb), 500, 1000L) == 5000L) { "total xf" }
+                check(MontageLogic.clipStartMs(listOf(xa, xb), 500, 1000L) == listOf(0L, 2000L)) { "starts xf" }
+                check(MontageLogic.effectiveOverlap(500, 3000, 1000) == 500L) { "overlap clamp" }
+                check(Math.abs(MontageLogic.crossfadeOutGain(0f) - 1f) < 1e-4f) { "xf out start" }
+                check(Math.abs(MontageLogic.crossfadeInGain(1f) - 1f) < 1e-4f) { "xf in end" }
+                val eMid = MontageLogic.crossfadeOutGain(0.5f).toDouble().let { it * it } +
+                        MontageLogic.crossfadeInGain(0.5f).toDouble().let { it * it }
+                check(Math.abs(eMid - 1.0) < 0.01) { "xf equal power" }
+                val mf = MontageLogic.MICRO_FADE_MS
+                check(MontageLogic.microFadeGainAt(0, 4000) == 0f) { "micro start" }
+                check(Math.abs(MontageLogic.microFadeGainAt(mf / 2, 4000) - 0.5f) < 0.01f) { "micro mid" }
+                check(MontageLogic.microFadeGainAt(mf + 1, 4000) == 1f) { "micro plateau" }
+
+                // 2) التقسيم والتطبيع والحلقة والتراجع
+                val sc = MontageClip(id = "sc", path = "/x/s.wav", title = "s", durationMs = 6000, startMs = 1000, endMs = 5000, volumePercent = 80, fadeInMs = 400, fadeOutMs = 600)
+                val pair = MontageLogic.splitClipAt(sc, 2000)!!
+                check(pair.first.endMs == 3000L && pair.second.startMs == 3000L) { "split windows" }
+                check(pair.first.fadeInMs == 400L && pair.second.fadeOutMs == 600L) { "split fades" }
+                check(MontageLogic.splitClipAt(sc, 0) == null) { "split edge" }
+                check(MontageLogic.normalizedVolumePercent(50_000) == 62) { "normalize map" }
+                check(MontageLogic.normalizedVolumePercent(12_000) == 200) { "normalize cap" }
+                check(MontageLogic.normalizedVolumePercent(0) == 100) { "normalize silence" }
+                check(MontageLogic.loopSeekMs(2000, 1000, 2000) == 1000L) { "loop wrap" }
+                check(MontageLogic.loopSeekMs(1999, 1000, 2000) == null) { "loop before end" }
+                check(MontageLogic.loopSeekMs(5000, 2000, 2000) == null) { "loop invalid" }
+                run {
+                    val h = MontageHistory(cap = 2)
+                    val a = MontageProject(title = "a"); val b = a.copy(title = "b"); val c = b.copy(title = "c"); val d = c.copy(title = "d")
+                    h.record(a); h.record(b); h.record(c)
+                    check(h.undo(d)!!.title == "c" && h.undo(c)!!.title == "b" && !h.canUndo) { "history cap" }
+                    h.record(b)
+                    check(!h.canRedo) { "record clears redo" }
+                }
+
+                // 3) التصيير: كروس فيد حقيقي + تلاشي دقيق + مغلّفات وذروة خام
+                run {
+                    val pdir = File(tmp, "pro")
+                    val t1 = MontageDemo.tone(File(pdir, "a.wav"), 44100, 2, 3000, 440.0)
+                    val t2 = MontageDemo.tone(File(pdir, "b.wav"), 44100, 2, 3000, 330.0)
+                    val xfProj = MontageProject(
+                        clips = listOf(
+                            MontageClip(id = "a", path = t1.path, title = "a", durationMs = 3000),
+                            MontageClip(id = "b", path = t2.path, title = "b", durationMs = 3000)
+                        ),
+                        gapMs = 500, crossfadeMs = 1000
+                    )
+                    val xout = File(pdir, "xf.wav")
+                    val xr = MontageRender.render(xfProj, xout)
+                    check(xr.ok && Math.abs(xr.durationMs - 5000) <= 40) { "xf render duration=${xr.durationMs}" }
+                    val xraw = java.nio.file.Files.readAllBytes(xout.toPath())
+                    fun sampleAt(frame: Int): Int {
+                        val off = 44 + frame * 4
+                        if (off + 1 >= xraw.size) return 0
+                        val lo = xraw[off].toInt() and 0xFF
+                        val hi = xraw[off + 1].toInt()
+                        return (hi shl 8) or lo
+                    }
+                    var overlapMax = 0
+                    for (f in (2000 * 44100 / 1000) until (3000 * 44100 / 1000)) overlapMax = maxOf(overlapMax, Math.abs(sampleAt(f)))
+                    check(overlapMax > 8000) { "xf overlap amplitude=$overlapMax" }
+                    var silentRun = 0; var worst = 0
+                    for (f in (2000 * 44100 / 1000) until (3000 * 44100 / 1000)) {
+                        if (Math.abs(sampleAt(f)) < 500) silentRun++ else { worst = maxOf(worst, silentRun); silentRun = 0 }
+                    }
+                    check(maxOf(worst, silentRun) < 441) { "xf silent run=${maxOf(worst, silentRun)}" }
+                    // تلاشي دقيق: قصّ صلب يبدأ من الصفر
+                    val single = MontageProject(clips = listOf(MontageClip(id = "s", path = t1.path, title = "s", durationMs = 3000)))
+                    val sout = File(pdir, "single.wav")
+                    check(MontageRender.render(single, sout).ok) { "single render" }
+                    val sraw = java.nio.file.Files.readAllBytes(sout.toPath())
+                    var headMax = 0
+                    for (f in 0 until 4) {
+                        val off = 44 + f * 4
+                        val lo = sraw[off].toInt() and 0xFF
+                        val hi = sraw[off + 1].toInt()
+                        headMax = maxOf(headMax, Math.abs((hi shl 8) or lo))
+                    }
+                    check(headMax < 500) { "micro head=$headMax" }
+                    // مغلّف العرض: دلاء وذروة خام
+                    val env = MontageRender.computeEnvelope(MontageClip(id = "a", path = t1.path, title = "a", durationMs = 3000), 80)
+                    check(env.peaks.size == 80 && env.maxPeak() > 0.25f) { "envelope peak=${env.maxPeak()}" }
+                    val raw = MontageRender.computeRawPeak(MontageClip(id = "a", path = t1.path, title = "a", durationMs = 3000))
+                    check(raw in 11_000..12_500) { "raw peak=$raw" }
+                }
+
+                // 4) المخزن: حقول جديدة وتوافق الملفات القديمة
+                run {
+                    val mf = File(tmp, "pro-montage.json")
+                    MontageStore(mf).save(MontageProject(clips = listOf(xa), gapMs = 250, crossfadeMs = 750, title = "ت", playheadMs = 1234))
+                    val back = MontageStore(mf).project()
+                    check(back.crossfadeMs == 750L && back.playheadMs == 1234L) { "store new fields" }
+                    val old = File(tmp, "pro-old.json")
+                    old.writeText("{\"clips\":[{\"id\":\"a\",\"path\":\"/x/a.wav\",\"title\":\"a\",\"durationMs\":3000,\"startMs\":0,\"endMs\":3000}],\"gapMs\":500,\"title\":\"قديم\"}")
+                    val legacy = MontageStore(old).project()
+                    check(legacy.crossfadeMs == 0L && legacy.playheadMs == 0L && legacy.clips.size == 1) { "legacy compat" }
                 }
             }
 

@@ -1,16 +1,26 @@
 package com.saidjte.schoolradio.desktop.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -18,28 +28,54 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.data.MontageClip
+import com.saidjte.schoolradio.desktop.data.MontageEnvelope
 import com.saidjte.schoolradio.desktop.data.MontageLogic
+import com.saidjte.schoolradio.desktop.data.MontageProject
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.io.File
+import kotlin.math.abs
+import kotlin.math.max
 
 /**
- * صفحة المونتاج (v0.33.0 «أضف صفحة المونتاج»): تجميع المقاطع (تسجيلات وملفات)
- * في قائمة مرتّبة، قص بداية كل مقطع ونهايته، مستوى صوت لكل مقطع، تلاشٍ داخل
- * وخارج، فاصل موحّد بين المقاطع — ثم معاينة في المشغل نفسه أو تصدير ملف
- * WAV واحد 44.1k ستيريو يظهر في التسجيلات ويُضاف إلى قائمة البث.
- * كل شيء دون اتصال: التصيير فكّ محلي وكتابة محلية بلا جهاز صوت ولا شبكة.
+ * صفحة المونتاج (v0.33.0 «أضف صفحة المونتاج» + v0.34.0 «الترقية الاحترافية»):
+ * خط زمني واحد بموجات صوتية حقيقية — تكبير وخريطة مصغرة ورأس تشغيل ومقابض
+ * قصّ بالسحب وسحب لإعادة الترتيب وكروس فيد بين المتجاورة — مع أدوات احترافية
+ * (تراجع/إعادة، تقسيم عند الرأس، حذف ممتد، تطبيع، حلقة A/B، مؤشر VU وتحذير
+ * تشبع) ومعاينة من أي نقطة وتصدير WAV واحد جاهز للبث، وحفظ/فتح ملف مشروع.
+ * كل ذلك دون اتصال: التصيير فكّ محلي وكتابة محلية بلا جهاز صوت ولا شبكة.
  */
 @Composable
 fun MontagePage(vm: AppViewModel) {
@@ -48,16 +84,52 @@ fun MontagePage(vm: AppViewModel) {
     val lastExport by vm.lastMontageExport.collectAsState()
     val message by vm.lastLibraryMessage.collectAsState()
     val recordings by vm.recordings.collectAsState()
+    val envelopes by vm.montageEnvelopes.collectAsState()
+    val selectedId by vm.montageSelectedClipId.collectAsState()
+    val playheadMs by vm.montagePlayheadMs.collectAsState()
+    val canUndo by vm.montageCanUndo.collectAsState()
+    val canRedo by vm.montageCanRedo.collectAsState()
+    val loopStart by vm.montageLoopStart.collectAsState()
+    val loopEnd by vm.montageLoopEnd.collectAsState()
+    val loopEnabled by vm.montageLoopEnabled.collectAsState()
+    val playing by vm.player.isPlaying.collectAsState()
 
     var showPicker by remember { mutableStateOf(false) }
     var editTarget by remember { mutableStateOf<MontageClip?>(null) }
     val rendering = progress != null
-    val totalMs = remember(project) { MontageLogic.totalDurationMs(project.clips, project.gapMs) }
+    val totalMs = remember(project) {
+        MontageLogic.totalDurationMs(project.clips, project.gapMs, project.crossfadeMs)
+    }
+    // تكبير الخط الزمني: بكسل لكل ثانية — 60 الافتراضي، والحدود تمنع ضياع الاتجاه
+    var pxPerSec by remember { mutableFloatStateOf(60f) }
+
+    // نبضة الصفحة: موضع المعاينة الحيّ → الرأس، ونبضة الحلقة A/B، ومؤشر VU
+    // (قراءة الحالات من التدفقات مباشرة كي لا تتجمد النبضة على قيمة قديمة)
+    var vuLevel by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(80)
+            vm.montageLoopTick()
+            if (vm.player.isPlaying.value) {
+                val cur = vm.player.currentFile.value
+                if (cur != null && cur.name == "preview.wav") {
+                    vm.setMontagePlayhead(vm.player.positionMs.value, persist = false)
+                }
+            }
+            val hit = envAndBucketAt(vm.montageProject.value, vm.montagePlayheadMs.value, vm.montageEnvelopes.value)
+            val target = hit?.first?.peakAt(hit.second) ?: 0f
+            vuLevel = max(target, vuLevel * 0.82f)
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { vm.stopMontagePreview() }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // الترويسة: العنوان والمدة الكلية الحيّة وأزرار الإضافة
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -97,29 +169,56 @@ fun MontagePage(vm: AppViewModel) {
             )
         }
         Text(
-            "رتّب المقاطع واقصص بدايتها ونهايتها وضع لكل مقطع مستوى وتلاشين وفاصلًا بين المقاطع، ثم صدّر المونتاج كله ملفًا واحدًا جاهزًا للبث — كل ذلك دون اتصال.",
+            "انقر على الخط الزمني لتضع الرأس، اسحب حافة المقطع لتقصّه بدقة الميلي ثانية، واسحب جسمه لإعادة ترتيبه — الكروس فيد يدمج المتجاورة والتصدير يخرج ملفًا واحدًا جاهزًا للبث.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        // الفاصل الموحّد بين المقاطع — صمت يُدرج آليًا عند التصيير
+        // شريط الأدوات الاحترافي: تراجع/إعادة/تقسيم/حذف/تطبيع/حفظ وفتح مشروع
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                "الفاصل بين المقاطع: ${project.gapMs} مللي ثانية",
-                style = MaterialTheme.typography.bodyMedium
+            SecondaryAction(
+                text = "تراجع",
+                enabled = !rendering && canUndo,
+                onClick = { vm.undoMontage() }
             )
             SecondaryAction(
-                text = "− 250",
-                enabled = !rendering && project.gapMs > 0,
-                onClick = { vm.setMontageGap(project.gapMs - 250) }
+                text = "إعادة",
+                enabled = !rendering && canRedo,
+                onClick = { vm.redoMontage() }
             )
             SecondaryAction(
-                text = "+ 250",
-                enabled = !rendering && project.gapMs < MontageLogic.GAP_MAX_MS,
-                onClick = { vm.setMontageGap(project.gapMs + 250) }
+                text = "تقسيم عند الرأس (S)",
+                enabled = !rendering && project.clips.isNotEmpty(),
+                onClick = { vm.splitMontageAtPlayhead() }
+            )
+            SecondaryAction(
+                text = "حذف المحدد (Del)",
+                enabled = !rendering && selectedId != null,
+                onClick = { vm.deleteSelectedMontageClip() }
+            )
+            SecondaryAction(
+                text = "تطبيع المحدد",
+                enabled = !rendering && selectedId != null,
+                onClick = { vm.normalizeSelectedMontageClip() }
+            )
+            SecondaryAction(
+                text = "حفظ المشروع…",
+                enabled = !rendering,
+                onClick = {
+                    val f = FilePickers.pickJsonSave(vm.montageProjectDefaultName())
+                    if (f != null) vm.exportMontageProject(f)
+                }
+            )
+            SecondaryAction(
+                text = "فتح مشروع…",
+                enabled = !rendering,
+                onClick = {
+                    val f = FilePickers.pickJsonOpen()
+                    if (f != null) vm.importMontageProject(f)
+                }
             )
         }
 
@@ -130,34 +229,101 @@ fun MontagePage(vm: AppViewModel) {
                 hint = "أضف مقاطع من تسجيلاتك أو من ملفاتك، ورتّبها وقصّها، ثم صدّرها ملفًا واحدًا جاهزًا للفاصل."
             )
         } else {
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxWidth().weight(1f)
-            ) {
-                itemsIndexed(project.clips) { i, clip ->
-                    MontageClipRow(
-                        index = i,
-                        clip = clip,
-                        count = project.clips.size,
-                        enabled = !rendering,
-                        onUp = { vm.moveMontageClip(clip.id, +1) },
-                        onDown = { vm.moveMontageClip(clip.id, -1) },
-                        onEdit = { editTarget = clip },
-                        onRemove = { vm.removeMontageClip(clip.id) }
-                    )
+            MontageTimelineCard(
+                vm = vm,
+                project = project,
+                envelopes = envelopes,
+                selectedId = selectedId,
+                playheadMs = playheadMs,
+                loopStart = loopStart,
+                loopEnd = loopEnd,
+                loopEnabled = loopEnabled,
+                vuLevel = vuLevel,
+                rendering = rendering,
+                pxPerSec = pxPerSec,
+                onZoom = { wider ->
+                    pxPerSec = (if (wider) pxPerSec * 1.4f else pxPerSec / 1.4f).coerceIn(15f, 800f)
+                },
+                onTrimStart = { vm.pushMontageHistory() },
+                onTrim = { id, s, e ->
+                    vm.updateMontageClip(id, { it.copy(startMs = s, endMs = e) }, record = false)
                 }
+            )
+        }
+
+        // الفاصل والكروس فيد: تبادليان على حدود المقاطع
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val xfOn = project.crossfadeMs > 0L
+            Text(
+                if (xfOn) "الكروس فيد: ${project.crossfadeMs} مللي ثانية"
+                else "الفاصل بين المقاطع: ${project.gapMs} مللي ثانية",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            SecondaryAction(
+                text = "− 250",
+                enabled = !rendering && (if (xfOn) project.crossfadeMs > 0 else project.gapMs > 0),
+                onClick = {
+                    if (xfOn) vm.setMontageCrossfade(project.crossfadeMs - 250)
+                    else vm.setMontageGap(project.gapMs - 250)
+                }
+            )
+            SecondaryAction(
+                text = "+ 250",
+                enabled = !rendering && (if (xfOn) project.crossfadeMs < MontageLogic.FADE_MAX_MS else project.gapMs < MontageLogic.GAP_MAX_MS),
+                onClick = {
+                    if (xfOn) vm.setMontageCrossfade(project.crossfadeMs + 250)
+                    else vm.setMontageGap(project.gapMs + 250)
+                }
+            )
+            SecondaryAction(
+                text = if (xfOn) "إيقاف الكروس فيد" else "تفعيل الكروس فيد 1000",
+                enabled = !rendering && project.clips.size >= 2,
+                onClick = {
+                    if (xfOn) vm.setMontageCrossfade(0L)
+                    else vm.setMontageCrossfade(1000L)
+                }
+            )
+            Text(
+                if (xfOn) "المتجاورة تتداخل بقوة متساوية — بلا فاصل صمت"
+                else "الكروس فيد يدمج نهاية كل مقطع ببداية تاليه بدل الصمت",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        // قائمة المقاطع التفصيلية — النقر يحدد والخط الزمني يزامن
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth().weight(1f)
+        ) {
+            itemsIndexed(project.clips) { i, clip ->
+                MontageClipRow(
+                    index = i,
+                    clip = clip,
+                    count = project.clips.size,
+                    enabled = !rendering,
+                    selected = clip.id == selectedId,
+                    onSelect = { vm.selectMontageClip(clip.id) },
+                    onUp = { vm.moveMontageClip(clip.id, +1) },
+                    onDown = { vm.moveMontageClip(clip.id, -1) },
+                    onEdit = { editTarget = clip },
+                    onRemove = { vm.removeMontageClip(clip.id) }
+                )
             }
         }
 
-        // التذييل: المعاينة والتصدير والتقدم والإلغاء
+        // التذييل: معاينة من الرأس وتصدير وتقدم وإلغاء وإضافة للقائمة
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             PrimaryAction(
-                text = "معاينة",
+                text = if (playing) "إيقاف المعاينة مؤقتًا" else "معاينة من الرأس",
                 enabled = !rendering && project.clips.any { File(it.path).isFile },
-                onClick = { vm.renderMontage(preview = true) }
+                onClick = { vm.toggleMontagePreview() }
             )
             PrimaryAction(
                 text = "تصدير ملف واحد",
@@ -185,6 +351,11 @@ fun MontagePage(vm: AppViewModel) {
                 }
             }
         }
+        Text(
+            "اختصارات الصفحة: مسافة معاينة/إيقاف · S تقسيم · Delete حذف المحدد · ←/→ تحريك الرأس (Shift: دقة 10ms) · ↑/↓ تحديد · Ctrl+Z/Y تراجع/إعادة",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         message?.let {
             Text(
                 it,
@@ -257,15 +428,627 @@ fun MontagePage(vm: AppViewModel) {
         MontageClipEditDialog(
             clip = clip,
             onSave = { s, e, vol, fi, fo ->
-                vm.updateMontageClip(clip.id) {
+                vm.updateMontageClip(clip.id, {
                     it.copy(startMs = s, endMs = e, volumePercent = vol, fadeInMs = fi, fadeOutMs = fo)
-                }
+                })
                 editTarget = null
             },
             onDismiss = { editTarget = null }
         )
     }
 }
+
+// ================= أدوات الموضع والمغلّفات =================
+
+/** المغلّف وفهرس دلوِه عند موضع زمني على الخط الزمني الكلي — للويڤ فورم وVU. */
+internal fun envAndBucketAt(
+    project: MontageProject,
+    playheadMs: Long,
+    envelopes: Map<String, MontageEnvelope>
+): Pair<MontageEnvelope, Int>? {
+    if (project.clips.isEmpty()) return null
+    val starts = MontageLogic.clipStartMs(project.clips, project.gapMs, project.crossfadeMs)
+    for (i in project.clips.indices) {
+        val s = starts[i]
+        val d = MontageLogic.clipDurationMs(project.clips[i])
+        if (playheadMs >= s && playheadMs < s + d) {
+            val env = envelopes[project.clips[i].id] ?: return null
+            val bucket = if (d > 0) ((playheadMs - s) * env.peaks.size / d).toInt() else 0
+            return env to bucket.coerceIn(0, env.peaks.size - 1)
+        }
+    }
+    return null
+}
+
+// ================= بطاقة الخط الزمني =================
+
+/**
+ * بطاقة الخط الزمني: صف تكبير وحلقة، خريطة مصغرة بنظرة عامة، الخط الزمني
+ * نفسه بموجاته داخل تمرير أفقي، ثم صف VU وزمن الرأس.
+ * الاتجاه داخل الخط الزمني LTR — عرف المحررات الصوتية حتى في الواجهات العربية.
+ */
+@Composable
+private fun MontageTimelineCard(
+    vm: AppViewModel,
+    project: MontageProject,
+    envelopes: Map<String, MontageEnvelope>,
+    selectedId: String?,
+    playheadMs: Long,
+    loopStart: Long?,
+    loopEnd: Long?,
+    loopEnabled: Boolean,
+    vuLevel: Float,
+    rendering: Boolean,
+    pxPerSec: Float,
+    onZoom: (wider: Boolean) -> Unit,
+    onTrimStart: () -> Unit,
+    onTrim: (clipId: String, startMs: Long, endMs: Long) -> Unit
+) {
+    val totalMs = remember(project) {
+        MontageLogic.totalDurationMs(project.clips, project.gapMs, project.crossfadeMs)
+    }
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val scroll = rememberScrollState()
+    val contentWidthPx = totalMs.toFloat() * pxPerSec / 1000f + 80f
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, LocalStudioColors.current.cardBorder, RoundedCornerShape(16.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // صف التكبير والحلقة A/B
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("تكبير:", style = MaterialTheme.typography.labelMedium)
+            SecondaryAction("−", enabled = pxPerSec > 16f, onClick = { onZoom(false) })
+            Text(
+                "${pxPerSec.toInt()}px/s",
+                style = MaterialTheme.typography.labelMedium.numeric(),
+                color = MaterialTheme.colorScheme.primary
+            )
+            SecondaryAction("+", enabled = pxPerSec < 800f, onClick = { onZoom(true) })
+            Text(
+                "حلقة A/B:",
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(start = 10.dp)
+            )
+            SecondaryAction("A", enabled = !rendering, onClick = { vm.setMontageLoopStartAtPlayhead() })
+            SecondaryAction("B", enabled = !rendering, onClick = { vm.setMontageLoopEndAtPlayhead() })
+            SecondaryAction(
+                if (loopEnabled) "إيقاف الحلقة" else "تشغيل الحلقة",
+                enabled = loopStart != null && loopEnd != null && (loopEnd ?: 0L) > (loopStart ?: 1L),
+                onClick = { vm.toggleMontageLoop() }
+            )
+            SecondaryAction(
+                "مسح",
+                enabled = loopStart != null || loopEnd != null,
+                onClick = { vm.clearMontageLoop() }
+            )
+        }
+
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            // الخريطة المصغرة: نظرة عامة على المشروع كله + مستطيل العرض الحالي
+            MontageMiniMap(
+                project = project,
+                envelopes = envelopes,
+                selectedId = selectedId,
+                playheadMs = playheadMs,
+                contentWidthPx = contentWidthPx,
+                scrollValue = { scroll.value },
+                scrollMax = { scroll.maxValue },
+                onPan = { fraction ->
+                    scope.launch {
+                        val target = (fraction * contentWidthPx).toInt() - (contentWidthPx - scroll.maxValue).toInt() / 2
+                        scroll.scrollTo(target.coerceIn(0, scroll.maxValue.coerceAtLeast(0)))
+                    }
+                }
+            )
+            // الخط الزمني نفسه داخل تمرير أفقي
+            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(scroll)) {
+                MontageTimelineCanvas(
+                    vm = vm,
+                    project = project,
+                    envelopes = envelopes,
+                    selectedId = selectedId,
+                    playheadMs = playheadMs,
+                    loopStart = loopStart,
+                    loopEnd = loopEnd,
+                    loopEnabled = loopEnabled,
+                    pxPerSec = pxPerSec,
+                    onTrimStart = onTrimStart,
+                    onTrim = onTrim
+                )
+            }
+        }
+
+        // صف VU: مقياس المستوى + زمن الرأس + تحذير التشبع
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("المستوى:", style = MaterialTheme.typography.labelMedium)
+            LevelBarH(
+                level = vuLevel.coerceIn(0f, 1f),
+                modifier = Modifier.weight(1f).height(12.dp)
+            )
+            Text(
+                "الرأس: ${formatMs(playheadMs)}",
+                style = MaterialTheme.typography.labelLarge.numeric(),
+                color = MaterialTheme.colorScheme.primary
+            )
+            if (vuLevel >= MontageLogic.CLIP_WARN_LEVEL) {
+                StatusChip("قرب التشبع", Color(0xFFE53935))
+            }
+        }
+    }
+}
+
+// ================= الخط الزمني الرسم =================
+
+/** أوضاع السحب على الخط الزمني: تقليم الحافتين أو إعادة ترتيب أو تحريك الرأس. */
+private sealed interface TimelineDrag {
+    data object None : TimelineDrag
+    data class TrimLeft(val clipId: String, val origStart: Long) : TimelineDrag
+    data class TrimRight(val clipId: String, val origEnd: Long) : TimelineDrag
+    data class Reorder(val clipId: String, var acc: Float) : TimelineDrag
+    data object Scrub : TimelineDrag
+}
+
+@Composable
+private fun MontageTimelineCanvas(
+    vm: AppViewModel,
+    project: MontageProject,
+    envelopes: Map<String, MontageEnvelope>,
+    selectedId: String?,
+    playheadMs: Long,
+    loopStart: Long?,
+    loopEnd: Long?,
+    loopEnabled: Boolean,
+    pxPerSec: Float,
+    onTrimStart: () -> Unit,
+    onTrim: (clipId: String, startMs: Long, endMs: Long) -> Unit
+) {
+    val totalMs = remember(project) {
+        MontageLogic.totalDurationMs(project.clips, project.gapMs, project.crossfadeMs)
+    }
+    val density = LocalDensity.current
+    val widthDp = with(density) {
+        ((totalMs.toFloat() * pxPerSec / 1000f + 80f) / density.density).dp.coerceAtLeast(320.dp)
+    }
+    val textMeasurer = rememberTextMeasurer()
+    var drag by remember { mutableStateOf<TimelineDrag>(TimelineDrag.None) }
+    var dragClipId by remember { mutableStateOf<String?>(null) }
+    var scrubMs by remember { mutableStateOf(0L) }
+
+    val pxPerMs = pxPerSec / 1000f
+    val pad = 10f
+    val startsMs = remember(project) {
+        MontageLogic.clipStartMs(project.clips, project.gapMs, project.crossfadeMs)
+    }
+
+    // المدخلات تقرأ أحدث حالة عبر حوامل محدّثة — كي لا يُقطع السحب
+    // عند إعادة تشغيل التركيب مع كل تحديث مشروع أثناء التقليم
+    val projState = rememberUpdatedState(project)
+    val startsState = rememberUpdatedState(startsMs)
+    val pxPerMsState = rememberUpdatedState(pxPerMs)
+    val trimState = rememberUpdatedState(onTrim)
+    val trimStartState = rememberUpdatedState(onTrimStart)
+
+    // هندسة المقاطع بالبكسل — من الحوامل الحية للمدخلات، ومن القيم المباشرة للرسم
+    fun liveClipX(i: Int): Float = pad + startsState.value[i] * pxPerMsState.value
+    fun liveClipW(i: Int): Float =
+        max(6f, MontageLogic.clipDurationMs(projState.value.clips[i]) * pxPerMsState.value)
+    fun liveClipAt(x: Float): Int = projState.value.clips.indices.firstOrNull {
+        x >= liveClipX(it) && x <= liveClipX(it) + liveClipW(it)
+    } ?: -1
+
+    Box(
+        modifier = Modifier
+            .width(widthDp)
+            .height(180.dp)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { off ->
+                        val project = projState.value
+                        val ppm = pxPerMsState.value
+                        val ms = ((off.x - pad) / ppm).toLong().coerceAtLeast(0L)
+                        vm.setMontagePlayhead(ms)
+                        val idx = project.clips.indices.firstOrNull {
+                            off.x >= pad + startsState.value[it] * ppm &&
+                                    off.x <= pad + startsState.value[it] * ppm +
+                                    max(6f, MontageLogic.clipDurationMs(project.clips[it]) * ppm)
+                        }
+                        if (idx != null) vm.selectMontageClip(project.clips[idx].id)
+                    }
+                )
+            }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { off ->
+                        val project = projState.value
+                        val ppm = pxPerMsState.value
+                        val idx = liveClipAt(off.x)
+                        fun cx(i: Int) = pad + startsState.value[i] * ppm
+                        fun cw(i: Int) = max(6f, MontageLogic.clipDurationMs(project.clips[i]) * ppm)
+                        when {
+                            idx < 0 -> drag = TimelineDrag.Scrub
+                            off.x - cx(idx) <= 10f -> {
+                                drag = TimelineDrag.TrimLeft(project.clips[idx].id, project.clips[idx].startMs)
+                                trimStartState.value()
+                            }
+                            cx(idx) + cw(idx) - off.x <= 10f -> {
+                                drag = TimelineDrag.TrimRight(project.clips[idx].id, project.clips[idx].endMs)
+                                trimStartState.value()
+                            }
+                            else -> drag = TimelineDrag.Reorder(project.clips[idx].id, 0f)
+                        }
+                        dragClipId = if (idx >= 0) project.clips[idx].id else null
+                    },
+                    onDrag = { change, amt ->
+                        change.consume()
+                        val project = projState.value
+                        val ppm = pxPerMsState.value
+                        val x = change.position.x
+                        when (val d = drag) {
+                            is TimelineDrag.Scrub -> {
+                                scrubMs = ((x - pad) / ppm).toLong().coerceAtLeast(0L)
+                                vm.setMontagePlayhead(scrubMs, persist = false)
+                            }
+                            is TimelineDrag.TrimLeft -> {
+                                val clip = project.clips.firstOrNull { it.id == d.clipId }
+                                if (clip != null) {
+                                    val dxMs = (amt.x / ppm).toLong()
+                                    val s = (d.origStart + dxMs).coerceIn(0L, clip.endMs - 50L)
+                                    trimState.value(d.clipId, s, clip.endMs)
+                                }
+                            }
+                            is TimelineDrag.TrimRight -> {
+                                val clip = project.clips.firstOrNull { it.id == d.clipId }
+                                if (clip != null) {
+                                    val dxMs = (amt.x / ppm).toLong()
+                                    val e = (d.origEnd + dxMs).coerceIn(clip.startMs + 50L, clip.durationMs)
+                                    trimState.value(d.clipId, clip.startMs, e)
+                                }
+                            }
+                            is TimelineDrag.Reorder -> {
+                                d.acc += amt.x
+                                if (abs(d.acc) >= 40f) {
+                                    vm.moveMontageClip(d.clipId, if (d.acc > 0) 1 else -1)
+                                    d.acc = 0f
+                                }
+                            }
+                            TimelineDrag.None -> { }
+                        }
+                    },
+                    onDragEnd = {
+                        if (drag is TimelineDrag.Scrub) vm.setMontagePlayhead(scrubMs)
+                        drag = TimelineDrag.None
+                        dragClipId = null
+                    },
+                    onDragCancel = {
+                        drag = TimelineDrag.None
+                        dragClipId = null
+                    }
+                )
+            }
+    ) {
+        // الألوان تُلتقط في سياق التركيب — داخل Canvas لا استدعاءات Composable
+        val cPrimary = MaterialTheme.colorScheme.primary
+        val cSurface = MaterialTheme.colorScheme.surface
+        val cOutline = MaterialTheme.colorScheme.outlineVariant
+        val cOnSurfVar = MaterialTheme.colorScheme.onSurfaceVariant
+        val cOnSurf = MaterialTheme.colorScheme.onSurface
+        val cErr = MaterialTheme.colorScheme.error
+        val cTertiary = MaterialTheme.colorScheme.tertiary
+        val cSecondaryContainer = MaterialTheme.colorScheme.secondaryContainer
+        val cBg = MaterialTheme.colorScheme.surfaceVariant
+        val amber = Color(0xFFFFB300)
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val h = size.height
+            val rulerH = 22f
+            val clipTop = 30f
+            val clipBottom = h - 14f
+            val blockH = clipBottom - clipTop
+            val primary = cPrimary
+            val surface = cSurface
+            val outline = cOutline
+            val onSurfVar = cOnSurfVar
+            val err = cErr
+            val tertiary = cTertiary
+            // هندسة الرسم: نسخة الرسم من البدايات (القيم المباشرة للتركيب الحالي)
+            fun clipX(i: Int): Float = pad + startsMs[i] * pxPerMs
+            fun clipW(i: Int): Float =
+                max(6f, MontageLogic.clipDurationMs(project.clips[i]) * pxPerMs)
+
+            // خلفية الموجات
+            drawRoundRect(
+                color = cBg.copy(alpha = 0.30f),
+                topLeft = Offset(0f, rulerH),
+                size = Size(size.width, h - rulerH),
+                cornerRadius = CornerRadius(10f, 10f)
+            )
+
+            // مسطرة الزمن: خطوات تتكيف مع التكبير
+            val stepSec = when {
+                pxPerSec >= 120f -> 1
+                pxPerSec >= 45f -> 2
+                else -> 5
+            }
+            val totalSec = (totalMs / 1000L).toInt()
+            var tSec = 0
+            while (tSec <= totalSec + stepSec) {
+                val x = pad + tSec * 1000f * pxPerMs
+                if (x > size.width) break
+                drawLine(
+                    color = onSurfVar.copy(alpha = 0.35f),
+                    start = Offset(x, rulerH - 6f),
+                    end = Offset(x, rulerH),
+                    strokeWidth = 1.5f
+                )
+                drawText(
+                    textMeasurer = textMeasurer,
+                    text = formatMs(tSec * 1000L),
+                    topLeft = Offset(x + 3f, 2f),
+                    style = TextStyle(fontSize = 9.sp, color = onSurfVar).numeric()
+                )
+                tSec += stepSec
+            }
+
+            // منطقة الحلقة A/B
+            if (loopEnabled && loopStart != null && loopEnd != null && loopEnd > loopStart) {
+                val ax = pad + loopStart * pxPerMs
+                val bx = pad + loopEnd * pxPerMs
+                drawRect(
+                    color = tertiary.copy(alpha = 0.16f),
+                    topLeft = Offset(ax, rulerH),
+                    size = Size(bx - ax, h - rulerH)
+                )
+                drawLine(tertiary, Offset(ax, rulerH), Offset(ax, h), 2f)
+                drawLine(tertiary, Offset(bx, rulerH), Offset(bx, h), 2f)
+            }
+
+            // الفواصل: صمت بين المقاطع حين لا كروس فيد
+            if (project.crossfadeMs <= 0L && project.gapMs > 0L) {
+                for (i in 0 until project.clips.size - 1) {
+                    val gx0 = clipX(i) + clipW(i)
+                    val gx1 = clipX(i + 1)
+                    if (gx1 > gx0) {
+                        drawRect(
+                            color = onSurfVar.copy(alpha = 0.10f),
+                            topLeft = Offset(gx0, clipTop),
+                            size = Size(gx1 - gx0, blockH)
+                        )
+                        if (gx1 - gx0 > 26f) {
+                            drawText(
+                                textMeasurer = textMeasurer,
+                                text = "فاصل",
+                                topLeft = Offset(gx0 + 4f, clipTop + 4f),
+                                style = TextStyle(fontSize = 9.sp, color = onSurfVar)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // جسور الكروس فيد: X متقاطعان فوق منطقة التداخل
+            if (project.crossfadeMs > 0L) {
+                for (i in 0 until project.clips.size - 1) {
+                    val d0 = MontageLogic.clipDurationMs(project.clips[i])
+                    val d1 = MontageLogic.clipDurationMs(project.clips[i + 1])
+                    val xf = MontageLogic.effectiveOverlap(d0, d1, project.crossfadeMs)
+                    if (xf > 0L) {
+                        val x0 = pad + (startsMs[i] + d0 - xf) * pxPerMs
+                        val x1 = pad + (startsMs[i + 1] + xf) * pxPerMs
+                        drawRect(
+                            color = primary.copy(alpha = 0.16f),
+                            topLeft = Offset(x0, clipTop),
+                            size = Size(x1 - x0, blockH)
+                        )
+                        drawLine(
+                            color = primary.copy(alpha = 0.6f),
+                            start = Offset(x0, clipTop),
+                            end = Offset(x1, clipBottom),
+                            strokeWidth = 2f
+                        )
+                        drawLine(
+                            color = primary.copy(alpha = 0.6f),
+                            start = Offset(x0, clipBottom),
+                            end = Offset(x1, clipTop),
+                            strokeWidth = 2f
+                        )
+                    }
+                }
+            }
+
+            // المقاطع: مستطيل + ويڤ فورم + عنوان + مقابض القصّ للمحدد
+            for (i in project.clips.indices) {
+                val clip = project.clips[i]
+                val cx = clipX(i)
+                val cw = clipW(i)
+                val missing = !File(clip.path).isFile
+                val sel = clip.id == selectedId
+                drawRoundRect(
+                    color = if (missing) err.copy(alpha = 0.25f) else surface.copy(alpha = 0.92f),
+                    topLeft = Offset(cx, clipTop),
+                    size = Size(cw, blockH),
+                    cornerRadius = CornerRadius(8f, 8f)
+                )
+                drawRoundRect(
+                    color = when {
+                        dragClipId == clip.id -> primary
+                        sel -> primary
+                        missing -> err
+                        else -> outline
+                    },
+                    topLeft = Offset(cx, clipTop),
+                    size = Size(cw, blockH),
+                    cornerRadius = CornerRadius(8f, 8f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (sel) 2.5f else 1f)
+                )
+                // الويڤ فورم من المغلّف المحسوب
+                val env = envelopes[clip.id]
+                if (env != null && env.peaks.isNotEmpty()) {
+                    val n = env.peaks.size
+                    val midY = clipTop + blockH / 2f
+                    val barW = max(1.2f, cw / n - 0.6f)
+                    for (b in 0 until n) {
+                        val bx = cx + (b + 0.5f) / n * cw
+                        if (bx < cx + 2f || bx > cx + cw - 2f) continue
+                        val halfH = env.peaks[b] * (blockH / 2f - 3f)
+                        if (halfH <= 0.4f) continue
+                        drawLine(
+                            color = if (env.clippedAt(b)) err else primary.copy(alpha = 0.85f),
+                            start = Offset(bx, midY - halfH),
+                            end = Offset(bx, midY + halfH),
+                            strokeWidth = barW,
+                            cap = StrokeCap.Round
+                        )
+                    }
+                } else {
+                    drawLine(
+                        color = onSurfVar.copy(alpha = 0.35f),
+                        start = Offset(cx + 4f, clipTop + blockH / 2f),
+                        end = Offset(cx + cw - 4f, clipTop + blockH / 2f),
+                        strokeWidth = 1.5f
+                    )
+                }
+                if (cw > 70f) {
+                    drawText(
+                        textMeasurer = textMeasurer,
+                        text = "${i + 1}. ${clip.title.take(16)}",
+                        topLeft = Offset(cx + 6f, clipTop + 3f),
+                        style = TextStyle(fontSize = 10.sp, color = cOnSurf)
+                    )
+                }
+                // مقابض القصّ عند المحدد
+                if (sel && !missing) {
+                    drawRoundRect(
+                        color = cSecondaryContainer,
+                        topLeft = Offset(cx + 1f, clipTop + 3f),
+                        size = Size(6f, blockH - 6f),
+                        cornerRadius = CornerRadius(3f, 3f)
+                    )
+                    drawRoundRect(
+                        color = cSecondaryContainer,
+                        topLeft = Offset(cx + cw - 7f, clipTop + 3f),
+                        size = Size(6f, blockH - 6f),
+                        cornerRadius = CornerRadius(3f, 3f)
+                    )
+                }
+            }
+
+            // رأس التشغيل: خط كهرماني بمثلث علوي
+            val px = pad + playheadMs * pxPerMs
+            if (px >= 0f && px <= size.width) {
+                drawLine(
+                    color = amber,
+                    start = Offset(px, rulerH - 10f),
+                    end = Offset(px, h),
+                    strokeWidth = 2.5f
+                )
+                drawPath(
+                    color = amber,
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(px - 6f, rulerH - 16f)
+                        lineTo(px + 6f, rulerH - 16f)
+                        lineTo(px, rulerH - 6f)
+                        close()
+                    }
+                )
+            }
+        }
+    }
+}
+
+// ================= الخريطة المصغرة =================
+
+/** خريطة مصغرة: صمت المشروع كله + مستطيل العرض + الرأس — السحب يقفز بالمشهد. */
+@Composable
+private fun MontageMiniMap(
+    project: MontageProject,
+    envelopes: Map<String, MontageEnvelope>,
+    selectedId: String?,
+    playheadMs: Long,
+    contentWidthPx: Float,
+    scrollValue: () -> Int,
+    scrollMax: () -> Int,
+    onPan: (fraction: Float) -> Unit
+) {
+    val totalMs = remember(project) {
+        MontageLogic.totalDurationMs(project.clips, project.gapMs, project.crossfadeMs).coerceAtLeast(1L)
+    }
+    val cPrimaryMM = MaterialTheme.colorScheme.primary
+    val cOutlineMM = MaterialTheme.colorScheme.outlineVariant
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(26.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .pointerInput(project) {
+                detectDragGestures(
+                    onDrag = { change, _ ->
+                        change.consume()
+                        onPan((change.position.x / size.width).coerceIn(0f, 1f))
+                    },
+                    onDragStart = { off -> onPan((off.x / size.width).coerceIn(0f, 1f)) }
+                )
+            }
+            .pointerInput(project) {
+                detectTapGestures(
+                    onTap = { off -> onPan((off.x / size.width).coerceIn(0f, 1f)) }
+                )
+            }
+    ) {
+        val w = size.width
+        val h = size.height
+        val scale = w / totalMs
+        val primary = cPrimaryMM
+        val outline = cOutlineMM
+        val amber = Color(0xFFFFB300)
+        for ((i, clip) in project.clips.withIndex()) {
+            val d = MontageLogic.clipDurationMs(clip)
+            if (d <= 0L) continue
+            val x0 = MontageLogic.clipStartMs(project.clips, project.gapMs, project.crossfadeMs)[i] * scale
+            val x1 = x0 + d * scale
+            val env = envelopes[clip.id]
+            val peak = env?.maxPeak() ?: 0.25f
+            drawRoundRect(
+                color = if (clip.id == selectedId) primary.copy(alpha = 0.75f) else primary.copy(alpha = 0.35f),
+                topLeft = Offset(x0, h / 2f - (h * 0.8f * peak.coerceIn(0.1f, 1f)) / 2f),
+                size = Size((x1 - x0).coerceAtLeast(2f), h * 0.8f * peak.coerceIn(0.1f, 1f)),
+                cornerRadius = CornerRadius(3f, 3f)
+            )
+        }
+        // مستطيل العرض الحالي
+        val contentW = contentWidthPx.coerceAtLeast(1f)
+        val maxScroll = scrollMax().coerceAtLeast(0)
+        val viewportW = contentW - maxScroll
+        val vpX = scrollValue() / contentW * w
+        val vpW = (viewportW / contentW * w).coerceAtMost(w)
+        drawRoundRect(
+            color = outline,
+            topLeft = Offset(vpX, 1f),
+            size = Size(vpW.coerceAtLeast(6f), h - 2f),
+            cornerRadius = CornerRadius(4f, 4f),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f)
+        )
+        // الرأس
+        val px = playheadMs * scale
+        drawLine(amber, Offset(px, 0f), Offset(px, h), 2f)
+    }
+}
+
+// ================= قائمة المقاطع وحوار التحرير =================
 
 /** صف مقطع في قائمة المونتاج: الترتيب والقص والمستوى والتلاشين وأزرار الإدارة. */
 @Composable
@@ -274,6 +1057,8 @@ private fun MontageClipRow(
     clip: MontageClip,
     count: Int,
     enabled: Boolean,
+    selected: Boolean,
+    onSelect: () -> Unit,
     onUp: () -> Unit,
     onDown: () -> Unit,
     onEdit: () -> Unit,
@@ -285,9 +1070,18 @@ private fun MontageClipRow(
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .background(
-                if (missing) MaterialTheme.colorScheme.errorContainer
-                else MaterialTheme.colorScheme.surface
+                when {
+                    missing -> MaterialTheme.colorScheme.errorContainer
+                    selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                    else -> MaterialTheme.colorScheme.surface
+                }
             )
+            .border(
+                1.dp,
+                if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                RoundedCornerShape(10.dp)
+            )
+            .clickable(enabled = enabled) { onSelect() }
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -345,7 +1139,10 @@ private fun MontageClipEditDialog(
         onDismissRequest = onDismiss,
         title = { Text("تحرير المقطع: ${clip.title.take(40)}") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 Text(
                     "مدة الملف كاملة: ${formatMs(clip.durationMs)} — القص منها نافذة تظهر في المونتاج.",
                     style = MaterialTheme.typography.bodySmall,
