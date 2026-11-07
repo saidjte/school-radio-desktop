@@ -3,6 +3,7 @@ package com.saidjte.schoolradio.desktop.audio
 import com.saidjte.schoolradio.desktop.data.MontageClip
 import com.saidjte.schoolradio.desktop.data.MontageEnvelope
 import com.saidjte.schoolradio.desktop.data.MontageLogic
+import com.saidjte.schoolradio.desktop.data.MontageMusicClip
 import com.saidjte.schoolradio.desktop.data.MontageProject
 import javazoom.jl.decoder.Bitstream
 import javazoom.jl.decoder.Decoder
@@ -28,6 +29,10 @@ import kotlin.math.min
  * بمزج قوة متساوية، وكل حافة قصّ تمر عبر التلاشي الدقيق المضاد للنقرات،
  * ومعه حساب مغلّفات العرض (ويڤ فورم وVU ومناطق التشبع) والذروة الخام للتطبيع —
  * كل ذلك بنفس التصيير المتدفق الذي لا يحمّل ملفًا كاملًا في الذاكرة.
+ *
+ * v0.35.0 (البند 16): المسار المزدوج — مقاطع موسيقى مرافقة تُمزج على مواضعها
+ * المطلقة فوق التعليق بكسب الخفض التلقائي النقي (عمق/هجوم/إفلات) المستنتج
+ * من نطاقات النطق نفسها، والمدة الكلية أبعدها بين المسارين.
  */
 object MontageRender {
     /** الصيغة القانونية للناتج — نفس صيغة تسجيل مزيج الحصة (v0.31.0). */
@@ -97,7 +102,7 @@ object MontageRender {
      * تصيير المشروع كاملًا في ملف واحد — يستدعى من خيط عمل، والتقدم 0..1
      * ينبض عبر onProgress، و cancelled يُفحص بين الكتل فالإلغاء سريع ونظيف.
      * الخلاط الكتلي: كل كتلة زمنية تُمزج من مصادرها النشطة (اثنان كحد أقصى
-     * عند حدود الكروس فيد) أو تُكتب صمتًا إن كانت في فاصل.
+     * عند حدود الكروس فيد، وأكثر من مسار الموسيقى) أو تُكتب صمتًا إن كانت في فاصل.
      */
     fun render(
         project: MontageProject,
@@ -106,7 +111,8 @@ object MontageRender {
         cancelled: () -> Boolean = { false }
     ): Result {
         val clips = MontageLogic.sanitize(project.clips)
-        if (clips.isEmpty()) return Result(false, 0L, "لا توجد مقاطع صالحة في المشروع")
+        val music = MontageLogic.sanitizeMusic(project.musicClips)
+        if (clips.isEmpty() && music.isEmpty()) return Result(false, 0L, "لا توجد مقاطع صالحة في المشروع")
         out.parentFile?.mkdirs()
         val writer = try {
             WavFileWriter(out, RATE, CHANNELS)
@@ -115,15 +121,30 @@ object MontageRender {
         }
         try {
             val plan = plan(project, clips)
+            // المسار المزدوج (v0.35.0): مواضع ومدد الموسيقى بإطارات الوجهة + مصادرها
+            val musicStarts = LongArray(music.size)
+            val musicDurFrames = LongArray(music.size)
+            val musicSources = arrayOfNulls<MontageClip>(music.size)
+            for (mi in music.indices) {
+                musicSources[mi] = musicAsSourceClip(music[mi])
+                musicStarts[mi] = framesFor(music[mi].startMs.coerceAtLeast(0L))
+                musicDurFrames[mi] = framesFor(MontageLogic.musicDurationMs(music[mi]))
+            }
+            val musicEnd = music.indices.maxOfOrNull { musicStarts[it] + musicDurFrames[it] } ?: 0L
+            val totalFrames = maxOf(plan.totalFrames, musicEnd)
+            // الخفض التلقائي: نطاقات النطق تُحسب مرة واحدة فلا حساب متكرر لكل إطار
+            val duckIntervals = MontageLogic.narrationIntervals(clips, project.gapMs, project.crossfadeMs)
+            val duckEnabled = project.duckingEnabled && music.isNotEmpty()
             val streams = arrayOfNulls<ClipStream>(clips.size)
+            val musicStreams = arrayOfNulls<ClipStream>(music.size)
             val mix = IntArray(MIX_BLOCK * 2)
             val segBuf = ShortArray(MIX_BLOCK * 2)
             var f = 0L
             var first = 0 // أول مقطع لم ينتهِ بعد — المصادر تُفتح بكسل وتُغلق تِباعًا
             try {
-                while (f < plan.totalFrames) {
+                while (f < totalFrames) {
                     if (cancelled()) throw ClipCancelled()
-                    val blockEnd = min(f + MIX_BLOCK, plan.totalFrames)
+                    val blockEnd = min(f + MIX_BLOCK, totalFrames)
                     val blockFrames = (blockEnd - f).toInt()
                     java.util.Arrays.fill(mix, 0, blockFrames * 2, 0)
                     // إغلاق ما انتهى وتخطي ما لم يبدأ بعد
@@ -158,6 +179,33 @@ object MontageRender {
                         }
                         j++
                     }
+                    // مسار الموسيقى المرافقة: مزج على المواضع المطلقة بكسب الخفض
+                    for (mi in music.indices) {
+                        val ms = musicStarts[mi]
+                        val me = ms + musicDurFrames[mi]
+                        if (me <= f) {
+                            musicStreams[mi]?.close(); musicStreams[mi] = null
+                            continue
+                        }
+                        if (ms >= blockEnd) continue
+                        val from = maxOf(f, ms)
+                        val to = min(blockEnd, me)
+                        if (to > from) {
+                            if (musicStreams[mi] == null) {
+                                musicStreams[mi] = ClipStream(musicSources[mi]!!, musicDurFrames[mi])
+                            }
+                            val need = (to - from).toInt()
+                            val got = musicStreams[mi]!!.read(segBuf, need)
+                            if (got > 0) {
+                                mixMusic(
+                                    segBuf, got, from, ms, musicDurFrames[mi], music[mi],
+                                    duckIntervals, project, duckEnabled,
+                                    mix, (from - f).toInt(), blockFrames
+                                )
+                                any = true
+                            }
+                        }
+                    }
                     if (any) {
                         val bytes = ByteArray(blockFrames * 4)
                         var bi = 0
@@ -171,10 +219,11 @@ object MontageRender {
                         writeSilence(writer, blockFrames.toLong())
                     }
                     f = blockEnd
-                    onProgress?.invoke(f.toFloat() / plan.totalFrames)
+                    onProgress?.invoke(f.toFloat() / totalFrames)
                 }
             } finally {
                 for (st in streams) st?.close()
+                for (st in musicStreams) st?.close()
             }
         } catch (c: ClipCancelled) {
             return Result(false, writer.durationMs, "أُلغي التصيير")
@@ -230,7 +279,52 @@ object MontageRender {
         }
     }
 
+    /**
+     * مزج إطارات موسيقى مرافقة (v0.35.0 — البند 16): كسب المقطع × تلاشيه ×
+     * التلاشي الدقيق × كسب الخفض التلقائي عند اللحظة العالمية — فالموسيقى
+     * تنخفض حين يُسمع التعليق وتعود بعد الإفلات بلا تدخل المذيع.
+     */
+    private fun mixMusic(
+        segBuf: ShortArray, got: Int, globalFrom: Long, musicStart: Long, musicDurFrames: Long,
+        clip: MontageMusicClip,
+        duckIntervals: List<Pair<Long, Long>>,
+        project: MontageProject,
+        duckEnabled: Boolean,
+        mix: IntArray, mixOffsetFrames: Int, blockFrames: Int
+    ) {
+        val durMs = musicDurFrames * 1000L / RATE
+        val vol = clip.volumePercent / 100f
+        val db = project.duckDb
+        val atk = project.duckAttackMs
+        val rel = project.duckReleaseMs
+        for (k in 0 until got) {
+            val g = globalFrom + k
+            val offMs = (g - musicStart) * 1000L / RATE
+            var gain = vol * MontageLogic.fadeGainAt(offMs, durMs, clip.fadeInMs, clip.fadeOutMs)
+            gain *= MontageLogic.microFadeGainAt(offMs, durMs)
+            gain *= MontageLogic.duckGainAt(g * 1000L / RATE, duckIntervals, db, atk, rel, duckEnabled)
+            val mBase = (mixOffsetFrames + k) * 2
+            if (mBase + 1 >= blockFrames * 2) break
+            mix[mBase] += (segBuf[2 * k] * gain).toInt()
+            mix[mBase + 1] += (segBuf[2 * k + 1] * gain).toInt()
+        }
+    }
+
     private fun framesFor(ms: Long): Long = ms * RATE / 1000L
+
+    /**
+     * تحويل مقطع موسيقى إلى مقطع مصدر بشباكه داخل ملفه — يخدم المُصيّر
+     * ومغلّفات عرض مسار الموسيقى معًا بعقد النافذة الفارغة = الملف كاملًا.
+     */
+    fun musicAsSourceClip(m: MontageMusicClip): MontageClip {
+        val (ws, we) = MontageLogic.clampWindow(m.startInFileMs, m.endInFileMs, m.durationMs)
+        return MontageClip(
+            id = m.id, path = m.path, title = m.title,
+            durationMs = m.durationMs, startMs = ws, endMs = we,
+            volumePercent = m.volumePercent,
+            fadeInMs = m.fadeInMs, fadeOutMs = m.fadeOutMs
+        )
+    }
 
     /**
      * مغلّف عرض مقطع (v0.34.0 — البند 1 و8): ذروات دلاء النافذة بعد المستوى

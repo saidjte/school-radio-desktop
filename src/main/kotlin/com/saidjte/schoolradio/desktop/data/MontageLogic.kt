@@ -17,6 +17,10 @@ import kotlin.math.sin
  * (بدايات مقرّبة مع التداخل). كل القرارات هنا نقية على البيانات — تُختبر
  * وحدةً بلا صوت ولا ملفات، فحسابات المدد والقص والتلاشين هي موضع الأخطاء
  * الصامتة.
+ *
+ * v0.35.0 (البنود 16–17): مسار موسيقى مرافقة بمواضع مطلقة موازٍ لمسار
+ * التعليق، مع خفض تلقائي نقي (عمق/هجوم/إفلات) يخرج من نطاقات النطق نفسها،
+ * وعلامات مسمّاة على الخط الزمني — والقوالب الجاهزة في MontageTemplates.kt.
  */
 
 /** مقطع داخل مشروع المونتاج. */
@@ -36,6 +40,35 @@ data class MontageClip(
     val fadeOutMs: Long = 0L
 )
 
+/**
+ * مقطع موسيقى مرافقة (v0.35.0 — البند 16 «مسار مزدوج: تعليق + موسيقى»):
+ * يعيش على مسار ثانٍ موازٍ للتعليق ويُوضع بموضع مطلق على الخط الزمني —
+ * لا يُزاح بإضافة المقاطع ولا يشاركها الترتيب، وله نافذة قصّ داخل ملفه
+ * ومستوى وتلاشين كأي مقطع.
+ */
+data class MontageMusicClip(
+    val id: String,
+    val path: String,
+    val title: String,
+    /** مدة الملف المصدر كاملة — مرجع نافذة القصّ. */
+    val durationMs: Long = 0L,
+    /** الموضع المطلق على الخط الزمني للمونتاج. */
+    val startMs: Long = 0L,
+    /** نافذة القصّ داخل الملف المصدر: [startInFileMs, endInFileMs) — الفارغة تعني الملف كاملًا. */
+    val startInFileMs: Long = 0L,
+    val endInFileMs: Long = 0L,
+    val volumePercent: Int = MontageLogic.VOLUME_DEFAULT,
+    val fadeInMs: Long = 0L,
+    val fadeOutMs: Long = 0L
+)
+
+/** علامة مسمّاة على الخط الزمني (v0.35.0 — البند 17): «الفاصل»، «النشيد»… */
+data class MontageMarker(
+    val id: String,
+    val name: String,
+    val tMs: Long = 0L
+)
+
 /** مشروع المونتاج الكامل: مقاطع مرتّبة + فاصل أو كروس فيد بين المقاطع. */
 data class MontageProject(
     val clips: List<MontageClip> = emptyList(),
@@ -44,7 +77,19 @@ data class MontageProject(
     val crossfadeMs: Long = 0L,
     val title: String = "مونتاج الحصة",
     /** موضع رأس التشغيل المحفوظ — يُستعاد مع الجلسة عند إعادة الفتح. */
-    val playheadMs: Long = 0L
+    val playheadMs: Long = 0L,
+    // ==== v0.35.0: المسار المزدوج والخفض التلقائي والعلامات ====
+    /** مسار الموسيقى المرافقة — مواضع مطلقة موازية لمسار التعليق. */
+    val musicClips: List<MontageMusicClip> = emptyList(),
+    /** الخفض التلقائي للموسيقى حين يُسمع التعليق — سلوك المزج الإذاعي الحقيقي. */
+    val duckingEnabled: Boolean = true,
+    /** عمق الخفض بالديسيبل (سالب). */
+    val duckDb: Int = MontageLogic.DUCK_DB_DEFAULT,
+    /** زمن الهجوم (النزول إلى الخفض) والإفلات (العودة) بالميلي ثانية. */
+    val duckAttackMs: Long = MontageLogic.DUCK_ATTACK_DEFAULT,
+    val duckReleaseMs: Long = MontageLogic.DUCK_RELEASE_DEFAULT,
+    /** العلامات المسمّاة على الخط الزمني — مرتبة بالزمن عند الحفظ. */
+    val markers: List<MontageMarker> = emptyList()
 )
 
 /** مغلّف عرض مقطع: ذروات دلاء النافذة بعد المستوى والتلاشين (0..1 معياري). */
@@ -74,6 +119,111 @@ object MontageLogic {
 
     /** حد مقاطع المشروع — يحمي الواجهة والملف من العبث (قائمة طويلة لا تُدار). */
     const val MAX_CLIPS = 60
+
+    // ==== v0.35.0: ثوابت المسار المزدوج والعلامات ====
+
+    /** حد مقاطع الموسيقى المرافقة — سرير صوتي لا مختانٍ متعدد. */
+    const val MAX_MUSIC_CLIPS = 12
+    /** حد العلامات المسمّاة. */
+    const val MAX_MARKERS = 40
+
+    const val DUCK_DB_MIN = -30
+    const val DUCK_DB_MAX = -3
+    const val DUCK_DB_DEFAULT = -12
+    const val DUCK_ATTACK_MIN = 50L
+    const val DUCK_ATTACK_MAX = 2_000L
+    const val DUCK_ATTACK_DEFAULT = 300L
+    const val DUCK_RELEASE_MIN = 100L
+    const val DUCK_RELEASE_MAX = 5_000L
+    const val DUCK_RELEASE_DEFAULT = 800L
+
+    /** تحويل الديسيبل إلى كسب خطي — نفس رياضيات Ducker في البث الحي. */
+    fun dbToAmp(db: Double): Float = Math.pow(10.0, db / 20.0).toFloat()
+
+    fun clampDuckDb(db: Int): Int = db.coerceIn(DUCK_DB_MIN, DUCK_DB_MAX)
+    fun clampDuckAttack(ms: Long): Long = ms.coerceIn(DUCK_ATTACK_MIN, DUCK_ATTACK_MAX)
+    fun clampDuckRelease(ms: Long): Long = ms.coerceIn(DUCK_RELEASE_MIN, DUCK_RELEASE_MAX)
+
+    /** مدة نافذة مقطع الموسيقى على الخط الزمني — النافذة الفارغة تعني «الملف كاملًا». */
+    fun musicDurationMs(m: MontageMusicClip): Long {
+        val (s, e) = clampWindow(m.startInFileMs, m.endInFileMs, m.durationMs)
+        return (e - s).coerceAtLeast(0L)
+    }
+
+    /**
+     * نطاقات النطق الفعلية على الخط الزمني — وقود الخفض التلقائي: نوافذ
+     * مقاطع التعليق مدموجة حيث تتلاصق أو تتداخل (بكروس فيد) فالموسيقى لا
+     * تتهادى بين مقطعين متلاصقين.
+     */
+    fun narrationIntervals(clips: List<MontageClip>, gapMs: Long, crossfadeMs: Long): List<Pair<Long, Long>> {
+        val out = ArrayList<Pair<Long, Long>>()
+        if (clips.isEmpty()) return out
+        val starts = clipStartMs(clips, gapMs, crossfadeMs)
+        var i = 0
+        while (i < clips.size) {
+            var s = starts[i]
+            var e = s + clipDurationMs(clips[i])
+            var j = i + 1
+            while (j < clips.size) {
+                val ns = starts[j]
+                if (ns <= e) { // تتلاصق أو تتداخل — نطق متصل
+                    e = maxOf(e, ns + clipDurationMs(clips[j]))
+                    j++
+                } else break
+            }
+            out.add(s to e)
+            i = j
+        }
+        return out
+    }
+
+    /**
+     * كسب الموسيقى عند لحظة زمنية تحت الخفض التلقائي (v0.35.0 — البند 16):
+     * داخل نطاق النطق = عمق الخفض، وقبله هجوم خطي بزمن [duckAttackMs]،
+     * وبعده إفلات خطي بزمن [duckReleaseMs] — ونطاقات متقاربة تأخذ الأعمق
+     * (الأصغر) فلا تتقافز الموسيقى بين فقرة وفترة قصيرة. نقي وقابل للاختبار
+     * بدقة: منحنى خاطئ هنا يعني موسيقى تقفز مسموعًا على الهواء.
+     */
+    fun duckGainAt(
+        tMs: Long,
+        intervals: List<Pair<Long, Long>>,
+        duckDb: Int,
+        attackMs: Long,
+        releaseMs: Long,
+        enabled: Boolean = true
+    ): Float {
+        if (!enabled || intervals.isEmpty()) return 1f
+        val duck = dbToAmp(duckDb.toDouble())
+        val atk = attackMs.coerceAtLeast(1L)
+        val rel = releaseMs.coerceAtLeast(1L)
+        var g = 1f
+        for ((s, e) in intervals) {
+            when {
+                tMs >= s && tMs < e -> g = minOf(g, duck)
+                tMs < s && tMs >= s - atk -> {
+                    val p = (s - tMs).toFloat() / atk
+                    g = minOf(g, duck + (1f - duck) * p)
+                }
+                tMs >= e && tMs < e + rel -> {
+                    val p = (tMs - e).toFloat() / rel
+                    g = minOf(g, duck + (1f - duck) * p)
+                }
+            }
+        }
+        return g.coerceIn(0f, 1f)
+    }
+
+    /**
+     * الزمن الكلي للمشروع بالمسار المزدوج: أبعدها بين نهاية التعليق
+     * ونهاية الموسيقى — فمقطع موسيقى يمدّ الخط الزمني إن طال بعد الختام.
+     */
+    fun totalDurationFull(project: MontageProject): Long {
+        var t = totalDurationMs(project.clips, project.gapMs, project.crossfadeMs)
+        for (m in project.musicClips) {
+            t = maxOf(t, m.startMs.coerceAtLeast(0L) + musicDurationMs(m))
+        }
+        return t
+    }
 
     // ==== v0.34.0: ثوابت الاحتراف ====
 
@@ -244,6 +394,32 @@ object MontageLogic {
             fadeOutMs = clampFade(c.fadeOutMs)
         )
     }.take(MAX_CLIPS)
+
+    /** تعقيم مسار الموسيقى: ملف موجود، موضع غير سالب، نافذة ومستوى وتلاشين محبوسة. */
+    fun sanitizeMusic(clips: List<MontageMusicClip>): List<MontageMusicClip> = clips.mapNotNull { m ->
+        if (!File(m.path).isFile) return@mapNotNull null
+        val (s, e) = clampWindow(m.startInFileMs, m.endInFileMs, m.durationMs)
+        m.copy(
+            startMs = m.startMs.coerceAtLeast(0L),
+            startInFileMs = s, endInFileMs = e,
+            volumePercent = clampVolume(m.volumePercent),
+            fadeInMs = clampFade(m.fadeInMs),
+            fadeOutMs = clampFade(m.fadeOutMs)
+        )
+    }.take(MAX_MUSIC_CLIPS)
+
+    /** تعقيم العلامات: اسم غير فارغ محدود، موضع غير سالب، وسقف العدد. */
+    fun sanitizeMarkers(markers: List<MontageMarker>): List<MontageMarker> = markers.mapNotNull { mk ->
+        val n = mk.name.trim()
+        if (n.isEmpty()) return@mapNotNull null
+        mk.copy(name = n.take(24), tMs = mk.tMs.coerceAtLeast(0L))
+    }.take(MAX_MARKERS)
+
+    /** معرّف مقطع موسيقى جديد فريد. */
+    fun newMusicClipId(): String = "mu${System.nanoTime()}"
+
+    /** معرّف علامة جديد فريد. */
+    fun newMarkerId(): String = "mk${System.nanoTime()}"
 
     /** معرّف مقطع جديد فريد داخل المشروع. */
     fun newClipId(): String = "c${System.nanoTime()}"

@@ -62,7 +62,10 @@ import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.data.MontageClip
 import com.saidjte.schoolradio.desktop.data.MontageEnvelope
 import com.saidjte.schoolradio.desktop.data.MontageLogic
+import com.saidjte.schoolradio.desktop.data.MontageMarker
+import com.saidjte.schoolradio.desktop.data.MontageMusicClip
 import com.saidjte.schoolradio.desktop.data.MontageProject
+import com.saidjte.schoolradio.desktop.data.MontageTemplateCatalog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -93,13 +96,15 @@ fun MontagePage(vm: AppViewModel) {
     val loopEnd by vm.montageLoopEnd.collectAsState()
     val loopEnabled by vm.montageLoopEnabled.collectAsState()
     val playing by vm.player.isPlaying.collectAsState()
+    val selectedMusicId by vm.montageSelectedMusicId.collectAsState()
 
     var showPicker by remember { mutableStateOf(false) }
     var editTarget by remember { mutableStateOf<MontageClip?>(null) }
+    var editMusicTarget by remember { mutableStateOf<MontageMusicClip?>(null) }
+    var showMarkerDialog by remember { mutableStateOf(false) }
+    var templateConfirm by remember { mutableStateOf<String?>(null) }
     val rendering = progress != null
-    val totalMs = remember(project) {
-        MontageLogic.totalDurationMs(project.clips, project.gapMs, project.crossfadeMs)
-    }
+    val totalMs = remember(project) { MontageLogic.totalDurationFull(project) }
     // تكبير الخط الزمني: بكسل لكل ثانية — 60 الافتراضي، والحدود تمنع ضياع الاتجاه
     var pxPerSec by remember { mutableFloatStateOf(60f) }
 
@@ -125,8 +130,10 @@ fun MontagePage(vm: AppViewModel) {
         onDispose { vm.stopMontagePreview() }
     }
 
+    // تمرير عمودي للصفحة كلها (v0.35.0): الصفوف الجديدة (قوالب وعلامات وخفض)
+    // لا تدفع أزرار المعاينة والتصدير خارج الشاشة على النوافذ القصيرة أبدًا
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // الترويسة: العنوان والمدة الكلية الحيّة وأزرار الإضافة
@@ -141,7 +148,8 @@ fun MontagePage(vm: AppViewModel) {
                 modifier = Modifier.weight(1f, fill = false)
             )
             Text(
-                "المدة الكلية: ${formatMs(totalMs)} · ${project.clips.size} مقاطع",
+                "المدة الكلية: ${formatMs(totalMs)} · ${project.clips.size} مقاطع" +
+                        if (project.musicClips.isNotEmpty()) " · ${project.musicClips.size} موسيقى مرافقة" else "",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.SemiBold
@@ -152,6 +160,14 @@ fun MontagePage(vm: AppViewModel) {
                 onClick = {
                     val fs = FilePickers.pickAudioFiles()
                     if (!fs.isNullOrEmpty()) vm.addMontageFiles(fs)
+                }
+            )
+            SecondaryAction(
+                text = "موسيقى مرافقة",
+                enabled = !rendering,
+                onClick = {
+                    val fs = FilePickers.pickAudioFiles()
+                    if (!fs.isNullOrEmpty()) vm.addMontageMusicFiles(fs)
                 }
             )
             SecondaryAction(
@@ -169,10 +185,69 @@ fun MontagePage(vm: AppViewModel) {
             )
         }
         Text(
-            "انقر على الخط الزمني لتضع الرأس، اسحب حافة المقطع لتقصّه بدقة الميلي ثانية، واسحب جسمه لإعادة ترتيبه — الكروس فيد يدمج المتجاورة والتصدير يخرج ملفًا واحدًا جاهزًا للبث.",
+            "انقر على الخط الزمني لتضع الرأس، اسحب حافة المقطع لتقصّه بدقة الميلي ثانية، واسحب جسمه لإعادة ترتيبه — مسار الموسيقى المرافقة تحته يعمل بالتوازي والخفض التلقائي يخفضه تحت التعليق آليًا.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        // قوالب جاهزة (v0.35.0 — البند 17): هيكل علامات وإعدادات موصى بها بنقرة
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "قوالب جاهزة:",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+            MontageTemplateCatalog.all.forEach { t ->
+                SecondaryAction(
+                    text = t.name,
+                    enabled = !rendering,
+                    onClick = { templateConfirm = t.id }
+                )
+            }
+            SecondaryAction(
+                text = "+ علامة عند الرأس",
+                enabled = !rendering,
+                onClick = { showMarkerDialog = true }
+            )
+        }
+
+        // العلامات المسمّاة — رقائق بنقر تقفز إلى موضعها ومسح بجانبها
+        if (project.markers.isNotEmpty()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+            ) {
+                project.markers.sortedBy { it.tMs }.forEach { mk ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.14f))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            "⚑ ${mk.name} · ${formatMs(mk.tMs)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable { vm.setMontagePlayhead(mk.tMs) }
+                        )
+                        Text(
+                            "×",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable(enabled = !rendering) { vm.removeMontageMarker(mk.id) }
+                        )
+                    }
+                }
+            }
+        }
 
         // شريط الأدوات الاحترافي: تراجع/إعادة/تقسيم/حذف/تطبيع/حفظ وفتح مشروع
         Row(
@@ -234,6 +309,7 @@ fun MontagePage(vm: AppViewModel) {
                 project = project,
                 envelopes = envelopes,
                 selectedId = selectedId,
+                selectedMusicId = selectedMusicId,
                 playheadMs = playheadMs,
                 loopStart = loopStart,
                 loopEnd = loopEnd,
@@ -247,6 +323,10 @@ fun MontagePage(vm: AppViewModel) {
                 onTrimStart = { vm.pushMontageHistory() },
                 onTrim = { id, s, e ->
                     vm.updateMontageClip(id, { it.copy(startMs = s, endMs = e) }, record = false)
+                },
+                onMusicMoveStart = { vm.pushMontageHistory() },
+                onMusicMove = { id, deltaMs ->
+                    vm.moveMontageMusicClip(id, deltaMs)
                 }
             )
         }
@@ -294,12 +374,49 @@ fun MontagePage(vm: AppViewModel) {
             )
         }
 
-        // قائمة المقاطع التفصيلية — النقر يحدد والخط الزمني يزامن
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxWidth().weight(1f)
+        // الخفض التلقائي للسرير الموسيقي (v0.35.0 — البند 16): عمق قابل للضبط
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            itemsIndexed(project.clips) { i, clip ->
+            Text(
+                "الخفض التلقائي للموسيقى:",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            SecondaryAction(
+                text = if (project.duckingEnabled) "مفعّل" else "معطّل",
+                enabled = !rendering && project.musicClips.isNotEmpty(),
+                onClick = { vm.setMontageDuckingEnabled(!project.duckingEnabled) }
+            )
+            SecondaryAction(
+                text = "أعمق −3",
+                enabled = !rendering && project.duckDb > MontageLogic.DUCK_DB_MIN,
+                onClick = { vm.setMontageDuckDb(project.duckDb - 3) }
+            )
+            Text(
+                "عمق الخفض: ${project.duckDb}dB",
+                style = MaterialTheme.typography.labelLarge.numeric(),
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
+            SecondaryAction(
+                text = "أخف +3",
+                enabled = !rendering && project.duckDb < MontageLogic.DUCK_DB_MAX,
+                onClick = { vm.setMontageDuckDb(project.duckDb + 3) }
+            )
+            Text(
+                if (project.musicClips.isEmpty()) "أضف موسيقى مرافقة أولًا — تُخفض آليًا تحت كلام المذيع وتعود بعد الإفلات"
+                else "الموسيقى تنخفض تحت التعليق (هجوم ${project.duckAttackMs}ms وإفلات ${project.duckReleaseMs}ms) — سلوك المزج الإذاعي الحقيقي",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        // قائمة المقاطع التفصيلية — النقر يحدد والخط الزمني يزامن
+        // عمود عادي داخل تمرير الصفحة: كل الصفوف والقوائم مضمونة الوصول
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            project.clips.forEachIndexed { i, clip ->
                 MontageClipRow(
                     index = i,
                     clip = clip,
@@ -311,6 +428,26 @@ fun MontagePage(vm: AppViewModel) {
                     onDown = { vm.moveMontageClip(clip.id, -1) },
                     onEdit = { editTarget = clip },
                     onRemove = { vm.removeMontageClip(clip.id) }
+                )
+            }
+            if (project.musicClips.isNotEmpty()) {
+                Text(
+                        "مسار الموسيقى المرافقة — يعمل بالتوازي مع التعليق",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+            }
+            project.musicClips.forEachIndexed { i, m ->
+                MontageMusicRow(
+                    index = i,
+                    clip = m,
+                    enabled = !rendering,
+                    selected = m.id == selectedMusicId,
+                    onSelect = { vm.selectMontageMusic(m.id) },
+                    onEdit = { editMusicTarget = m },
+                    onRemove = { vm.removeMontageMusicClip(m.id) }
                 )
             }
         }
@@ -436,6 +573,81 @@ fun MontagePage(vm: AppViewModel) {
             onDismiss = { editTarget = null }
         )
     }
+
+    // حوار تحرير مقطع الموسيقى المرافقة: الموضع المطلق + النافذة والمستوى والتلاشين
+    editMusicTarget?.let { m ->
+        MontageMusicEditDialog(
+            clip = m,
+            onSave = { pos, s, e, vol, fi, fo ->
+                vm.updateMontageMusicClip(m.id, {
+                    it.copy(startMs = pos, startInFileMs = s, endInFileMs = e,
+                        volumePercent = vol, fadeInMs = fi, fadeOutMs = fo)
+                })
+                editMusicTarget = null
+            },
+            onDismiss = { editMusicTarget = null }
+        )
+    }
+
+    // حوار إضافة علامة عند الرأس — الاسم فارغ يعني «الفاصل»
+    if (showMarkerDialog) {
+        var markerName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showMarkerDialog = false },
+            title = { Text("علامة عند الرأس (${formatMs(playheadMs)})") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "اكتب اسم العلامة — «الفاصل» و«النشيد» من القوالب الجاهزة، وهذا حقل حر لعلاماتك.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = markerName,
+                        onValueChange = { markerName = it.take(24) },
+                        placeholder = { Text("الفاصل") },
+                        modifier = Modifier.fillMaxWidth().observesTextEditing(),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.addMontageMarkerAtPlayhead(markerName)
+                    showMarkerDialog = false
+                }) { Text("إضافة العلامة") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMarkerDialog = false }) { Text("إلغاء") }
+            }
+        )
+    }
+
+    // تأكيد تطبيق قالب جاهز — يستبدل العلامات والفاصل/الكروس فيد/الخفض بالموصى به
+    templateConfirm?.let { tid ->
+        val t = MontageTemplateCatalog.byId(tid)
+        if (t != null) {
+            AlertDialog(
+                onDismissRequest = { templateConfirm = null },
+                title = { Text("تطبيق قالب «${t.name}»؟") },
+                text = {
+                    Text(
+                        t.description + "\n\nسيُولَّد " + t.markers.size +
+                                " علامات مسمّاة على الخط الزمني، ويُعرض الفاصل/الكروس فيد والخفض التلقائي الموصى بهما — مقاطعك وموسيقاك لا تُمسّ."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        vm.applyMontageTemplate(tid)
+                        templateConfirm = null
+                    }) { Text("تطبيق") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { templateConfirm = null }) { Text("إلغاء") }
+                }
+            )
+        } else templateConfirm = null
+    }
 }
 
 // ================= أدوات الموضع والمغلّفات =================
@@ -473,6 +685,7 @@ private fun MontageTimelineCard(
     project: MontageProject,
     envelopes: Map<String, MontageEnvelope>,
     selectedId: String?,
+    selectedMusicId: String?,
     playheadMs: Long,
     loopStart: Long?,
     loopEnd: Long?,
@@ -482,11 +695,11 @@ private fun MontageTimelineCard(
     pxPerSec: Float,
     onZoom: (wider: Boolean) -> Unit,
     onTrimStart: () -> Unit,
-    onTrim: (clipId: String, startMs: Long, endMs: Long) -> Unit
+    onTrim: (clipId: String, startMs: Long, endMs: Long) -> Unit,
+    onMusicMoveStart: () -> Unit,
+    onMusicMove: (clipId: String, deltaMs: Long) -> Unit
 ) {
-    val totalMs = remember(project) {
-        MontageLogic.totalDurationMs(project.clips, project.gapMs, project.crossfadeMs)
-    }
+    val totalMs = remember(project) { MontageLogic.totalDurationFull(project) }
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
@@ -564,6 +777,21 @@ private fun MontageTimelineCard(
                     pxPerSec = pxPerSec,
                     onTrimStart = onTrimStart,
                     onTrim = onTrim
+                )
+            }
+            // مسار الموسيقى المرافقة (v0.35.0 — البند 16): تمرير مشترك مع التعليق
+            // فتتحرك المساران معًا، والظل الملوّن = مناطق النطق التي يُخفض عندها السرير
+            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(scroll)) {
+                MontageMusicLane(
+                    project = project,
+                    envelopes = envelopes,
+                    selectedId = selectedMusicId,
+                    playheadMs = playheadMs,
+                    pxPerSec = pxPerSec,
+                    onSeek = { vm.setMontagePlayhead(it) },
+                    onSelectMusic = { vm.selectMontageMusic(it) },
+                    onMoveStart = onMusicMoveStart,
+                    onMove = onMusicMove
                 )
             }
         }
@@ -801,6 +1029,43 @@ private fun MontageTimelineCanvas(
                     style = TextStyle(fontSize = 9.sp, color = onSurfVar).numeric()
                 )
                 tSec += stepSec
+            }
+
+            // العلامات المسمّاة (v0.35.0 — البند 17): علم كهرماني ثلاثي على المسطرة
+            // واسمه في كبسولة — والنقر قربه يحرّك الرأس إلى موضعها تقريبًا
+            for (mk in project.markers.sortedBy { it.tMs }) {
+                val mx = pad + mk.tMs * pxPerMs
+                if (mx < 0f || mx > size.width) continue
+                drawLine(
+                    color = tertiary.copy(alpha = 0.85f),
+                    start = Offset(mx, rulerH - 8f),
+                    end = Offset(mx, clipBottom),
+                    strokeWidth = 1.5f
+                )
+                drawPath(
+                    color = tertiary,
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(mx, rulerH - 17f)
+                        lineTo(mx + 11f, rulerH - 12f)
+                        lineTo(mx, rulerH - 7f)
+                        close()
+                    }
+                )
+                val label = mk.name.take(14)
+                val tr = textMeasurer.measure(
+                    text = label,
+                    style = TextStyle(fontSize = 9.sp, color = tertiary, fontWeight = FontWeight.Bold)
+                )
+                drawRoundRect(
+                    color = cBg.copy(alpha = 0.85f),
+                    topLeft = Offset(mx + 2f, rulerH - 18f),
+                    size = Size(tr.size.width + 8f, tr.size.height + 2f),
+                    cornerRadius = CornerRadius(4f, 4f)
+                )
+                drawText(
+                    textLayoutResult = tr,
+                    topLeft = Offset(mx + 6f, rulerH - 17f)
+                )
             }
 
             // منطقة الحلقة A/B
@@ -1205,4 +1470,325 @@ private fun LabeledNumber(
             singleLine = true
         )
     }
+}
+
+// ================= المسار المزدوج والقوالب (v0.35.0 — البنود 16–17) =================
+
+/**
+ * مسار الموسيقى المرافقة: شريط موازٍ تحت خط التعليق بموضع مطلق لكل مقطع،
+ * ومناطق النطق مظللة بعدها (هناك يُخفض السرير آليًا بعمق [MontageProject.duckDb]).
+ * السحب الأفقي يجسّم المقطع على مساره (لقطة تاريخ واحدة للسحبة)، والنقر
+ * يحدده ويحرّك الرأس إلى موضع النقر.
+ */
+@Composable
+private fun MontageMusicLane(
+    project: MontageProject,
+    envelopes: Map<String, MontageEnvelope>,
+    selectedId: String?,
+    playheadMs: Long,
+    pxPerSec: Float,
+    onSeek: (Long) -> Unit,
+    onSelectMusic: (String) -> Unit,
+    onMoveStart: () -> Unit,
+    onMove: (clipId: String, deltaMs: Long) -> Unit
+) {
+    val totalMs = remember(project) { MontageLogic.totalDurationFull(project).coerceAtLeast(1L) }
+    val density = LocalDensity.current
+    val widthDp = with(density) {
+        ((totalMs.toFloat() * pxPerSec / 1000f + 80f) / density.density).dp.coerceAtLeast(320.dp)
+    }
+    val pxPerMs = pxPerSec / 1000f
+    val pad = 10f
+    val duckIntervals = remember(project) {
+        MontageLogic.narrationIntervals(project.clips, project.gapMs, project.crossfadeMs)
+    }
+    val projState = rememberUpdatedState(project)
+    val ppmState = rememberUpdatedState(pxPerMs)
+    val moveState = rememberUpdatedState(onMove)
+    val moveStartState = rememberUpdatedState(onMoveStart)
+    var dragId by remember { mutableStateOf<String?>(null) }
+
+    val cPrimary = MaterialTheme.colorScheme.primary
+    val cTertiary = MaterialTheme.colorScheme.tertiary
+    val cSurface = MaterialTheme.colorScheme.surface
+    val cOutline = MaterialTheme.colorScheme.outlineVariant
+    val cBg = MaterialTheme.colorScheme.surfaceVariant
+    val cOnSurf = MaterialTheme.colorScheme.onSurface
+    val amber = Color(0xFFFFB300)
+    val textMeasurer = rememberTextMeasurer()
+
+    fun musicX(m: MontageMusicClip): Float = pad + m.startMs * pxPerMs
+    fun musicW(m: MontageMusicClip): Float =
+        max(6f, MontageLogic.musicDurationMs(m) * pxPerMs)
+    fun musicAt(x: Float, p: MontageProject = projState.value): Int = p.musicClips.indices.firstOrNull {
+        x >= pad + p.musicClips[it].startMs * ppmState.value &&
+                x <= pad + p.musicClips[it].startMs * ppmState.value +
+                max(6f, MontageLogic.musicDurationMs(p.musicClips[it]) * ppmState.value)
+    } ?: -1
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(vertical = 2.dp)
+        ) {
+            Text(
+                "مسار الموسيقى المرافقة",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "الظل = مناطق النطق (يُخفض السرير آليًا عندها) · اسحب جسم المقطع لتحريكه",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Box(
+            modifier = Modifier
+                .width(widthDp)
+                .height(58.dp)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { off ->
+                            val p = projState.value
+                            val ms = ((off.x - pad) / ppmState.value).toLong().coerceAtLeast(0L)
+                            onSeek(ms)
+                            val idx = musicAt(off.x)
+                            if (idx >= 0) onSelectMusic(p.musicClips[idx].id)
+                        }
+                    )
+                }
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = { off ->
+                            val p = projState.value
+                            val idx = musicAt(off.x)
+                            if (idx >= 0) {
+                                dragId = p.musicClips[idx].id
+                                moveStartState.value()
+                            } else dragId = null
+                        },
+                        onDrag = { change, amt ->
+                            change.consume()
+                            val id = dragId ?: return@detectDragGestures
+                            val deltaMs = (amt.x / ppmState.value).toLong()
+                            if (deltaMs != 0L) moveState.value(id, deltaMs)
+                        },
+                        onDragEnd = { dragId = null },
+                        onDragCancel = { dragId = null }
+                    )
+                }
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val h = size.height
+                drawRoundRect(
+                    color = cBg.copy(alpha = 0.30f),
+                    topLeft = Offset(0f, 0f),
+                    size = Size(size.width, h),
+                    cornerRadius = CornerRadius(10f, 10f)
+                )
+                // مناطق النطق مظللة — الموسيقى تُخفض عندها آليًا
+                for ((s, e) in duckIntervals) {
+                    val x0 = pad + s * pxPerMs
+                    val x1 = pad + e * pxPerMs
+                    if (x1 < 0f || x0 > size.width) continue
+                    drawRect(
+                        color = cPrimary.copy(alpha = 0.10f),
+                        topLeft = Offset(x0.coerceAtLeast(0f), 0f),
+                        size = Size(x1 - x0.coerceAtLeast(0f), h)
+                    )
+                }
+                // مقاطع الموسيقى: مستطيل + ويڤ فورم مصغّر + عنوان
+                for ((i, m) in projState.value.musicClips.withIndex()) {
+                    val cx = pad + m.startMs * pxPerMs
+                    val cw = max(6f, MontageLogic.musicDurationMs(m) * pxPerMs)
+                    val missing = !File(m.path).isFile
+                    val sel = m.id == selectedId
+                    drawRoundRect(
+                        color = if (missing) cOutline.copy(alpha = 0.25f) else cSurface.copy(alpha = 0.92f),
+                        topLeft = Offset(cx, 4f),
+                        size = Size(cw, h - 8f),
+                        cornerRadius = CornerRadius(6f, 6f)
+                    )
+                    drawRoundRect(
+                        color = when {
+                            dragId == m.id -> cTertiary
+                            sel -> cTertiary
+                            else -> cOutline
+                        },
+                        topLeft = Offset(cx, 4f),
+                        size = Size(cw, h - 8f),
+                        cornerRadius = CornerRadius(6f, 6f),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (sel) 2f else 1f)
+                    )
+                    val env = envelopes[m.id]
+                    if (env != null && env.peaks.isNotEmpty()) {
+                        val n = env.peaks.size
+                        val midY = h / 2f
+                        val barW = max(1f, cw / n - 0.5f)
+                        for (bk in 0 until n) {
+                            val bx = cx + (bk + 0.5f) / n * cw
+                            if (bx < cx + 2f || bx > cx + cw - 2f) continue
+                            val halfH = env.peaks[bk] * (h / 2f - 5f)
+                            if (halfH <= 0.3f) continue
+                            drawLine(
+                                color = cTertiary.copy(alpha = 0.8f),
+                                start = Offset(bx, midY - halfH),
+                                end = Offset(bx, midY + halfH),
+                                strokeWidth = barW,
+                                cap = StrokeCap.Round
+                            )
+                        }
+                    }
+                    if (cw > 60f) {
+                        drawText(
+                            textMeasurer = textMeasurer,
+                            text = "♪ ${m.title.take(14)}",
+                            topLeft = Offset(cx + 4f, 6f),
+                            style = TextStyle(fontSize = 9.sp, color = cOnSurf)
+                        )
+                    }
+                }
+                // الرأس يمر عبر المسارين كي يقرأ المذيع التزامن
+                val px = pad + playheadMs * pxPerMs
+                if (px >= 0f && px <= size.width) {
+                    drawLine(amber, Offset(px, 0f), Offset(px, h), 2f)
+                }
+            }
+        }
+    }
+}
+
+/** صف مقطع موسيقى مرافقة في القائمة — التحرير والحذف والنطّ الدقيق. */
+@Composable
+private fun MontageMusicRow(
+    index: Int,
+    clip: MontageMusicClip,
+    enabled: Boolean,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    onEdit: () -> Unit,
+    onRemove: () -> Unit
+) {
+    val missing = !File(clip.path).isFile
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                when {
+                    missing -> MaterialTheme.colorScheme.errorContainer
+                    selected -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
+                    else -> MaterialTheme.colorScheme.surface
+                }
+            )
+            .border(
+                1.dp,
+                if (selected) MaterialTheme.colorScheme.tertiary else Color.Transparent,
+                RoundedCornerShape(10.dp)
+            )
+            .clickable(enabled = enabled) { onSelect() }
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        AppIcon(kind = AppIconKind.MUSIC, size = 18.dp, tint = MaterialTheme.colorScheme.tertiary)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                clip.title + if (missing) " — الملف مفقود" else "",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val dur = MontageLogic.musicDurationMs(clip)
+            Text(
+                "الموضع: ${formatMs(clip.startMs)} · القص: ${formatMs(clip.startInFileMs)} ← ${formatMs(clip.endInFileMs)} (${formatMs(dur)}) · الصوت ${clip.volumePercent}٪",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        SecondaryAction(text = "تحرير", enabled = enabled, onClick = onEdit)
+        SecondaryAction(text = "حذف", enabled = enabled, onClick = onRemove)
+    }
+}
+
+/**
+ * حوار تحرير مقطع الموسيقى المرافقة: الموضع المطلق على الخط الزمني + نافذة
+ * القصّ داخل الملف والمستوى والتلاشين — الحبوس تُطبّق عند الحفظ.
+ */
+@Composable
+private fun MontageMusicEditDialog(
+    clip: MontageMusicClip,
+    onSave: (pos: Long, start: Long, end: Long, vol: Int, fi: Long, fo: Long) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var posText by remember { mutableStateOf(clip.startMs.toString()) }
+    var startText by remember { mutableStateOf(clip.startInFileMs.toString()) }
+    var endText by remember { mutableStateOf(clip.endInFileMs.toString()) }
+    var volText by remember { mutableStateOf(clip.volumePercent.toString()) }
+    var finText by remember { mutableStateOf(clip.fadeInMs.toString()) }
+    var foutText by remember { mutableStateOf(clip.fadeOutMs.toString()) }
+
+    fun fieldMs(text: String): Long = text.trim().toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تحرير موسيقى مرافقة: ${clip.title.take(40)}") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "مدة الملف كاملة: ${formatMs(clip.durationMs)} — الموضع على الخط الزمني للمونتاج، والقصّ من الملف المصدر.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    LabeledNumber("الموضع على الخط (مللي ثانية)", posText, { posText = it }, Modifier.weight(1f))
+                    SecondaryAction("− 250", onClick = { posText = (fieldMs(posText) - 250).coerceAtLeast(0).toString() })
+                    SecondaryAction("+ 250", onClick = { posText = (fieldMs(posText) + 250).toString() })
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    LabeledNumber("بداية الملف (ms)", startText, { startText = it }, Modifier.weight(1f))
+                    SecondaryAction("− 500", onClick = { startText = (fieldMs(startText) - 500).coerceAtLeast(0).toString() })
+                    SecondaryAction("+ 500", onClick = { startText = (fieldMs(startText) + 500).toString() })
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    LabeledNumber("نهاية الملف (ms)", endText, { endText = it }, Modifier.weight(1f))
+                    SecondaryAction("− 500", onClick = { endText = (fieldMs(endText) - 500).coerceAtLeast(0).toString() })
+                    SecondaryAction("+ 500", onClick = { endText = (fieldMs(endText) + 500).toString() })
+                }
+                LabeledNumber("الصوت (٪، 100 = كما هو)", volText, { volText = it })
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LabeledNumber("تلاشٍ داخل (ms)", finText, { finText = it }, Modifier.weight(1f))
+                    LabeledNumber("تلاشٍ خارج (ms)", foutText, { foutText = it }, Modifier.weight(1f))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val (fs, fe) = MontageLogic.clampWindow(fieldMs(startText), fieldMs(endText), clip.durationMs)
+                onSave(
+                    fieldMs(posText), fs, fe,
+                    MontageLogic.clampVolume(volText.trim().toIntOrNull() ?: MontageLogic.VOLUME_DEFAULT),
+                    MontageLogic.clampFade(fieldMs(finText)),
+                    MontageLogic.clampFade(fieldMs(foutText))
+                )
+            }) { Text("حفظ") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("إلغاء") }
+        }
+    )
 }

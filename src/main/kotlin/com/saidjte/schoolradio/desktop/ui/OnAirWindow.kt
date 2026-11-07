@@ -20,7 +20,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,7 +41,10 @@ import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.audio.MicState
 import com.saidjte.schoolradio.desktop.data.OnAirDisplayLogic
 import com.saidjte.schoolradio.desktop.data.OnAirModel
+import com.saidjte.schoolradio.desktop.data.LiveAnnounceLogic
 import com.saidjte.schoolradio.desktop.data.ScreenRect
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 /**
  * نافذة «على الهواء» لشاشة ثانية (v0.32.0 «وضع على الهواء ملء الشاشة لشاشة
@@ -85,8 +90,11 @@ fun OnAirWindow(vm: AppViewModel, onClose: () -> Unit) {
     }
 }
 
-/** كشف الشاشة الثانية بقراءة AWT — فشل أي شيء يعود بلا شاشة ثانية فتُفتح عادية. */
-private fun detectSecondaryScreen(): ScreenRect? = try {
+/**
+ * كشف الشاشة الثانية بقراءة AWT — فشل أي شيء يعود بلا شاشة ثانية فتُفتح عادية.
+ * internal لتشاركها نافذة القراءة على الشاشة الثانية (v0.35.0) — مصدر واحد للحقيقة.
+ */
+internal fun detectSecondaryScreen(): ScreenRect? = try {
     val env = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment()
     val devices = env.screenDevices
     val screens = devices.map { d ->
@@ -117,6 +125,18 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
     val musicPos by vm.player.positionMs.collectAsState()
     val musicDur by vm.player.durationMs.collectAsState()
     val playing by vm.player.isPlaying.collectAsState()
+
+    // شارة إعلان البث المباشر (v0.35.0): تضيء مدة محدودة بعد نقرة الزر
+    val announceAt by vm.liveAnnounceStartedAt.collectAsState()
+    var announceNow by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            announceNow = System.currentTimeMillis()
+            delay(500)
+        }
+    }
+    val announceActive = LiveAnnounceLogic.isActive(announceAt, announceNow)
+    val announceRemaining = LiveAnnounceLogic.remainingMs(announceAt, announceNow)
 
     val model = remember(
         runActive, runIndex, runElapsed, remaining, warn, schedule,
@@ -195,6 +215,33 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
                 style = MaterialTheme.typography.displaySmall.numeric(),
                 fontWeight = FontWeight.Bold
             )
+        }
+
+        // شارة إعلان البث المباشر — نقرة زر الاستوديو تضيئها هنا لمدة محدودة
+        if (announceActive) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(sc.onAir)
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                PulsingDot(color = sc.onAirContent, size = 14.dp)
+                Text(
+                    LiveAnnounceLogic.BANNER_TEXT,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = sc.onAirContent,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "الإعلان ${announceRemaining / 1000L}ث",
+                    style = MaterialTheme.typography.labelLarge.numeric(),
+                    color = sc.onAirContent
+                )
+            }
         }
 
         // البطاقة الرئيسية — ما يتابعه الطلاب الآن

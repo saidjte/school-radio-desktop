@@ -66,8 +66,9 @@ enum class TeleprompterSpeed(val label: String, val pxPerSecond: Float) {
     VERY_FAST("سريعة جدًا", 170f)
 }
 
-/** ألوان شاشة القراءة الليلية — عالية التباين لعين المذيع في غرفة مضيئة. */
-private object ReadingColors {
+/** ألوان شاشة القراءة الليلية — عالية التباين لعين المذيع في غرفة مضيئة.
+ *  internal لتشاركها نافذة القراءة على الشاشة الثانية (v0.35.0) فتبقى الهوية واحدة. */
+internal object ReadingColors {
     val background = Color(0xFF12161B)
     val surface = Color(0xFF1B2129)
     val active = Color(0xFF28394B)
@@ -109,8 +110,6 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
     var speedPx by remember { mutableStateOf(TeleprompterSpeedLogic.resolve(savedReading.speed)) }
     var followActive by remember { mutableStateOf(savedReading.follow ?: true) }
     var clock by remember { mutableStateOf(StudioLogic.clockText(System.currentTimeMillis())) }
-    val scrollState = rememberScrollState()
-    val density = LocalDensity.current
 
     /** حفظ التفضيلات الحالية — يُستدعى عند اختيار صريح من المذيع فقط. */
     fun persistReading() {
@@ -134,15 +133,6 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
     val progress = if (script.isEmpty()) 0f
     else ((activeIdx + 1).coerceAtLeast(1)).toFloat() / script.size
 
-    // ارتفاع مساحة الزحف بالبكسل — الحشوتان قبل النص وبعده (بارتفاع المساحة
-    // ناقص سطر واحد) تجعلان أول سطر مرئيًا عند الحافة السفلية عند البداية
-    // وآخر سطر مرئيًا عند الحافة العليا عند النهاية، فمرّ النص كله عبر
-    // مؤشر القراءة في المنتصف (طلب v0.21.0)
-    var areaPx by remember { mutableIntStateOf(0) }
-    val areaDp = with(density) { areaPx.toDp() }
-    val lineDp = with(density) { (fontSp * 1.6f).sp.toDp() }
-    val edgePad = (areaDp - lineDp).coerceAtLeast(0.dp)
-
     // ساعة الحاسوب — كل ثانية (شاشات الاستوديو تعرض الساعة للمذيع)
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -151,30 +141,8 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
         }
     }
 
-    // التمرير الآلي: خطوات صغيرة متتالية فيبدو الزحف سلسًا لا قفزات —
-    // وعند بلوغ نهاية النص (آخر سطر خرج من الأعلى) يتوقف التلقيم وحده
-    LaunchedEffect(autoScroll, speedPx) {
-        if (autoScroll) {
-            // جلسة انتهت سابقًا والنص عند النهاية؟ نعيده لأسفل الشاشة ليبدأ من جديد
-            if (scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue) {
-                scrollState.scrollTo(0)
-            }
-            while (isActive) {
-                scrollState.scrollBy(speedPx / 20f)
-                if (scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue) {
-                    autoScroll = false
-                    break
-                }
-                delay(50)
-            }
-        }
-    }
-
-    // تغيّر الفقرة المعروضة (متابعة الحلقة أو اختيار يدوي) يعيد النص إلى
-    // موضعه الأول: تحت الحافة السفلية — فتُقرأ الفقرة من بدايتها عبر المؤشر
-    LaunchedEffect(activeId) {
-        scrollState.scrollTo(0)
-    }
+    // زحف النص ومؤشر القراءة وإعادة التموضع عند تغيّر الفقرة — كلها في
+    // [ReadingCrawlArea] المشتركة مع نافذة القراءة على الشاشة الثانية (v0.35.0)
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -356,88 +324,18 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
                     )
                 }
             } else {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .onSizeChanged { areaPx = it.height }
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(scrollState),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        // حشوة علوية: عند البدء يظهر أول سطر عند الحافة السفلية
-                        // مباشرة — النص كله أمام المؤشر لا فوقه
-                        Spacer(Modifier.height(edgePad))
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(ReadingColors.surface)
-                                .border(1.5.dp, ReadingColors.accent.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
-                                .padding(horizontal = 30.dp, vertical = 24.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Text(
-                                shown.first.title.ifEmpty { "بدون عنوان" },
-                                fontSize = (fontSp * 0.62f).sp,
-                                lineHeight = (fontSp * 0.95f).sp,
-                                fontWeight = FontWeight.Bold,
-                                color = ReadingColors.title
-                            )
-                            Text(
-                                shown.first.body.ifEmpty { "—" },
-                                fontSize = fontSp.sp,
-                                lineHeight = (fontSp * 1.6f).sp,
-                                color = ReadingColors.body
-                            )
-                            Text(
-                                "${ScriptStats.wordCount(shown.first.body)} كلمة · " +
-                                        formatMs(ScriptStats.secondsFor(shown.first.body) * 1000),
-                                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
-                                color = ReadingColors.dim
-                            )
-                        }
-                        // حشوة سفلية: عند نهاية الزحف يظهر آخر سطر عند الحافة
-                        // العليا تمامًا — النص كله مرّ عبر المؤشر (طلب v0.21.0)
-                        Spacer(Modifier.height(edgePad))
-                    }
-
-                    // ================= مؤشر القراءة (v0.20.0) =================
-                    // شريط تركيز شفاف عند منتصف الشاشة + خط إرشادي رقيق +
-                    // سهمان جانبيان — سطر القراءة ثابت الموضع كشاشات
-                    // الاستوديو الحقيقية: العين لا تبحث عن مكانها أبدًا
-                    Canvas(modifier = Modifier.matchParentSize()) {
-                        val cy = size.height / 2f
-                        val bandHeight = size.height * 0.20f
-                        // شريط التركيز: مساحة القراءة المقصودة
-                        drawRoundRect(
-                            color = ReadingColors.accent.copy(alpha = 0.055f),
-                            topLeft = Offset(0f, cy - bandHeight / 2f),
-                            size = Size(size.width, bandHeight),
-                            cornerRadius = CornerRadius(18f, 18f)
-                        )
-                        // الخط الإرشادي الرقيق عبر كامل العرض
-                        drawLine(
-                            color = ReadingColors.accent.copy(alpha = 0.28f),
-                            start = Offset(0f, cy),
-                            end = Offset(size.width, cy),
-                            strokeWidth = 2f
-                        )
-                        // سهمان جانبيان يحدّان سطر القراءة
-                        fun focusArrow(edgeX: Float, dir: Float): Path = Path().apply {
-                            moveTo(edgeX, cy - 18f)
-                            lineTo(edgeX + dir * 26f, cy)
-                            lineTo(edgeX, cy + 18f)
-                            close()
-                        }
-                        val arrowColor = ReadingColors.accent.copy(alpha = 0.85f)
-                        drawPath(focusArrow(0f, 1f), arrowColor)
-                        drawPath(focusArrow(size.width, -1f), arrowColor)
-                    }
-                }
+                ReadingCrawlArea(
+                    title = shown.first.title.ifEmpty { "بدون عنوان" },
+                    body = shown.first.body.ifEmpty { "—" },
+                    metaLine = "${ScriptStats.wordCount(shown.first.body)} كلمة · " +
+                            formatMs(ScriptStats.secondsFor(shown.first.body) * 1000),
+                    fontSp = fontSp,
+                    speedPx = speedPx,
+                    autoScroll = autoScroll,
+                    onStopAutoScroll = { autoScroll = false },
+                    resetKey = activeId,
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                )
             }
 
             // ================= الشريط السفلي: التنقّل =================
@@ -470,9 +368,10 @@ fun ReadingOverlay(vm: AppViewModel, onDismiss: () -> Unit) {
     }
 }
 
-/** زر شاشة القراءة — نمط موحّد فوق الخلفية الليلية. */
+/** زر شاشة القراءة — نمط موحّد فوق الخلفية الليلية.
+ *  internal لتشاركه نافذة القراءة على الشاشة الثانية (v0.35.0). */
 @Composable
-private fun OverlayChip(
+internal fun OverlayChip(
     text: String,
     filled: Boolean = false,
     enabled: Boolean = true,
@@ -491,5 +390,134 @@ private fun OverlayChip(
             color = if (filled) Color(0xFF10141A) else ReadingColors.body,
             fontWeight = FontWeight.Bold
         )
+    }
+}
+
+/**
+ * مساحة الزحف التلقيمية المشتركة (v0.35.0): فقرة واحدة يبدأ نصها من الحافة
+ * السفلية ويمرّ كل سطورها عبر مؤشر القراءة الثابت في منتصف الشاشة — نفس
+ * الرياضيات والهوية الليلية لشاشة القراءة الأصلية (v0.20/v0.21)، تعمل الآن
+ * في موضعين: الحوار داخل الاستوديو، ونافذة القراءة على الشاشة الثانية.
+ * الزحف خطوات صغيرة متتالية (50ms) وعند نهاية النص يتوقف وحده، وتغيّر
+ * الفقرة ([resetKey]) يعيده إلى موضعه الأول.
+ */
+@Composable
+internal fun ReadingCrawlArea(
+    title: String,
+    body: String,
+    metaLine: String,
+    fontSp: Float,
+    speedPx: Float,
+    autoScroll: Boolean,
+    onStopAutoScroll: () -> Unit,
+    resetKey: Any?,
+    modifier: Modifier = Modifier
+) {
+    val scrollState = rememberScrollState()
+    val density = LocalDensity.current
+
+    // ارتفاع مساحة الزحف بالبكسل — الحشوتان قبل النص وبعده (بارتفاع المساحة
+    // ناقص سطر واحد) تجعلان أول سطر مرئيًا عند الحافة السفلية عند البداية
+    // وآخر سطر مرئيًا عند الحافة العليا عند النهاية
+    var areaPx by remember { mutableIntStateOf(0) }
+    val areaDp = with(density) { areaPx.toDp() }
+    val lineDp = with(density) { (fontSp * 1.6f).sp.toDp() }
+    val edgePad = (areaDp - lineDp).coerceAtLeast(0.dp)
+
+    // التمرير الآلي: خطوات صغيرة متتالية فيبدو الزحف سلسًا لا قفزات —
+    // وعند بلوغ نهاية النص (آخر سطر خرج من الأعلى) يتوقف التلقيم وحده
+    LaunchedEffect(autoScroll, speedPx) {
+        if (autoScroll) {
+            // جلسة انتهت سابقًا والنص عند النهاية؟ نعيده لأسفل الشاشة ليبدأ من جديد
+            if (scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue) {
+                scrollState.scrollTo(0)
+            }
+            while (isActive) {
+                scrollState.scrollBy(speedPx / 20f)
+                if (scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue) {
+                    onStopAutoScroll()
+                    break
+                }
+                delay(50)
+            }
+        }
+    }
+
+    // تغيّر الفقرة المعروضة (متابعة الحلقة أو اختيار يدوي) يعيد النص إلى
+    // موضعه الأول: تحت الحافة السفلية — فتُقرأ الفقرة من بدايتها عبر المؤشر
+    LaunchedEffect(resetKey) {
+        scrollState.scrollTo(0)
+    }
+
+    Box(
+        modifier = modifier.onSizeChanged { areaPx = it.height }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // حشوة علوية: عند البدء يظهر أول سطر عند الحافة السفلية مباشرة
+            Spacer(Modifier.height(edgePad))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(ReadingColors.surface)
+                    .border(1.5.dp, ReadingColors.accent.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                    .padding(horizontal = 30.dp, vertical = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    title,
+                    fontSize = (fontSp * 0.62f).sp,
+                    lineHeight = (fontSp * 0.95f).sp,
+                    fontWeight = FontWeight.Bold,
+                    color = ReadingColors.title
+                )
+                Text(
+                    body,
+                    fontSize = fontSp.sp,
+                    lineHeight = (fontSp * 1.6f).sp,
+                    color = ReadingColors.body
+                )
+                Text(
+                    metaLine,
+                    style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+                    color = ReadingColors.dim
+                )
+            }
+            // حشوة سفلية: عند نهاية الزحف يظهر آخر سطر عند الحافة العليا تمامًا
+            Spacer(Modifier.height(edgePad))
+        }
+
+        // مؤشر القراءة: شريط تركيز + خط إرشادي + سهمان جانبيان — سطر القراءة
+        // ثابت الموضع كشاشات الاستوديو الحقيقية: العين لا تبحث عن مكانها أبدًا
+        Canvas(modifier = Modifier.matchParentSize()) {
+            val cy = size.height / 2f
+            val bandHeight = size.height * 0.20f
+            drawRoundRect(
+                color = ReadingColors.accent.copy(alpha = 0.055f),
+                topLeft = Offset(0f, cy - bandHeight / 2f),
+                size = Size(size.width, bandHeight),
+                cornerRadius = CornerRadius(18f, 18f)
+            )
+            drawLine(
+                color = ReadingColors.accent.copy(alpha = 0.28f),
+                start = Offset(0f, cy),
+                end = Offset(size.width, cy),
+                strokeWidth = 2f
+            )
+            fun focusArrow(edgeX: Float, dir: Float): Path = Path().apply {
+                moveTo(edgeX, cy - 18f)
+                lineTo(edgeX + dir * 26f, cy)
+                lineTo(edgeX, cy + 18f)
+                close()
+            }
+            val arrowColor = ReadingColors.accent.copy(alpha = 0.85f)
+            drawPath(focusArrow(0f, 1f), arrowColor)
+            drawPath(focusArrow(size.width, -1f), arrowColor)
+        }
     }
 }

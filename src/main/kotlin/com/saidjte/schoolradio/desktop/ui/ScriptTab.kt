@@ -214,6 +214,11 @@ fun ScriptTab(vm: AppViewModel) {
                     modifier = Modifier.weight(1f)
                 )
                 SecondaryAction(text = "شاشة القراءة", onClick = { showOverlay = true })
+                // شاشة القراءة على الشاشة الثانية (v0.35.0) — على طريقة «على الهواء»
+                SecondaryAction(
+                    text = "على الشاشة الثانية",
+                    onClick = { vm.readingDisplayOpen.value = true }
+                )
                 SecondaryAction(text = "أ−", onClick = { fontSp = (fontSp - 4f).coerceAtLeast(16f) })
                 SecondaryAction(text = "أ+", onClick = { fontSp = (fontSp + 4f).coerceAtMost(64f) })
             }

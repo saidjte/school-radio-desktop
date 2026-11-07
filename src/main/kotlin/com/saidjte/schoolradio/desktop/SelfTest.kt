@@ -21,8 +21,14 @@ import com.saidjte.schoolradio.desktop.data.MeterZone
 import com.saidjte.schoolradio.desktop.data.MontageClip
 import com.saidjte.schoolradio.desktop.data.MontageHistory
 import com.saidjte.schoolradio.desktop.data.MontageLogic
+import com.saidjte.schoolradio.desktop.data.MontageMarker
+import com.saidjte.schoolradio.desktop.data.MontageMusicClip
 import com.saidjte.schoolradio.desktop.data.MontageProject
 import com.saidjte.schoolradio.desktop.data.MontageStore
+import com.saidjte.schoolradio.desktop.data.MontageTemplateCatalog
+import com.saidjte.schoolradio.desktop.data.MontageTemplatesLogic
+import com.saidjte.schoolradio.desktop.data.LiveAnnounceLogic
+import com.saidjte.schoolradio.desktop.audio.BundledJingles
 import com.saidjte.schoolradio.desktop.data.ReadingJson
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
@@ -1529,6 +1535,91 @@ object SelfTest {
                     val legacy = MontageStore(old).project()
                     check(legacy.crossfadeMs == 0L && legacy.playheadMs == 0L && legacy.clips.size == 1) { "legacy compat" }
                 }
+            }
+
+            // ================= v0.35.0: المسار المزدوج والخفض والعلامات والقوالب وإعلان البث =================
+            run {
+                // 1) نطاقات النطق ومنحنى الخفض النقي
+                val da = MontageClip(id = "da", path = "/x/a.wav", title = "a", durationMs = 3000, startMs = 0, endMs = 3000)
+                val db2 = MontageClip(id = "db", path = "/x/b.wav", title = "b", durationMs = 2000, startMs = 0, endMs = 2000)
+                check(MontageLogic.narrationIntervals(listOf(da, db2), 0, 0) == listOf(0L to 5000L)) { "intervals merged" }
+                check(MontageLogic.narrationIntervals(listOf(da, db2), 500, 0).size == 2) { "intervals split" }
+                val iv = listOf(1000L to 3000L)
+                val duck = MontageLogic.dbToAmp(-12.0)
+                check(MontageLogic.duckGainAt(500, iv, -12, 300, 800) == 1f) { "duck before attack" }
+                check(Math.abs(MontageLogic.duckGainAt(2000, iv, -12, 300, 800) - duck) < 1e-4f) { "duck inside" }
+                check(MontageLogic.duckGainAt(3801, iv, -12, 300, 800) == 1f) { "duck after release" }
+                check(MontageLogic.duckGainAt(500, iv, -12, 300, 800, enabled = false) == 1f) { "duck disabled" }
+                check(MontageLogic.clampDuckDb(-99) == -30 && MontageLogic.clampDuckDb(0) == -3) { "duck clamp" }
+
+                // 2) القوالب والعلامات
+                val tpl = MontageTemplateCatalog.byId("full-break")!!
+                val applied = MontageTemplatesLogic.apply(MontageProject(), tpl)
+                check(applied.markers.size == 5 && applied.gapMs == 400L && applied.duckDb == -12) { "template apply" }
+                check(MontageLogic.sanitizeMarkers(listOf(MontageMarker("x", "  ", 5))).isEmpty()) { "marker empty name" }
+
+                // 3) تصيير سرير موسيقي مخفوض تحت التعليق — عينات خام
+                // (تعليق خافت 4000 وسرير عالٍ 12000 كي يُعزل أثر الخفض على السرير)
+                val ddir = File(tmp, "dual")
+                ddir.mkdirs()
+                val voice = File(ddir, "voice.wav")
+                run {
+                    val frames = 3 * 44100
+                    val w = WavFileWriter(voice, 44100, 2)
+                    val vbuf = ByteArray(8192 * 4)
+                    var vf = 0
+                    while (vf < frames) {
+                        val n = minOf(8192, frames - vf)
+                        var bi = 0
+                        for (i in 0 until n) {
+                            val v = (sin(2.0 * PI * 440.0 * (vf + i) / 44100.0) * 4000).toInt()
+                            vbuf[bi++] = (v and 0xFF).toByte(); vbuf[bi++] = ((v shr 8) and 0xFF).toByte()
+                            vbuf[bi++] = (v and 0xFF).toByte(); vbuf[bi++] = ((v shr 8) and 0xFF).toByte()
+                        }
+                        w.write(vbuf, 0, bi)
+                        vf += n
+                    }
+                    w.close()
+                }
+                val bed = MontageDemo.tone(File(ddir, "bed.wav"), 44100, 2, 6000, 330.0)
+                val dual = MontageProject(
+                    clips = listOf(MontageClip(id = "v", path = voice.path, title = "v", durationMs = 3000)),
+                    musicClips = listOf(
+                        MontageMusicClip(id = "b", path = bed.path, title = "b", durationMs = 6000, startMs = 0)
+                    ),
+                    duckingEnabled = true, duckDb = -12, duckAttackMs = 200, duckReleaseMs = 400
+                )
+                val dout = File(ddir, "out.wav")
+                val dr = MontageRender.render(dual, dout)
+                check(dr.ok && Math.abs(dr.durationMs - 6000) <= 40) { "dual duration=${dr.durationMs}" }
+                val draw = java.nio.file.Files.readAllBytes(dout.toPath())
+                fun dsampleAt(raw: ByteArray, frame: Int): Int {
+                    val off = 44 + frame * 4
+                    if (off + 1 >= raw.size) return 0
+                    val lo = raw[off].toInt() and 0xFF
+                    val hi = raw[off + 1].toInt()
+                    return (hi shl 8) or lo
+                }
+                var dmax = 0
+                for (f in (600 * 44100 / 1000) until (2600 * 44100 / 1000)) dmax = maxOf(dmax, Math.abs(dsampleAt(draw, f)))
+                var amax = 0
+                for (f in (3600 * 44100 / 1000) until (5900 * 44100 / 1000)) amax = maxOf(amax, Math.abs(dsampleAt(draw, f)))
+                check(dmax > 2000 && dmax < 8000) { "duck bed ducked=$dmax" }
+                check(amax > 11000) { "duck bed recovered=$amax" }
+                // بلا خفض: السرير كامل القوة أثناء النطق
+                val offOut = File(ddir, "off.wav")
+                check(MontageRender.render(dual.copy(duckingEnabled = false), offOut).ok) { "duck off render" }
+                val offRaw = java.nio.file.Files.readAllBytes(offOut.toPath())
+                var offMax = 0
+                for (f in (600 * 44100 / 1000) until (2600 * 44100 / 1000)) offMax = maxOf(offMax, Math.abs(dsampleAt(offRaw, f)))
+                check(offMax > dmax + 5000) { "duck off full=$offMax during=$dmax" }
+
+                // 4) إعلان البث المباشر: حدود الشارة والثوابت
+                check(!LiveAnnounceLogic.isActive(null, 1000L)) { "announce null" }
+                check(LiveAnnounceLogic.isActive(1000L, 1000L)) { "announce start inclusive" }
+                check(!LiveAnnounceLogic.isActive(1000L, 1000L + LiveAnnounceLogic.DURATION_MS)) { "announce end exclusive" }
+                check(LiveAnnounceLogic.remainingMs(1000L, 99999L) == 0L) { "announce remaining floor" }
+                check(BundledJingles.ALL.any { it.id == LiveAnnounceLogic.JINGLE_ID }) { "announce jingle exists" }
             }
 
             println("SELFTEST OK — version $APP_VERSION")

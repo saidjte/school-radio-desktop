@@ -64,6 +64,7 @@ import com.saidjte.schoolradio.desktop.ui.StudioScreen
 import com.saidjte.schoolradio.desktop.ui.MontagePage
 import com.saidjte.schoolradio.desktop.ui.JingleWallWindow
 import com.saidjte.schoolradio.desktop.ui.OnAirWindow
+import com.saidjte.schoolradio.desktop.ui.ReadingWindow
 import com.saidjte.schoolradio.desktop.audio.FakeToneVoice
 import com.saidjte.schoolradio.desktop.audio.FakeTrackVoice
 import com.saidjte.schoolradio.desktop.audio.MicState
@@ -117,9 +118,32 @@ fun main(args: Array<String>) {
         if (args.contains("--onair")) {
             LaunchedEffect(Unit) { vm.onAirDisplayOpen.value = true }
         }
+        // شاشة القراءة على الشاشة الثانية للأتمتة (v0.35.0)
+        if (args.contains("--reading")) {
+            LaunchedEffect(Unit) { vm.readingDisplayOpen.value = true }
+        }
+        // إعلان البث المباشر للأتمتة (v0.35.0): إطلاق الجينل بصوت اختباري بلا عتاد
+        if (args.contains("--announce")) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(600)
+                vm.jingles.voiceFactoryOverride = { FakeToneVoice(chunks = 240, chunkMs = 25) }
+                vm.announceLiveBroadcast()
+            }
+        }
         // المونتاج للأتمتة (v0.33.0): مقاطع عرض تجريبية بنوافذ قص حية
         if (args.contains("--montage-demo")) {
             LaunchedEffect(Unit) { vm.montageDemo() }
+        }
+        // المونتاج للأتمتة (v0.35.0): قالب جاهز + علامة عند رأس محرّك + عمق خفض
+        // — تُنفَّذ بعد استقرار العرض التجريبي فتظهر العلامات والمسار والخفض دفعة واحدة
+        if (args.contains("--montage-v35")) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(4500)
+                vm.setMontagePlayhead(8000L)
+                vm.applyMontageTemplate("full-break")
+                vm.addMontageMarkerAtPlayhead("النشيد")
+                vm.setMontageDuckDb(-18)
+            }
         }
         // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
         val windowIcon = remember {
@@ -158,6 +182,11 @@ fun main(args: Array<String>) {
         val onAirOpen by vm.onAirDisplayOpen.collectAsState()
         if (onAirOpen) {
             OnAirWindow(vm = vm, onClose = { vm.onAirDisplayOpen.value = false })
+        }
+        // نافذة القراءة على الشاشة الثانية (v0.35.0) — على طريقة «على الهواء» تمامًا
+        val readingOpen by vm.readingDisplayOpen.collectAsState()
+        if (readingOpen) {
+            ReadingWindow(vm = vm, onClose = { vm.readingDisplayOpen.value = false })
         }
         // خروج نظيف: الجلسة الأخيرة تُحفظ أولًا (v0.32.0) ثم صوت الجينلات يُغلق
         androidx.compose.runtime.DisposableEffect(Unit) {

@@ -29,6 +29,7 @@ import com.saidjte.schoolradio.desktop.data.JinglePadJson
 import com.saidjte.schoolradio.desktop.data.JingleWallLogic
 import com.saidjte.schoolradio.desktop.data.LibraryEntry
 import com.saidjte.schoolradio.desktop.data.LibraryMath
+import com.saidjte.schoolradio.desktop.data.LiveAnnounceLogic
 import com.saidjte.schoolradio.desktop.data.MixerLogic
 import com.saidjte.schoolradio.desktop.data.MixerState
 import com.saidjte.schoolradio.desktop.data.MusicEqState
@@ -38,8 +39,12 @@ import com.saidjte.schoolradio.desktop.data.MontageClip
 import com.saidjte.schoolradio.desktop.data.MontageEnvelope
 import com.saidjte.schoolradio.desktop.data.MontageHistory
 import com.saidjte.schoolradio.desktop.data.MontageLogic
+import com.saidjte.schoolradio.desktop.data.MontageMarker
+import com.saidjte.schoolradio.desktop.data.MontageMusicClip
 import com.saidjte.schoolradio.desktop.data.MontageProject
 import com.saidjte.schoolradio.desktop.data.MontageStore
+import com.saidjte.schoolradio.desktop.data.MontageTemplateCatalog
+import com.saidjte.schoolradio.desktop.data.MontageTemplatesLogic
 import com.saidjte.schoolradio.desktop.data.MusicLibraryStore
 import com.saidjte.schoolradio.desktop.data.NamedPlaylist
 import com.saidjte.schoolradio.desktop.data.PlaylistMath
@@ -127,6 +132,40 @@ class AppViewModel {
      */
     val onAirDisplayOpen = MutableStateFlow(false)
 
+    // ================= شاشة القراءة على شاشة ثانية (v0.35.0) =================
+
+    /**
+     * فتح شاشة القراءة على الشاشة الثانية — على طريقة «على الهواء» تمامًا:
+     * نافذة تلقيم مستقلة غير ماسكة يقرؤها Main ويطلبها زر لوحة القراءة،
+     * وتتبع الفقرة الجارية أو اختيار المذيع لحظة بلحظة.
+     */
+    val readingDisplayOpen = MutableStateFlow(false)
+
+    // ================= إعلان البث المباشر (v0.35.0) =================
+
+    /** لحظة بدء آخر إعلان بث — الشارة على شاشة الطلاب مضاءة مدة محدودة. */
+    private val _liveAnnounceStartedAt = MutableStateFlow<Long?>(null)
+    val liveAnnounceStartedAt: StateFlow<Long?> = _liveAnnounceStartedAt.asStateFlow()
+
+    /** ملفات الجينلات المدمجة المستخرجة بمعرفاتها — مصدر جينل الإعلان. */
+    @Volatile private var bundledJingleFiles: Map<String, File> = emptyMap()
+
+    /**
+     * إعلان البث المباشر بنقرة واحدة: جينل الافتتاح من القناة المستقلة
+     * (نفس موضع جينل الفاصل الآلي فلا تتراكم الأصوات) + شارة «البث المباشر
+     * بدأ الآن» على شاشة الطلاب + رسالة تأكيد في الاستوديو.
+     */
+    fun announceLiveBroadcast() {
+        val f = bundledJingleFiles[LiveAnnounceLogic.JINGLE_ID]
+        if (f == null || !f.isFile) {
+            _lastLibraryMessage.value = "جينل الإعلان غير متاح — أعد فتح التطبيق لتُستخرج الجينلات المدمجة"
+            return
+        }
+        jingles.sting(f)
+        _liveAnnounceStartedAt.value = System.currentTimeMillis()
+        _lastLibraryMessage.value = "إعلان البث المباشر: «${LiveAnnounceLogic.BANNER_TEXT}» — جينل الافتتاح يعمل الآن"
+    }
+
     private val _jinglePads = MutableStateFlow(JingleWallLogic.emptyPads())
     val jinglePads: StateFlow<List<JinglePad>> = _jinglePads.asStateFlow()
 
@@ -135,6 +174,8 @@ class AppViewModel {
         try {
             val dir = File(AppViewModel.dataDir(), "jingles")
             val files = BundledJingles.ensureExtracted(dir)
+            // ملفات المدمجة بمعرفاتها — مصدر جينل إعلان البث المباشر (v0.35.0)
+            bundledJingleFiles = BundledJingles.ALL.map { it.id }.zip(files).toMap()
             val defaults = JingleWallLogic.bundledDefaults(files, BundledJingles.ALL.map { it.title })
             _jinglePads.value = JingleWallLogic.resolve(settingsStore.jinglePads(), defaults)
             jingles.setVolume(settingsStore.jingleVolume())
@@ -1393,6 +1434,10 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     private val _montageSelectedClipId = MutableStateFlow<String?>(null)
     val montageSelectedClipId: StateFlow<String?> = _montageSelectedClipId.asStateFlow()
 
+    /** مقطع الموسيقى المحدد في المسار الثاني (v0.35.0) — هدف التحرير والحذف. */
+    private val _montageSelectedMusicId = MutableStateFlow<String?>(null)
+    val montageSelectedMusicId: StateFlow<String?> = _montageSelectedMusicId.asStateFlow()
+
     /** رأس التشغيل على الخط الزمني — يُحفظ في المشروع ويُستعاد مع الجلسة. */
     private val _montagePlayheadMs = MutableStateFlow(_montageProject.value.playheadMs)
     val montagePlayheadMs: StateFlow<Long> = _montagePlayheadMs.asStateFlow()
@@ -1450,6 +1495,10 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         val ids = p.clips.map { it.id }.toSet()
         if (_montageSelectedClipId.value !in ids) {
             _montageSelectedClipId.value = p.clips.firstOrNull()?.id
+        }
+        val musicIds = p.musicClips.map { it.id }.toSet()
+        if (_montageSelectedMusicId.value !in musicIds) {
+            _montageSelectedMusicId.value = p.musicClips.firstOrNull()?.id
         }
         requestMontageEnvelopes()
     }
@@ -1676,6 +1725,8 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         val p = _montageProject.value
         val wanted = p.clips.associate { c ->
             c.id to "${c.path}|${c.startMs}|${c.endMs}|${c.durationMs}|${c.volumePercent}|${c.fadeInMs}|${c.fadeOutMs}"
+        } + p.musicClips.associate { m ->
+            m.id to "${m.path}|${m.startInFileMs}|${m.endInFileMs}|${m.durationMs}|${m.volumePercent}|${m.fadeInMs}|${m.fadeOutMs}"
         }
         val missing = wanted.filter { (id, stamp) -> envelopeStamps[id] != stamp }
         envelopeStamps = envelopeStamps.filterKeys { it in wanted }
@@ -1684,8 +1735,11 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         envelopeJob = runScope.launch(Dispatchers.IO) {
             for ((id, stamp) in missing) {
                 if (!isActive) break
-                val clip = _montageProject.value.clips.firstOrNull { it.id == id } ?: continue
-                val env = MontageRender.computeEnvelope(clip, montageEnvelopeBuckets(clip))
+                val clip = _montageProject.value.clips.firstOrNull { it.id == id }
+                    ?: _montageProject.value.musicClips.firstOrNull { it.id == id }
+                    ?: continue
+                val src = if (clip is MontageMusicClip) MontageRender.musicAsSourceClip(clip) else clip as MontageClip
+                val env = MontageRender.computeEnvelope(src, montageEnvelopeBuckets(src))
                 envelopeStamps = envelopeStamps + (id to stamp)
                 _montageEnvelopes.value = _montageEnvelopes.value + (id to env)
             }
@@ -1709,7 +1763,13 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     private fun montageStamp(p: MontageProject): String =
         p.clips.joinToString("|") {
             "${it.id}:${it.startMs}-${it.endMs}:${it.volumePercent}:${it.fadeInMs}-${it.fadeOutMs}"
-        } + "#${p.gapMs}#${p.crossfadeMs}"
+        } + "#" + p.musicClips.joinToString("|") { m ->
+            "${m.id}@${m.startMs}:${m.startInFileMs}-${m.endInFileMs}:${m.volumePercent}:${m.fadeInMs}-${m.fadeOutMs}"
+        } + "#duck=${p.duckingEnabled}:${p.duckDb}" + "#${p.gapMs}#${p.crossfadeMs}"
+
+    /** هل للمشروع ما يُصيَّر؟ (مقاطع تعليق أو موسيقى مرافقة موجودة على القرص) */
+    private fun montageHasSource(p: MontageProject): Boolean =
+        p.clips.any { File(it.path).isFile } || p.musicClips.any { File(it.path).isFile }
 
     /**
      * تشغيل/إيقاف المعاينة من موضع الرأس: إن كانت معاينة المشروع الحالي جاهزة
@@ -1718,7 +1778,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
      */
     fun toggleMontagePreview() {
         val p = _montageProject.value
-        if (p.clips.none { File(it.path).isFile }) {
+        if (!montageHasSource(p)) {
             _lastLibraryMessage.value = "أضف مقاطع موجودة على القرص أولًا"
             return
         }
@@ -1839,7 +1899,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     fun renderMontage(preview: Boolean, thenPlayFromPlayhead: Boolean = false) {
         if (_montageRenderProgress.value != null) return
         val p = _montageProject.value
-        if (p.clips.none { File(it.path).isFile }) {
+        if (!montageHasSource(p)) {
             _lastLibraryMessage.value = "أضف مقاطع موجودة على القرص أولًا"
             return
         }
@@ -1935,8 +1995,134 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
                     ),
                     record = false
                 )
+                // سرير موسيقى مرافقة للأتمتة (v0.35.0): يُظهر المسار الثاني وظل النطق
+                val bed = clips[1]
+                applyMontage(
+                    _montageProject.value.copy(
+                        musicClips = listOf(
+                            MontageMusicClip(
+                                id = MontageLogic.newMusicClipId(),
+                                path = bed.path, title = "سرير العرض التجريبي",
+                                durationMs = bed.durationMs, startMs = 0L,
+                                volumePercent = 60
+                            )
+                        )
+                    ),
+                    record = false
+                )
             }
         }
+    }
+
+    // ================= v0.35.0: المسار المزدوج والخفض والعلامات والقوالب =================
+
+    /**
+     * إضافة ملفات موسيقى مرافقة إلى المسار الثاني (البند 16): تبدأ عند الرأس
+     * إن كان قد تحرك وعند الصفر أول مرة، والمدد تُحل في خيط عمل كما في التعليق.
+     */
+    fun addMontageMusicFiles(files: List<File>) {
+        val existing = _montageProject.value.musicClips.map { it.path }.toSet()
+        val fresh = files.filter {
+            it.isFile && it.extension.lowercase() in RecordingsScanner.AUDIO_EXTENSIONS &&
+                    it.absolutePath !in existing
+        }
+        if (fresh.isEmpty()) return
+        val startAt = _montagePlayheadMs.value.coerceAtLeast(0L)
+        val pending = fresh.map { f ->
+            MontageMusicClip(
+                id = MontageLogic.newMusicClipId(),
+                path = f.absolutePath,
+                title = f.nameWithoutExtension,
+                startMs = startAt
+            )
+        }
+        applyMontage(
+            _montageProject.value.copy(
+                musicClips = (_montageProject.value.musicClips + pending).take(MontageLogic.MAX_MUSIC_CLIPS)
+            )
+        )
+        runScope.launch(Dispatchers.IO) {
+            val resolved = fresh.associate { it.absolutePath to durationOf(it) }
+            val clips = _montageProject.value.musicClips.map { m ->
+                val d = resolved[m.path] ?: return@map m
+                val (s, e) = MontageLogic.clampWindow(m.startInFileMs, m.endInFileMs, d)
+                m.copy(durationMs = d, startInFileMs = s, endInFileMs = e)
+            }
+            applyMontage(_montageProject.value.copy(musicClips = clips), record = false)
+        }
+    }
+
+    /** تحديد مقطع موسيقى في المسار الثاني. */
+    fun selectMontageMusic(clipId: String?) {
+        _montageSelectedMusicId.value = clipId
+    }
+
+    /** تحرير مقطع موسيقى (موضع/نافذة/مستوى/تلاشين) — الحبوس تُطبق هنا والمشروع يُحفظ. */
+    fun updateMontageMusicClip(
+        clipId: String,
+        transform: (MontageMusicClip) -> MontageMusicClip,
+        record: Boolean = true
+    ) {
+        val clips = _montageProject.value.musicClips.map {
+            if (it.id == clipId) {
+                val t = transform(it)
+                val (s, e) = MontageLogic.clampWindow(t.startInFileMs, t.endInFileMs, t.durationMs)
+                t.copy(
+                    startMs = t.startMs.coerceAtLeast(0L),
+                    startInFileMs = s, endInFileMs = e,
+                    volumePercent = MontageLogic.clampVolume(t.volumePercent),
+                    fadeInMs = MontageLogic.clampFade(t.fadeInMs),
+                    fadeOutMs = MontageLogic.clampFade(t.fadeOutMs)
+                )
+            } else it
+        }
+        applyMontage(_montageProject.value.copy(musicClips = clips), record)
+    }
+
+    /** إزاحة مقطع موسيقى أفقياً على مساره (سحب الجسم) — بلا مواضع سالبة. */
+    fun moveMontageMusicClip(clipId: String, deltaMs: Long, record: Boolean = true) =
+        updateMontageMusicClip(clipId, { it.copy(startMs = (it.startMs + deltaMs).coerceAtLeast(0L)) }, record)
+
+    /** إزالة مقطع موسيقى من المسار الثاني. */
+    fun removeMontageMusicClip(clipId: String) {
+        applyMontage(_montageProject.value.copy(musicClips = _montageProject.value.musicClips.filterNot { it.id == clipId }))
+    }
+
+    /** تفعيل/تعطيل الخفض التلقائي للسرير الموسيقي. */
+    fun setMontageDuckingEnabled(on: Boolean) =
+        applyMontage(_montageProject.value.copy(duckingEnabled = on))
+
+    /** عمق الخفض بالديسيبل — محبوس −30..−3. */
+    fun setMontageDuckDb(db: Int) =
+        applyMontage(_montageProject.value.copy(duckDb = MontageLogic.clampDuckDb(db)))
+
+    // ---- العلامات المسمّاة (البند 17) ----
+
+    /** إضافة علامة عند الرأس باسم — «الفاصل» افتراضيًا حين يترك الاسم فارغًا. */
+    fun addMontageMarkerAtPlayhead(name: String) {
+        val n = name.trim().ifEmpty { "الفاصل" }.take(24)
+        val mk = MontageMarker(
+            id = MontageLogic.newMarkerId(),
+            name = n,
+            tMs = _montagePlayheadMs.value.coerceAtLeast(0L)
+        )
+        applyMontage(
+            _montageProject.value.copy(
+                markers = MontageLogic.sanitizeMarkers(_montageProject.value.markers + mk)
+            )
+        )
+    }
+
+    /** إزالة علامة بمعرفها. */
+    fun removeMontageMarker(markerId: String) {
+        applyMontage(_montageProject.value.copy(markers = _montageProject.value.markers.filterNot { it.id == markerId }))
+    }
+
+    /** تطبيق قالب جاهز: علامات موصى بها + فاصل/كروس فيد/خفض موصى به — المقاطع تبقى كما هي. */
+    fun applyMontageTemplate(templateId: String) {
+        val t = MontageTemplateCatalog.byId(templateId) ?: return
+        applyMontage(MontageTemplatesLogic.apply(_montageProject.value, t))
+        _lastLibraryMessage.value = "طُبّق قالب «${t.name}» — ${t.markers.size} علامات على الخط الزمني"
     }
 
     /**
