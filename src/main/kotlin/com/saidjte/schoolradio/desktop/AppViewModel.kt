@@ -45,6 +45,8 @@ import com.saidjte.schoolradio.desktop.data.MontageProject
 import com.saidjte.schoolradio.desktop.data.MontageStore
 import com.saidjte.schoolradio.desktop.data.MontageTemplateCatalog
 import com.saidjte.schoolradio.desktop.data.MontageTemplatesLogic
+import com.saidjte.schoolradio.desktop.data.MontageTool
+import com.saidjte.schoolradio.desktop.data.MontageTrack
 import com.saidjte.schoolradio.desktop.data.MusicLibraryStore
 import com.saidjte.schoolradio.desktop.data.NamedPlaylist
 import com.saidjte.schoolradio.desktop.data.PlaylistMath
@@ -1450,6 +1452,20 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     private val _montageLoopEnabled = MutableStateFlow(false)
     val montageLoopEnabled: StateFlow<Boolean> = _montageLoopEnabled.asStateFlow()
 
+    // ---- v0.36.0: مسطرة العمليات والأدوات والمسارات المتعددة ----
+
+    /** المنطقة المحددة على المسطرة [بداية، نهاية) — null = لا تحديد (حالة عرض لا تُحفظ بتاريخ التحرير). */
+    private val _montageSelection = MutableStateFlow<Pair<Long, Long>?>(null)
+    val montageSelection: StateFlow<Pair<Long, Long>?> = _montageSelection.asStateFlow()
+
+    /** الأداة النشطة: تحديد/حركة أو مقصّ تقسيم بالنقر. */
+    private val _montageTool = MutableStateFlow(MontageTool.SELECT)
+    val montageTool: StateFlow<MontageTool> = _montageTool.asStateFlow()
+
+    /** التقاط السحب على العلامات وحواف المقاطع وشبكة نصف الثانية. */
+    private val _montageSnapEnabled = MutableStateFlow(true)
+    val montageSnapEnabled: StateFlow<Boolean> = _montageSnapEnabled.asStateFlow()
+
     /** مغلّفات المقاطع (ويڤ فورم/VU/تشبع) بحسب المقطع — تُحسب في خيط عمل. */
     private val _montageEnvelopes = MutableStateFlow<Map<String, MontageEnvelope>>(emptyMap())
     val montageEnvelopes: StateFlow<Map<String, MontageEnvelope>> = _montageEnvelopes.asStateFlow()
@@ -1764,8 +1780,9 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         p.clips.joinToString("|") {
             "${it.id}:${it.startMs}-${it.endMs}:${it.volumePercent}:${it.fadeInMs}-${it.fadeOutMs}"
         } + "#" + p.musicClips.joinToString("|") { m ->
-            "${m.id}@${m.startMs}:${m.startInFileMs}-${m.endInFileMs}:${m.volumePercent}:${m.fadeInMs}-${m.fadeOutMs}"
-        } + "#duck=${p.duckingEnabled}:${p.duckDb}" + "#${p.gapMs}#${p.crossfadeMs}"
+            "${m.id}@${m.startMs}:${m.startInFileMs}-${m.endInFileMs}:${m.volumePercent}:${m.fadeInMs}-${m.fadeOutMs}:${m.trackId}"
+        } + "#duck=${p.duckingEnabled}:${p.duckDb}" + "#${p.gapMs}#${p.crossfadeMs}" +
+            "#trks=" + p.tracks.joinToString(",") { t -> "${t.id}:${t.volumePercent}:${t.muted}:${t.solo}" }
 
     /** هل للمشروع ما يُصيَّر؟ (مقاطع تعليق أو موسيقى مرافقة موجودة على القرص) */
     private fun montageHasSource(p: MontageProject): Boolean =
@@ -2020,7 +2037,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
      * إضافة ملفات موسيقى مرافقة إلى المسار الثاني (البند 16): تبدأ عند الرأس
      * إن كان قد تحرك وعند الصفر أول مرة، والمدد تُحل في خيط عمل كما في التعليق.
      */
-    fun addMontageMusicFiles(files: List<File>) {
+    fun addMontageMusicFiles(files: List<File>, trackId: String = MontageLogic.DEFAULT_TRACK_ID) {
         val existing = _montageProject.value.musicClips.map { it.path }.toSet()
         val fresh = files.filter {
             it.isFile && it.extension.lowercase() in RecordingsScanner.AUDIO_EXTENSIONS &&
@@ -2033,12 +2050,13 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
                 id = MontageLogic.newMusicClipId(),
                 path = f.absolutePath,
                 title = f.nameWithoutExtension,
-                startMs = startAt
+                startMs = startAt,
+                trackId = trackId
             )
         }
         applyMontage(
             _montageProject.value.copy(
-                musicClips = (_montageProject.value.musicClips + pending).take(MontageLogic.MAX_MUSIC_CLIPS)
+                musicClips = (_montageProject.value.musicClips + pending).take(MontageLogic.MAX_TRACK_CLIPS)
             )
         )
         runScope.launch(Dispatchers.IO) {
@@ -2088,6 +2106,204 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         applyMontage(_montageProject.value.copy(musicClips = _montageProject.value.musicClips.filterNot { it.id == clipId }))
     }
 
+    // ================= v0.36.0: مسطرة العمليات وأدوات المونتاج والمسارات المتعددة =================
+
+    /** ضبط المنطقة المحددة على المسطرة — تحت الحد الأدنى تُمسح لا تُقبَل. */
+    fun setMontageSelection(startMs: Long, endMs: Long) {
+        val s = minOf(startMs, endMs).coerceAtLeast(0L)
+        val e = maxOf(startMs, endMs).coerceAtLeast(0L)
+        _montageSelection.value = if (e - s >= MontageLogic.SELECTION_MIN_MS) s to e else null
+    }
+
+    /** مسح تحديد المسطرة. */
+    fun clearMontageSelection() {
+        _montageSelection.value = null
+    }
+
+    /**
+     * حذف المنطقة المحددة من المسطرة متموّجًا — العملية الجوهرية «حدّد الجزء
+     * الذي تريد حذفه»: التعليق والمسارات والعلامات والرأس تُغلق مكان المنطقة.
+     */
+    fun deleteMontageRegion() {
+        val sel = _montageSelection.value ?: return
+        val np = MontageLogic.deleteRegionRipple(_montageProject.value, sel.first, sel.second)
+        if (np == null) {
+            _lastLibraryMessage.value = "المنطقة المحددة ضئيلة جدًا للحذف"
+            return
+        }
+        val cut = sel.second - sel.first
+        applyMontage(np.copy(selectionStartMs = -1L, selectionEndMs = -1L))
+        _montageSelection.value =
+            if (np.selectionStartMs >= 0L) np.selectionStartMs to np.selectionEndMs else null
+        _montagePlayheadMs.value = np.playheadMs.coerceAtLeast(0L)
+        _lastLibraryMessage.value =
+            "حُذفت المنطقة ${montageClock(sel.first)} ← ${montageClock(sel.second)} — أُغلق مكانها (${cut / 1000L} ثوانٍ)"
+    }
+
+    /** حلقة A/B جاهزة من المنطقة المحددة على المسطرة — بضغطة واحدة. */
+    fun setMontageLoopFromSelection() {
+        val sel = _montageSelection.value ?: return
+        _montageLoopStart.value = sel.first
+        _montageLoopEnd.value = sel.second
+        _montageLoopEnabled.value = true
+        _lastLibraryMessage.value = "الحلقة تعمل: ${montageClock(sel.first)} ← ${montageClock(sel.second)}"
+    }
+
+    /** علامة مسمّاة عند بداية المنطقة المحددة. */
+    fun addMontageMarkerAtSelectionStart(name: String) {
+        val sel = _montageSelection.value ?: return
+        addMontageMarkerAt(name, sel.first)
+    }
+
+    /** اختيار الأداة النشطة على الخط الزمني. */
+    fun setMontageTool(t: MontageTool) {
+        _montageTool.value = t
+    }
+
+    /** تفعيل/تعطيل التقاط السحب. */
+    fun setMontageSnapEnabled(on: Boolean) {
+        _montageSnapEnabled.value = on
+    }
+
+    fun toggleMontageSnap() {
+        _montageSnapEnabled.value = !_montageSnapEnabled.value
+        _lastLibraryMessage.value = if (_montageSnapEnabled.value) "الالتقاط مفعل — السحب يلتقط العلامات والحواف والشبكة" else "الالتقاط معطّل — حركة حرة"
+    }
+
+    // ---- المسارات المتعددة (عدة خطوط عمل) ----
+
+    /** قائمة المسارات الفعّالة للمشروع الحالي. */
+    fun montageTracksEffective(): List<MontageTrack> = MontageLogic.effectiveTracks(_montageProject.value)
+
+    /** إضافة مسار عمل حر جديد — المسار الافتراضي يُرسّخ في القائمة أول إضافة. */
+    fun addMontageTrack() {
+        val p = _montageProject.value
+        val base = if (p.tracks.isEmpty()) {
+            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
+        } else p.tracks
+        if (base.size >= MontageLogic.MAX_TRACKS) {
+            _lastLibraryMessage.value = "بلغت سقف المسارات (${MontageLogic.MAX_TRACKS}) — احذف مسارًا فارغًا أولًا"
+            return
+        }
+        val t = MontageTrack(
+            id = MontageLogic.newTrackId(),
+            name = "مسار ${base.size + 1}",
+            colorIndex = base.size % MontageLogic.TRACK_COLORS.size
+        )
+        applyMontage(p.copy(tracks = base + t))
+        _lastLibraryMessage.value = "أُضيف «${t.name}» — اسحب مقاطع إليه أو أضف ملفات وهو محدد"
+    }
+
+    /** حذف مسار حر مع مقاطعه — آخر مسار لا يُحذف، والتراجع يستعيد الكل. */
+    fun removeMontageTrack(trackId: String) {
+        val p = _montageProject.value
+        val base = if (p.tracks.isEmpty()) {
+            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
+        } else p.tracks
+        if (base.size <= 1) {
+            _lastLibraryMessage.value = "آخر مسار لا يُحذف — قلب المشروع بلا خطوط عمل"
+            return
+        }
+        val target = base.firstOrNull { it.id == trackId } ?: return
+        applyMontage(
+            p.copy(
+                tracks = base.filterNot { it.id == trackId },
+                musicClips = p.musicClips.filter { MontageLogic.effectiveTrackId(it) != trackId }
+            )
+        )
+        _lastLibraryMessage.value = "حُذف مسار «${target.name}» مع مقاطعه — تراجع يعيده"
+    }
+
+    /** إعادة تسمية مسار. */
+    fun renameMontageTrack(trackId: String, name: String) {
+        val p = _montageProject.value
+        val base = if (p.tracks.isEmpty()) {
+            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
+        } else p.tracks
+        applyMontage(p.copy(tracks = base.map { if (it.id == trackId) it.copy(name = name.trim().take(24)) else it }))
+    }
+
+    /** مستوى مسار بالبئة — كسب المزج لكله مقاطعه. */
+    fun setMontageTrackVolume(trackId: String, percent: Int) {
+        val p = _montageProject.value
+        val base = if (p.tracks.isEmpty()) {
+            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
+        } else p.tracks
+        applyMontage(
+            p.copy(tracks = base.map { if (it.id == trackId) it.copy(volumePercent = MontageLogic.clampVolume(percent)) else it }),
+            record = false
+        )
+    }
+
+    /** كتم/إلغاء كتم مسار — مسار التعليق خارج العقد فهو البرنامج. */
+    fun toggleMontageTrackMute(trackId: String) {
+        val p = _montageProject.value
+        val base = if (p.tracks.isEmpty()) {
+            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
+        } else p.tracks
+        applyMontage(p.copy(tracks = base.map { if (it.id == trackId) it.copy(muted = !it.muted) else it }))
+    }
+
+    /** منفرد/إلغاء منفرد مسار — بقية المسارات الحرة تصمت ومسار التعليق يبقى. */
+    fun toggleMontageTrackSolo(trackId: String) {
+        val p = _montageProject.value
+        val base = if (p.tracks.isEmpty()) {
+            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
+        } else p.tracks
+        applyMontage(p.copy(tracks = base.map { if (it.id == trackId) it.copy(solo = !it.solo) else it }))
+    }
+
+    /** نقل مقطع مسار إلى مسار آخر (سحب عمودي بين الخطوط). */
+    fun moveMontageTrackClipToTrack(clipId: String, trackId: String) {
+        updateMontageMusicClip(clipId, { it.copy(trackId = trackId) })
+    }
+
+    /**
+     * تقسيم مقطع مسار عند موضع زمني مطلق على الخط (أداة المقصّ بالنقر) —
+     * خارج نافذة المقطع لا شيء يحدث، وداخلها يولد نصفان بمعرّفين جديدين.
+     */
+    fun splitMontageTrackClipAtMs(clipId: String, timelineMs: Long) {
+        val p = _montageProject.value
+        val clip = p.musicClips.firstOrNull { it.id == clipId } ?: return
+        val pair = MontageLogic.splitTrackClipAt(clip, timelineMs - clip.startMs) ?: return
+        val (a, b) = pair
+        applyMontage(
+            p.copy(musicClips = p.musicClips.filterNot { it.id == clipId } + a + b)
+        )
+        _montageSelectedMusicId.value = b.id
+        _lastLibraryMessage.value = "انشطر «${clip.title.take(20)}» عند ${montageClock(timelineMs)} — نصفان على نفس المسار"
+    }
+
+    /**
+     * تقسيم مقطع تعليق عند موضع زمني مطلق (أداة المقصّ بالنقر على مسار التعليق)
+     * — نفس عقد التقسيم عند الرأس لكن من نقطة النقر مباشرة.
+     */
+    fun splitMontageVoiceClipAtMs(clipId: String, timelineMs: Long) {
+        val p = _montageProject.value
+        val starts = MontageLogic.clipStartMs(p.clips, p.gapMs, p.crossfadeMs)
+        val idx = p.clips.indexOfFirst { it.id == clipId }
+        if (idx < 0) return
+        val clip = p.clips[idx]
+        val pair = MontageLogic.splitClipAt(clip, timelineMs - starts[idx]) ?: return
+        val (a, b) = pair
+        val clips = p.clips.toMutableList()
+        clips[idx] = a
+        clips.add(idx + 1, b)
+        applyMontage(p.copy(clips = clips))
+        _montageSelectedClipId.value = b.id
+        _lastLibraryMessage.value = "انشطر «${clip.title.take(20)}» عند ${montageClock(timelineMs)}"
+    }
+
+    /** تقليم حافة يسرى لمقطع مسار (سحب المقابض) — لقطة تاريخ واحدة للسحبة. */
+    fun trimMontageTrackClipLeft(clipId: String, deltaMs: Long) {
+        updateMontageMusicClip(clipId, { MontageLogic.trimTrackClipLeft(it, deltaMs) }, record = false)
+    }
+
+    /** تقليم حافة يمنى لمقطع مسار. */
+    fun trimMontageTrackClipRight(clipId: String, deltaMs: Long) {
+        updateMontageMusicClip(clipId, { MontageLogic.trimTrackClipRight(it, deltaMs) }, record = false)
+    }
+
     /** تفعيل/تعطيل الخفض التلقائي للسرير الموسيقي. */
     fun setMontageDuckingEnabled(on: Boolean) =
         applyMontage(_montageProject.value.copy(duckingEnabled = on))
@@ -2100,11 +2316,16 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
 
     /** إضافة علامة عند الرأس باسم — «الفاصل» افتراضيًا حين يترك الاسم فارغًا. */
     fun addMontageMarkerAtPlayhead(name: String) {
+        addMontageMarkerAt(name, _montagePlayheadMs.value)
+    }
+
+    /** إضافة علامة مسمّاة عند موضع زمني صريح (الرأس أو بداية المنطقة المحددة). */
+    fun addMontageMarkerAt(name: String, tMs: Long) {
         val n = name.trim().ifEmpty { "الفاصل" }.take(24)
         val mk = MontageMarker(
             id = MontageLogic.newMarkerId(),
             name = n,
-            tMs = _montagePlayheadMs.value.coerceAtLeast(0L)
+            tMs = tMs.coerceAtLeast(0L)
         )
         applyMontage(
             _montageProject.value.copy(
@@ -2150,6 +2371,9 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
                 val t = if (i < 0) 0 else (i + 1).coerceAtMost(p.clips.size - 1)
                 _montageSelectedClipId.value = p.clips.getOrNull(t)?.id
             }
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.DeleteRegion -> deleteMontageRegion()
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.ToggleSnap -> toggleMontageSnap()
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.ClearSelection -> clearMontageSelection()
         }
     }
     // ================= النسخ الاحتياطي JSON =================

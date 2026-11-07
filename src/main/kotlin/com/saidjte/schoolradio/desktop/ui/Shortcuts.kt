@@ -161,6 +161,15 @@ sealed interface MontageShortcutAction {
 
     /** ↑/↓: تحديد المقطع السابق/التالي. */
     data object SelectNext : MontageShortcutAction
+
+    /** R: حذف المنطقة المحددة على المسطرة متموّجًا (v0.36.0). */
+    data object DeleteRegion : MontageShortcutAction
+
+    /** G: تفعيل/تعطيل التقاط السحب (v0.36.0). */
+    data object ToggleSnap : MontageShortcutAction
+
+    /** Escape: مسح تحديد المسطرة (v0.36.0). */
+    data object ClearSelection : MontageShortcutAction
 }
 
 /**
@@ -182,6 +191,9 @@ fun resolveMontageShortcut(
         key == Key.DirectionRight && !ctrl -> MontageShortcutAction.PlayheadMove(if (shift) 10L else 100L)
         key == Key.DirectionUp && !ctrl && !shift -> MontageShortcutAction.SelectPrev
         key == Key.DirectionDown && !ctrl && !shift -> MontageShortcutAction.SelectNext
+        key == Key.R && !ctrl && !shift -> MontageShortcutAction.DeleteRegion
+        key == Key.G && !ctrl && !shift -> MontageShortcutAction.ToggleSnap
+        key == Key.Escape -> MontageShortcutAction.ClearSelection
         else -> null
     }
 }
@@ -265,6 +277,9 @@ fun ShortcutsDialog(onDismiss: () -> Unit) {
                 "مسافة" to "تشغيل / إيقاف المعاينة من موضع الرأس",
                 "S" to "تقسيم المقطع عند موضع رأس التشغيل",
                 "Delete" to "حذف المقطع المحدد ويُغلق الخط مكانه",
+                "R" to "حذف المنطقة المحددة على المسطرة من كل المسارات متموّجًا",
+                "G" to "تفعيل / تعطيل الالتقاط على العلامات والحواف والشبكة",
+                "Esc" to "مسح تحديد المسطرة",
                 "← / →" to "تحريك رأس التشغيل 100ms (مع Shift: 10ms بدقة)",
                 "↑ / ↓" to "تحديد المقطع السابق / التالي",
                 "Ctrl+Z / Ctrl+Y" to "تراجع / إعادة آخر تعديل"

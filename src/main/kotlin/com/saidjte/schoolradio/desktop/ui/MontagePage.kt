@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -66,6 +67,7 @@ import com.saidjte.schoolradio.desktop.data.MontageMarker
 import com.saidjte.schoolradio.desktop.data.MontageMusicClip
 import com.saidjte.schoolradio.desktop.data.MontageProject
 import com.saidjte.schoolradio.desktop.data.MontageTemplateCatalog
+import com.saidjte.schoolradio.desktop.data.MontageTool
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -97,11 +99,15 @@ fun MontagePage(vm: AppViewModel) {
     val loopEnabled by vm.montageLoopEnabled.collectAsState()
     val playing by vm.player.isPlaying.collectAsState()
     val selectedMusicId by vm.montageSelectedMusicId.collectAsState()
+    val selection by vm.montageSelection.collectAsState()
+    val tool by vm.montageTool.collectAsState()
+    val snapEnabled by vm.montageSnapEnabled.collectAsState()
 
     var showPicker by remember { mutableStateOf(false) }
     var editTarget by remember { mutableStateOf<MontageClip?>(null) }
     var editMusicTarget by remember { mutableStateOf<MontageMusicClip?>(null) }
     var showMarkerDialog by remember { mutableStateOf(false) }
+    var showMarkerAtSelection by remember { mutableStateOf(false) }
     var templateConfirm by remember { mutableStateOf<String?>(null) }
     val rendering = progress != null
     val totalMs = remember(project) { MontageLogic.totalDurationFull(project) }
@@ -185,7 +191,7 @@ fun MontagePage(vm: AppViewModel) {
             )
         }
         Text(
-            "انقر على الخط الزمني لتضع الرأس، اسحب حافة المقطع لتقصّه بدقة الميلي ثانية، واسحب جسمه لإعادة ترتيبه — مسار الموسيقى المرافقة تحته يعمل بالتوازي والخفض التلقائي يخفضه تحت التعليق آليًا.",
+            "مسطرة العمليات فوق الخط الزمني: اسحبها لتحديد منطقة زمنية تُحذف من كل المسارات بنقرة، وانقرها لتضع الرأس — عدة خطوط عمل تحت مسار التعليق تسحب مقاطعها أفقياً وبين الخطوط، وأداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر، والالتقاط يزمّر العلامات والحواف وشبكة نصف الثانية.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -297,7 +303,7 @@ fun MontagePage(vm: AppViewModel) {
             )
         }
 
-        if (project.clips.isEmpty()) {
+        if (project.clips.isEmpty() && project.musicClips.isEmpty()) {
             EmptyState(
                 icon = AppIconKind.MONTAGE,
                 title = "المونتاج فارغ",
@@ -310,6 +316,9 @@ fun MontagePage(vm: AppViewModel) {
                 envelopes = envelopes,
                 selectedId = selectedId,
                 selectedMusicId = selectedMusicId,
+                selection = selection,
+                tool = tool,
+                snapEnabled = snapEnabled,
                 playheadMs = playheadMs,
                 loopStart = loopStart,
                 loopEnd = loopEnd,
@@ -326,9 +335,63 @@ fun MontagePage(vm: AppViewModel) {
                 },
                 onMusicMoveStart = { vm.pushMontageHistory() },
                 onMusicMove = { id, deltaMs ->
-                    vm.moveMontageMusicClip(id, deltaMs)
+                    vm.moveMontageMusicClip(id, deltaMs, record = false)
                 }
             )
+
+            // شريط عمليات المنطقة المحددة على المسطرة (v0.36.0):
+            // تحدد على المسطرة → تحذف/تكرر/تعلّم/تكبّر بنقرة
+            if (selection != null) {
+                val sel = selection
+                val (ss, se) = Pair(sel!!.first, sel.second)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        "المنطقة المحددة: ${formatMs(ss)} ← ${formatMs(se)} (${(se - ss) / 1000.0} ثوانٍ)",
+                        style = MaterialTheme.typography.labelLarge.numeric(),
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    SecondaryAction(
+                        text = "حذف المنطقة (R)",
+                        enabled = !rendering,
+                        onClick = { vm.deleteMontageRegion() }
+                    )
+                    SecondaryAction(
+                        text = "حلقة من المحدد",
+                        enabled = !rendering,
+                        onClick = { vm.setMontageLoopFromSelection() }
+                    )
+                    SecondaryAction(
+                        text = "علامة عند بدايته",
+                        enabled = !rendering,
+                        onClick = { showMarkerAtSelection = true }
+                    )
+                    SecondaryAction(
+                        text = "تكبير على المحدد",
+                        enabled = !rendering && se > ss,
+                        onClick = {
+                            // ملاءمة التكبير كي تملأ المنطقة العرض تقريبًا
+                            val widthPx = 1000f
+                            val target = (widthPx / ((se - ss).coerceAtLeast(200L).toFloat() / 1000f))
+                                .coerceIn(15f, 800f)
+                            pxPerSec = target
+                        }
+                    )
+                    SecondaryAction(
+                        text = "مسح التحديد (Esc)",
+                        enabled = !rendering,
+                        onClick = { vm.clearMontageSelection() }
+                    )
+                }
+            }
         }
 
         // الفاصل والكروس فيد: تبادليان على حدود المقاطع
@@ -432,17 +495,20 @@ fun MontagePage(vm: AppViewModel) {
             }
             if (project.musicClips.isNotEmpty()) {
                 Text(
-                        "مسار الموسيقى المرافقة — يعمل بالتوازي مع التعليق",
+                        "مقاطع المسارات الحرة — كل مقطع على مساره بالمواضع المطلقة",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(top = 6.dp)
                     )
             }
+            val effTracks = remember(project.tracks) { MontageLogic.effectiveTracks(project) }
             project.musicClips.forEachIndexed { i, m ->
+                val tName = MontageLogic.trackById(effTracks, MontageLogic.effectiveTrackId(m)).name
                 MontageMusicRow(
                     index = i,
                     clip = m,
+                    trackName = tName,
                     enabled = !rendering,
                     selected = m.id == selectedMusicId,
                     onSelect = { vm.selectMontageMusic(m.id) },
@@ -453,18 +519,20 @@ fun MontagePage(vm: AppViewModel) {
         }
 
         // التذييل: معاينة من الرأس وتصدير وتقدم وإلغاء وإضافة للقائمة
+        val hasSource = project.clips.any { File(it.path).isFile } ||
+                project.musicClips.any { File(it.path).isFile }
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             PrimaryAction(
                 text = if (playing) "إيقاف المعاينة مؤقتًا" else "معاينة من الرأس",
-                enabled = !rendering && project.clips.any { File(it.path).isFile },
+                enabled = !rendering && hasSource,
                 onClick = { vm.toggleMontagePreview() }
             )
             PrimaryAction(
                 text = "تصدير ملف واحد",
-                enabled = !rendering && project.clips.any { File(it.path).isFile },
+                enabled = !rendering && hasSource,
                 onClick = { vm.renderMontage(preview = false) }
             )
             if (progress != null) {
@@ -489,7 +557,7 @@ fun MontagePage(vm: AppViewModel) {
             }
         }
         Text(
-            "اختصارات الصفحة: مسافة معاينة/إيقاف · S تقسيم · Delete حذف المحدد · ←/→ تحريك الرأس (Shift: دقة 10ms) · ↑/↓ تحديد · Ctrl+Z/Y تراجع/إعادة",
+            "اختصارات الصفحة: مسافة معاينة/إيقاف · S تقسيم عند الرأس · Delete حذف المحدد · R حذف المنطقة المحددة · G الالتقاط · Esc مسح التحديد · ←/→ تحريك الرأس (Shift: دقة 10ms) · ↑/↓ تحديد · Ctrl+Z/Y تراجع/إعادة",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -623,6 +691,40 @@ fun MontagePage(vm: AppViewModel) {
         )
     }
 
+    // حوار علامة عند بداية المنطقة المحددة على المسطرة (v0.36.0)
+    if (showMarkerAtSelection) {
+        var markerName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showMarkerAtSelection = false },
+            title = { Text("علامة عند بداية المنطقة (${formatMs(selection?.first ?: 0L)})") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "تُوضع العلامة عند بداية المنطقة المحددة على المسطرة — قفزات لاحقة تصل إليها بنقرة من رقائق العلامات.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = markerName,
+                        onValueChange = { markerName = it.take(24) },
+                        placeholder = { Text("الفاصل") },
+                        modifier = Modifier.fillMaxWidth().observesTextEditing(),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.addMontageMarkerAtSelectionStart(markerName)
+                    showMarkerAtSelection = false
+                }) { Text("إضافة العلامة") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMarkerAtSelection = false }) { Text("إلغاء") }
+            }
+        )
+    }
+
     // تأكيد تطبيق قالب جاهز — يستبدل العلامات والفاصل/الكروس فيد/الخفض بالموصى به
     templateConfirm?.let { tid ->
         val t = MontageTemplateCatalog.byId(tid)
@@ -674,9 +776,17 @@ internal fun envAndBucketAt(
 
 // ================= بطاقة الخط الزمني =================
 
+/** ارتفاعات هندسة الخط الزمني الجديد (v0.36.0): مسطرة + مسار تعليق + مسارات حرة. */
+private val RULER_LANE_DP = 34.dp
+private val VOICE_LANE_DP = 150.dp
+private val FREE_LANE_DP = 56.dp
+private val TRACK_HEADERS_W_DP = 168.dp
+
 /**
- * بطاقة الخط الزمني: صف تكبير وحلقة، خريطة مصغرة بنظرة عامة، الخط الزمني
- * نفسه بموجاته داخل تمرير أفقي، ثم صف VU وزمن الرأس.
+ * بطاقة الخط الزمني (v0.36.0 «مسطرة العمليات وعدة خطوط عمل»): عمود رؤوس
+ * مسارات ثابت — مسار التعليق ثم المسارات الحرة بمستواها وكتمها ومنفردها —
+ * وبجانبه خط زمني مشترك التمرير: مسطرة عمليات تسحب عليها لتحديد منطقة زمنية،
+ * ومسار التعليق، وكل مسار حر بخطه الخاص. الأدوات أعلاه: تكبير وتقسيم والتقاط.
  * الاتجاه داخل الخط الزمني LTR — عرف المحررات الصوتية حتى في الواجهات العربية.
  */
 @Composable
@@ -686,6 +796,9 @@ private fun MontageTimelineCard(
     envelopes: Map<String, MontageEnvelope>,
     selectedId: String?,
     selectedMusicId: String?,
+    selection: Pair<Long, Long>?,
+    tool: MontageTool,
+    snapEnabled: Boolean,
     playheadMs: Long,
     loopStart: Long?,
     loopEnd: Long?,
@@ -700,10 +813,18 @@ private fun MontageTimelineCard(
     onMusicMove: (clipId: String, deltaMs: Long) -> Unit
 ) {
     val totalMs = remember(project) { MontageLogic.totalDurationFull(project) }
-    val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
     val contentWidthPx = totalMs.toFloat() * pxPerSec / 1000f + 80f
+    val tracks = remember(project.tracks) { MontageLogic.effectiveTracks(project) }
+
+    // مرشحات التقاط: علامات وحواف المقاطع + شبكة نصف الثانية حتى نهاية الخط
+    val snapCandidates = remember(project) {
+        MontageLogic.snapCandidates(project) +
+                (0L..(totalMs + MontageLogic.SNAP_GRID_MS) step MontageLogic.SNAP_GRID_MS)
+    }
+    fun snap(ms: Long): Long =
+        if (snapEnabled) MontageLogic.snapMs(ms, snapCandidates) else ms.coerceAtLeast(0L)
 
     Column(
         modifier = Modifier
@@ -714,7 +835,7 @@ private fun MontageTimelineCard(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // صف التكبير والحلقة A/B
+        // صف الأدوات: تكبير + حلقة A/B + أداة التقسيم + الالتقاط
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -728,9 +849,29 @@ private fun MontageTimelineCard(
             )
             SecondaryAction("+", enabled = pxPerSec < 800f, onClick = { onZoom(true) })
             Text(
+                "أداة:",
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(start = 8.dp)
+            )
+            SecondaryAction(
+                if (tool == MontageTool.SELECT) "تحديد ●" else "تحديد",
+                enabled = !rendering,
+                onClick = { vm.setMontageTool(MontageTool.SELECT) }
+            )
+            SecondaryAction(
+                if (tool == MontageTool.SPLIT) "تقسيم ✂ ●" else "تقسيم ✂",
+                enabled = !rendering,
+                onClick = { vm.setMontageTool(MontageTool.SPLIT) }
+            )
+            SecondaryAction(
+                if (snapEnabled) "التقاط ●" else "التقاط",
+                enabled = !rendering,
+                onClick = { vm.toggleMontageSnap() }
+            )
+            Text(
                 "حلقة A/B:",
                 style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(start = 10.dp)
+                modifier = Modifier.padding(start = 8.dp)
             )
             SecondaryAction("A", enabled = !rendering, onClick = { vm.setMontageLoopStartAtPlayhead() })
             SecondaryAction("B", enabled = !rendering, onClick = { vm.setMontageLoopEndAtPlayhead() })
@@ -745,6 +886,11 @@ private fun MontageTimelineCard(
                 onClick = { vm.clearMontageLoop() }
             )
         }
+        Text(
+            "المسطرة فوق: اسحب عليها لتحديد منطقة زمنية ثم احذفها من كل المسارات، وانقر لتضع الرأس — أداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر — اسحب جسم مقطع المسارات لتحريكه بين الخطوط، وحوافه لتقليمه، والالتقاط يزمّر العلامات والحواف والشبكة.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
             // الخريطة المصغرة: نظرة عامة على المشروع كله + مستطيل العرض الحالي
@@ -763,36 +909,92 @@ private fun MontageTimelineCard(
                     }
                 }
             )
-            // الخط الزمني نفسه داخل تمرير أفقي
-            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(scroll)) {
-                MontageTimelineCanvas(
-                    vm = vm,
-                    project = project,
-                    envelopes = envelopes,
-                    selectedId = selectedId,
-                    playheadMs = playheadMs,
-                    loopStart = loopStart,
-                    loopEnd = loopEnd,
-                    loopEnabled = loopEnabled,
-                    pxPerSec = pxPerSec,
-                    onTrimStart = onTrimStart,
-                    onTrim = onTrim
-                )
-            }
-            // مسار الموسيقى المرافقة (v0.35.0 — البند 16): تمرير مشترك مع التعليق
-            // فتتحرك المساران معًا، والظل الملوّن = مناطق النطق التي يُخفض عندها السرير
-            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(scroll)) {
-                MontageMusicLane(
-                    project = project,
-                    envelopes = envelopes,
-                    selectedId = selectedMusicId,
-                    playheadMs = playheadMs,
-                    pxPerSec = pxPerSec,
-                    onSeek = { vm.setMontagePlayhead(it) },
-                    onSelectMusic = { vm.selectMontageMusic(it) },
-                    onMoveStart = onMusicMoveStart,
-                    onMove = onMusicMove
-                )
+            // رؤوس المسارات + الخطوط الزمنية المشتركة التمرير
+            Row(modifier = Modifier.fillMaxWidth()) {
+                // عمود الرؤوس الثابت: مسطرة ثم مسار التعليق ثم المسارات الحرة
+                Column(
+                    modifier = Modifier.width(TRACK_HEADERS_W_DP),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(RULER_LANE_DP),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        Text(
+                            "اسحب المسطرة لتحديد منطقة",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    MontageVoiceHeaderCell(VOICE_LANE_DP)
+                    tracks.forEach { t ->
+                        MontageTrackHeaderCell(
+                            track = t,
+                            height = FREE_LANE_DP,
+                            clipCount = MontageLogic.clipsOfTrack(project, t.id).size,
+                            enabled = !rendering,
+                            onMute = { vm.toggleMontageTrackMute(t.id) },
+                            onSolo = { vm.toggleMontageTrackSolo(t.id) },
+                            onVolumeDown = { vm.setMontageTrackVolume(t.id, t.volumePercent - 10) },
+                            onVolumeUp = { vm.setMontageTrackVolume(t.id, t.volumePercent + 10) },
+                            onDelete = { vm.removeMontageTrack(t.id) }
+                        )
+                    }
+                    SecondaryAction(
+                        text = "+ مسار عمل جديد",
+                        enabled = !rendering && tracks.size < MontageLogic.MAX_TRACKS,
+                        onClick = { vm.addMontageTrack() }
+                    )
+                }
+                Column(
+                    modifier = Modifier.weight(1f).horizontalScroll(scroll),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // مسطرة العمليات: علامات وتكات ومطابقة منطقة ورأس تشغيل
+                    MontageRulerCanvas(
+                        project = project,
+                        selection = selection,
+                        loopStart = loopStart,
+                        loopEnd = loopEnd,
+                        loopEnabled = loopEnabled,
+                        playheadMs = playheadMs,
+                        pxPerSec = pxPerSec,
+                        onSeek = { vm.setMontagePlayhead(it) },
+                        onSelectRegion = { s, e -> vm.setMontageSelection(s, e) },
+                        onClearSelection = { vm.clearMontageSelection() }
+                    )
+                    // مسار التعليق — البرنامج المتسلسل
+                    MontageVoiceLaneCanvas(
+                        vm = vm,
+                        project = project,
+                        envelopes = envelopes,
+                        selectedId = selectedId,
+                        selection = selection,
+                        tool = tool,
+                        playheadMs = playheadMs,
+                        pxPerSec = pxPerSec,
+                        snap = ::snap,
+                        onTrimStart = onTrimStart,
+                        onTrim = onTrim
+                    )
+                    // المسارات الحرة — عدة خطوط عمل بالسحب بينها
+                    MontageFreeTracksCanvas(
+                        vm = vm,
+                        project = project,
+                        tracks = tracks,
+                        envelopes = envelopes,
+                        selectedId = selectedMusicId,
+                        selection = selection,
+                        tool = tool,
+                        playheadMs = playheadMs,
+                        pxPerSec = pxPerSec,
+                        snap = ::snap,
+                        onMoveStart = onMusicMoveStart,
+                        onMove = onMusicMove
+                    )
+                }
             }
         }
 
@@ -819,28 +1021,328 @@ private fun MontageTimelineCard(
     }
 }
 
-// ================= الخط الزمني الرسم =================
+// ================= رؤوس المسارات =================
 
-/** أوضاع السحب على الخط الزمني: تقليم الحافتين أو إعادة ترتيب أو تحريك الرأس. */
-private sealed interface TimelineDrag {
-    data object None : TimelineDrag
-    data class TrimLeft(val clipId: String, val origStart: Long) : TimelineDrag
-    data class TrimRight(val clipId: String, val origEnd: Long) : TimelineDrag
-    data class Reorder(val clipId: String, var acc: Float) : TimelineDrag
-    data object Scrub : TimelineDrag
+/** رأس مسار التعليق — ثابت لا يُكتم ولا يُحذف فهو البرنامج. */
+@Composable
+private fun MontageVoiceHeaderCell(height: androidx.compose.ui.unit.Dp) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(height)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(MaterialTheme.colorScheme.primary)
+        )
+        Column(modifier = Modifier.weight(1f).padding(start = 6.dp)) {
+            Text(
+                "مسار التعليق",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+            Text(
+                "البرنامج — متسلسل",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+    }
 }
 
+/** رأس مسار حر: لون واسم وكتم/منفرد ومستوى وحذف — وحدة مزج مصغّرة. */
 @Composable
-private fun MontageTimelineCanvas(
+private fun MontageTrackHeaderCell(
+    track: com.saidjte.schoolradio.desktop.data.MontageTrack,
+    height: androidx.compose.ui.unit.Dp,
+    clipCount: Int,
+    enabled: Boolean,
+    onMute: () -> Unit,
+    onSolo: () -> Unit,
+    onVolumeDown: () -> Unit,
+    onVolumeUp: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val color = Color(MontageLogic.TRACK_COLORS[Math.floorMod(track.colorIndex, MontageLogic.TRACK_COLORS.size)])
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(height)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (track.solo) color.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+            .padding(horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(color)
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                track.name,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                "${track.volumePercent}٪ · $clipCount مقاطع",
+                style = MaterialTheme.typography.labelSmall.numeric(),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+        MiniToolButton(
+            text = "M",
+            active = track.muted,
+            enabled = enabled,
+            tint = Color(0xFFE53935),
+            onClick = onMute
+        )
+        MiniToolButton(
+            text = "S",
+            active = track.solo,
+            enabled = enabled,
+            tint = Color(0xFFFFB300),
+            onClick = onSolo
+        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            MiniToolButton(text = "−", active = false, enabled = enabled && track.volumePercent > MontageLogic.VOLUME_MIN, tint = MaterialTheme.colorScheme.primary, onClick = onVolumeDown)
+            MiniToolButton(text = "+", active = false, enabled = enabled && track.volumePercent < MontageLogic.VOLUME_MAX, tint = MaterialTheme.colorScheme.primary, onClick = onVolumeUp)
+        }
+        MiniToolButton(text = "×", active = false, enabled = enabled, tint = MaterialTheme.colorScheme.onSurfaceVariant, onClick = onDelete)
+    }
+}
+
+/** زر أداة مصغّر لرؤوس المسارات — حالة نشطة بلون قوي. */
+@Composable
+private fun MiniToolButton(
+    text: String,
+    active: Boolean,
+    enabled: Boolean,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(
+                if (active) tint.copy(alpha = 0.85f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+            )
+            .clickable(enabled = enabled) { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (active) Color.White else tint,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+// ================= مسطرة العمليات (v0.36.0) =================
+
+/**
+ * مسطرة العمليات: تكات زمنية وعلامات مسمّاة ومنطقة الحلقة والرأس — وفوق
+ * ذلك مطابقة المنطقة: السحب عليها يحدد [بداية، نهاية) عبر كل المسارات،
+ * والنقر يضع الرأس ويمسح التحديد. هنا تُنفَّذ «حدّد الجزء الذي تريد حذفه»
+ * ثم يُحذف من شريط المنطقة أعلى البطاقة أو بمفتاح R.
+ */
+@Composable
+private fun MontageRulerCanvas(
+    project: MontageProject,
+    selection: Pair<Long, Long>?,
+    loopStart: Long?,
+    loopEnd: Long?,
+    loopEnabled: Boolean,
+    playheadMs: Long,
+    pxPerSec: Float,
+    onSeek: (Long) -> Unit,
+    onSelectRegion: (Long, Long) -> Unit,
+    onClearSelection: () -> Unit
+) {
+    val totalMs = remember(project) { MontageLogic.totalDurationFull(project).coerceAtLeast(1L) }
+    val density = LocalDensity.current
+    val widthDp = with(density) {
+        ((totalMs.toFloat() * pxPerSec / 1000f + 80f) / density.density).dp.coerceAtLeast(320.dp)
+    }
+    val pxPerMs = pxPerSec / 1000f
+    val pad = 10f
+    val textMeasurer = rememberTextMeasurer()
+    var anchorMs by remember { mutableStateOf(0L) }
+    val seekState = rememberUpdatedState(onSeek)
+    val selectState = rememberUpdatedState(onSelectRegion)
+    val clearState = rememberUpdatedState(onClearSelection)
+    val ppmState = rememberUpdatedState(pxPerMs)
+
+    val cOnSurfVar = MaterialTheme.colorScheme.onSurfaceVariant
+    val cTertiary = MaterialTheme.colorScheme.tertiary
+    val cPrimary = MaterialTheme.colorScheme.primary
+    val cBg = MaterialTheme.colorScheme.surfaceVariant
+    val amber = Color(0xFFFFB300)
+
+    Box(
+        modifier = Modifier
+            .width(widthDp)
+            .height(RULER_LANE_DP)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { off ->
+                        val ms = ((off.x - pad) / ppmState.value).toLong().coerceAtLeast(0L)
+                        clearState.value()
+                        seekState.value(ms)
+                    }
+                )
+            }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { off ->
+                        anchorMs = ((off.x - pad) / ppmState.value).toLong().coerceAtLeast(0L)
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        val ms = ((change.position.x - pad) / ppmState.value).toLong().coerceAtLeast(0L)
+                        selectState.value(anchorMs, ms)
+                    }
+                )
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val h = size.height
+            drawRoundRect(
+                color = cBg.copy(alpha = 0.30f),
+                topLeft = Offset(0f, 0f),
+                size = Size(size.width, h),
+                cornerRadius = CornerRadius(10f, 10f)
+            )
+            // تكات الزمن تتكيف مع التكبير
+            val stepSec = when {
+                pxPerSec >= 120f -> 1
+                pxPerSec >= 45f -> 2
+                else -> 5
+            }
+            val totalSec = (totalMs / 1000L).toInt()
+            var tSec = 0
+            while (tSec <= totalSec + stepSec) {
+                val x = pad + tSec * 1000f * pxPerMs
+                if (x > size.width) break
+                drawLine(
+                    color = cOnSurfVar.copy(alpha = 0.35f),
+                    start = Offset(x, h - 6f),
+                    end = Offset(x, h),
+                    strokeWidth = 1.5f
+                )
+                drawText(
+                    textMeasurer = textMeasurer,
+                    text = formatMs(tSec * 1000L),
+                    topLeft = Offset(x + 3f, 2f),
+                    style = TextStyle(fontSize = 9.sp, color = cOnSurfVar).numeric()
+                )
+                tSec += stepSec
+            }
+            // منطقة الحلقة A/B
+            if (loopEnabled && loopStart != null && loopEnd != null && loopEnd > loopStart) {
+                val ax = pad + loopStart * pxPerMs
+                val bx = pad + loopEnd * pxPerMs
+                drawRect(
+                    color = cTertiary.copy(alpha = 0.16f),
+                    topLeft = Offset(ax, 0f),
+                    size = Size(bx - ax, h)
+                )
+                drawLine(cTertiary, Offset(ax, 0f), Offset(ax, h), 2f)
+                drawLine(cTertiary, Offset(bx, 0f), Offset(bx, h), 2f)
+            }
+            // العلامات المسمّاة: علم كهرماني ثلاثي على المسطرة
+            for (mk in project.markers.sortedBy { it.tMs }) {
+                val mx = pad + mk.tMs * pxPerMs
+                if (mx < 0f || mx > size.width) continue
+                drawLine(
+                    color = cTertiary.copy(alpha = 0.85f),
+                    start = Offset(mx, h * 0.45f),
+                    end = Offset(mx, h),
+                    strokeWidth = 1.5f
+                )
+                drawPath(
+                    color = cTertiary,
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(mx, h * 0.45f - 9f)
+                        lineTo(mx + 10f, h * 0.45f - 4.5f)
+                        lineTo(mx, h * 0.45f)
+                        close()
+                    }
+                )
+            }
+            // المنطقة المحددة — تُسحب من هنا وتُحذف من كل المسارات
+            if (selection != null) {
+                val ax = pad + selection.first * pxPerMs
+                val bx = pad + selection.second * pxPerMs
+                drawRect(
+                    color = cPrimary.copy(alpha = 0.30f),
+                    topLeft = Offset(ax, 0f),
+                    size = Size((bx - ax).coerceAtLeast(2f), h)
+                )
+                drawLine(cPrimary, Offset(ax, 0f), Offset(ax, h), 2f)
+                drawLine(cPrimary, Offset(bx, 0f), Offset(bx, h), 2f)
+            }
+            // رأس التشغيل بمثلثه
+            val px = pad + playheadMs * pxPerMs
+            if (px >= 0f && px <= size.width) {
+                drawLine(amber, Offset(px, 0f), Offset(px, h), 2.5f)
+                drawPath(
+                    color = amber,
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(px - 6f, 0f)
+                        lineTo(px + 6f, 0f)
+                        lineTo(px, 10f)
+                        close()
+                    }
+                )
+            }
+        }
+    }
+}
+
+// ================= مسار التعليق (الرسم والسحب) =================
+
+/** أوضاع السحب على مسار التعليق: تقليم الحافتين أو إعادة ترتيب أو تحريك الرأس. */
+private sealed interface VoiceDrag {
+    data object None : VoiceDrag
+    data class TrimLeft(val clipId: String, val origStart: Long) : VoiceDrag
+    data class TrimRight(val clipId: String, val origEnd: Long) : VoiceDrag
+    data class Reorder(val clipId: String, var acc: Float) : VoiceDrag
+    data object Scrub : VoiceDrag
+}
+
+/**
+ * مسار التعليق: مقاطع متسلسلة بموجاتها — الضغط والسحب يقصّم من الحواف ويعيد
+ * الترتيب، وأداة التقسيم ✂ تشطر المقطع عند نقطة النقر، والمنطقة المحددة
+ * على المسطرة تُظلل فوقه فالمذيع يرى ما سيُحذف قبل أن يحذفه.
+ */
+@Composable
+private fun MontageVoiceLaneCanvas(
     vm: AppViewModel,
     project: MontageProject,
     envelopes: Map<String, MontageEnvelope>,
     selectedId: String?,
+    selection: Pair<Long, Long>?,
+    tool: MontageTool,
     playheadMs: Long,
-    loopStart: Long?,
-    loopEnd: Long?,
-    loopEnabled: Boolean,
     pxPerSec: Float,
+    snap: (Long) -> Long,
     onTrimStart: () -> Unit,
     onTrim: (clipId: String, startMs: Long, endMs: Long) -> Unit
 ) {
@@ -852,7 +1354,7 @@ private fun MontageTimelineCanvas(
         ((totalMs.toFloat() * pxPerSec / 1000f + 80f) / density.density).dp.coerceAtLeast(320.dp)
     }
     val textMeasurer = rememberTextMeasurer()
-    var drag by remember { mutableStateOf<TimelineDrag>(TimelineDrag.None) }
+    var drag by remember { mutableStateOf<VoiceDrag>(VoiceDrag.None) }
     var dragClipId by remember { mutableStateOf<String?>(null) }
     var scrubMs by remember { mutableStateOf(0L) }
 
@@ -862,15 +1364,14 @@ private fun MontageTimelineCanvas(
         MontageLogic.clipStartMs(project.clips, project.gapMs, project.crossfadeMs)
     }
 
-    // المدخلات تقرأ أحدث حالة عبر حوامل محدّثة — كي لا يُقطع السحب
-    // عند إعادة تشغيل التركيب مع كل تحديث مشروع أثناء التقليم
     val projState = rememberUpdatedState(project)
     val startsState = rememberUpdatedState(startsMs)
     val pxPerMsState = rememberUpdatedState(pxPerMs)
     val trimState = rememberUpdatedState(onTrim)
     val trimStartState = rememberUpdatedState(onTrimStart)
+    val snapState = rememberUpdatedState(snap)
+    val toolState = rememberUpdatedState(tool)
 
-    // هندسة المقاطع بالبكسل — من الحوامل الحية للمدخلات، ومن القيم المباشرة للرسم
     fun liveClipX(i: Int): Float = pad + startsState.value[i] * pxPerMsState.value
     fun liveClipW(i: Int): Float =
         max(6f, MontageLogic.clipDurationMs(projState.value.clips[i]) * pxPerMsState.value)
@@ -881,20 +1382,20 @@ private fun MontageTimelineCanvas(
     Box(
         modifier = Modifier
             .width(widthDp)
-            .height(180.dp)
+            .height(VOICE_LANE_DP)
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { off ->
                         val project = projState.value
                         val ppm = pxPerMsState.value
-                        val ms = ((off.x - pad) / ppm).toLong().coerceAtLeast(0L)
-                        vm.setMontagePlayhead(ms)
-                        val idx = project.clips.indices.firstOrNull {
-                            off.x >= pad + startsState.value[it] * ppm &&
-                                    off.x <= pad + startsState.value[it] * ppm +
-                                    max(6f, MontageLogic.clipDurationMs(project.clips[it]) * ppm)
+                        val rawMs = ((off.x - pad) / ppm).toLong().coerceAtLeast(0L)
+                        val idx = liveClipAt(off.x)
+                        if (toolState.value == MontageTool.SPLIT && idx >= 0) {
+                            vm.splitMontageVoiceClipAtMs(project.clips[idx].id, snapState.value(rawMs))
+                        } else {
+                            vm.setMontagePlayhead(rawMs)
+                            if (idx >= 0) vm.selectMontageClip(project.clips[idx].id)
                         }
-                        if (idx != null) vm.selectMontageClip(project.clips[idx].id)
                     }
                 )
             }
@@ -907,16 +1408,16 @@ private fun MontageTimelineCanvas(
                         fun cx(i: Int) = pad + startsState.value[i] * ppm
                         fun cw(i: Int) = max(6f, MontageLogic.clipDurationMs(project.clips[i]) * ppm)
                         when {
-                            idx < 0 -> drag = TimelineDrag.Scrub
+                            idx < 0 -> drag = VoiceDrag.Scrub
                             off.x - cx(idx) <= 10f -> {
-                                drag = TimelineDrag.TrimLeft(project.clips[idx].id, project.clips[idx].startMs)
+                                drag = VoiceDrag.TrimLeft(project.clips[idx].id, project.clips[idx].startMs)
                                 trimStartState.value()
                             }
                             cx(idx) + cw(idx) - off.x <= 10f -> {
-                                drag = TimelineDrag.TrimRight(project.clips[idx].id, project.clips[idx].endMs)
+                                drag = VoiceDrag.TrimRight(project.clips[idx].id, project.clips[idx].endMs)
                                 trimStartState.value()
                             }
-                            else -> drag = TimelineDrag.Reorder(project.clips[idx].id, 0f)
+                            else -> drag = VoiceDrag.Reorder(project.clips[idx].id, 0f)
                         }
                         dragClipId = if (idx >= 0) project.clips[idx].id else null
                     },
@@ -926,159 +1427,83 @@ private fun MontageTimelineCanvas(
                         val ppm = pxPerMsState.value
                         val x = change.position.x
                         when (val d = drag) {
-                            is TimelineDrag.Scrub -> {
+                            is VoiceDrag.Scrub -> {
                                 scrubMs = ((x - pad) / ppm).toLong().coerceAtLeast(0L)
                                 vm.setMontagePlayhead(scrubMs, persist = false)
                             }
-                            is TimelineDrag.TrimLeft -> {
+                            is VoiceDrag.TrimLeft -> {
                                 val clip = project.clips.firstOrNull { it.id == d.clipId }
                                 if (clip != null) {
                                     val dxMs = (amt.x / ppm).toLong()
-                                    val s = (d.origStart + dxMs).coerceIn(0L, clip.endMs - 50L)
+                                    val s = (d.origStart + dxMs).coerceIn(0L, clip.endMs - MontageLogic.MIN_CLIP_MS)
                                     trimState.value(d.clipId, s, clip.endMs)
                                 }
                             }
-                            is TimelineDrag.TrimRight -> {
+                            is VoiceDrag.TrimRight -> {
                                 val clip = project.clips.firstOrNull { it.id == d.clipId }
                                 if (clip != null) {
                                     val dxMs = (amt.x / ppm).toLong()
-                                    val e = (d.origEnd + dxMs).coerceIn(clip.startMs + 50L, clip.durationMs)
+                                    val e = (d.origEnd + dxMs).coerceIn(clip.startMs + MontageLogic.MIN_CLIP_MS, clip.durationMs)
                                     trimState.value(d.clipId, clip.startMs, e)
                                 }
                             }
-                            is TimelineDrag.Reorder -> {
+                            is VoiceDrag.Reorder -> {
                                 d.acc += amt.x
                                 if (abs(d.acc) >= 40f) {
                                     vm.moveMontageClip(d.clipId, if (d.acc > 0) 1 else -1)
                                     d.acc = 0f
                                 }
                             }
-                            TimelineDrag.None -> { }
+                            VoiceDrag.None -> { }
                         }
                     },
                     onDragEnd = {
-                        if (drag is TimelineDrag.Scrub) vm.setMontagePlayhead(scrubMs)
-                        drag = TimelineDrag.None
+                        if (drag is VoiceDrag.Scrub) vm.setMontagePlayhead(scrubMs)
+                        drag = VoiceDrag.None
                         dragClipId = null
                     },
                     onDragCancel = {
-                        drag = TimelineDrag.None
+                        drag = VoiceDrag.None
                         dragClipId = null
                     }
                 )
             }
     ) {
-        // الألوان تُلتقط في سياق التركيب — داخل Canvas لا استدعاءات Composable
         val cPrimary = MaterialTheme.colorScheme.primary
         val cSurface = MaterialTheme.colorScheme.surface
         val cOutline = MaterialTheme.colorScheme.outlineVariant
         val cOnSurfVar = MaterialTheme.colorScheme.onSurfaceVariant
         val cOnSurf = MaterialTheme.colorScheme.onSurface
         val cErr = MaterialTheme.colorScheme.error
-        val cTertiary = MaterialTheme.colorScheme.tertiary
         val cSecondaryContainer = MaterialTheme.colorScheme.secondaryContainer
         val cBg = MaterialTheme.colorScheme.surfaceVariant
-        val amber = Color(0xFFFFB300)
 
         Canvas(modifier = Modifier.fillMaxSize()) {
             val h = size.height
-            val rulerH = 22f
-            val clipTop = 30f
-            val clipBottom = h - 14f
+            val clipTop = 8f
+            val clipBottom = h - 12f
             val blockH = clipBottom - clipTop
-            val primary = cPrimary
-            val surface = cSurface
-            val outline = cOutline
-            val onSurfVar = cOnSurfVar
-            val err = cErr
-            val tertiary = cTertiary
-            // هندسة الرسم: نسخة الرسم من البدايات (القيم المباشرة للتركيب الحالي)
+            // خلفية الموجات
+            drawRoundRect(
+                color = cBg.copy(alpha = 0.30f),
+                topLeft = Offset(0f, 0f),
+                size = Size(size.width, h),
+                cornerRadius = CornerRadius(10f, 10f)
+            )
+
             fun clipX(i: Int): Float = pad + startsMs[i] * pxPerMs
             fun clipW(i: Int): Float =
                 max(6f, MontageLogic.clipDurationMs(project.clips[i]) * pxPerMs)
 
-            // خلفية الموجات
-            drawRoundRect(
-                color = cBg.copy(alpha = 0.30f),
-                topLeft = Offset(0f, rulerH),
-                size = Size(size.width, h - rulerH),
-                cornerRadius = CornerRadius(10f, 10f)
-            )
-
-            // مسطرة الزمن: خطوات تتكيف مع التكبير
-            val stepSec = when {
-                pxPerSec >= 120f -> 1
-                pxPerSec >= 45f -> 2
-                else -> 5
-            }
-            val totalSec = (totalMs / 1000L).toInt()
-            var tSec = 0
-            while (tSec <= totalSec + stepSec) {
-                val x = pad + tSec * 1000f * pxPerMs
-                if (x > size.width) break
-                drawLine(
-                    color = onSurfVar.copy(alpha = 0.35f),
-                    start = Offset(x, rulerH - 6f),
-                    end = Offset(x, rulerH),
-                    strokeWidth = 1.5f
-                )
-                drawText(
-                    textMeasurer = textMeasurer,
-                    text = formatMs(tSec * 1000L),
-                    topLeft = Offset(x + 3f, 2f),
-                    style = TextStyle(fontSize = 9.sp, color = onSurfVar).numeric()
-                )
-                tSec += stepSec
-            }
-
-            // العلامات المسمّاة (v0.35.0 — البند 17): علم كهرماني ثلاثي على المسطرة
-            // واسمه في كبسولة — والنقر قربه يحرّك الرأس إلى موضعها تقريبًا
-            for (mk in project.markers.sortedBy { it.tMs }) {
-                val mx = pad + mk.tMs * pxPerMs
-                if (mx < 0f || mx > size.width) continue
-                drawLine(
-                    color = tertiary.copy(alpha = 0.85f),
-                    start = Offset(mx, rulerH - 8f),
-                    end = Offset(mx, clipBottom),
-                    strokeWidth = 1.5f
-                )
-                drawPath(
-                    color = tertiary,
-                    path = androidx.compose.ui.graphics.Path().apply {
-                        moveTo(mx, rulerH - 17f)
-                        lineTo(mx + 11f, rulerH - 12f)
-                        lineTo(mx, rulerH - 7f)
-                        close()
-                    }
-                )
-                val label = mk.name.take(14)
-                val tr = textMeasurer.measure(
-                    text = label,
-                    style = TextStyle(fontSize = 9.sp, color = tertiary, fontWeight = FontWeight.Bold)
-                )
-                drawRoundRect(
-                    color = cBg.copy(alpha = 0.85f),
-                    topLeft = Offset(mx + 2f, rulerH - 18f),
-                    size = Size(tr.size.width + 8f, tr.size.height + 2f),
-                    cornerRadius = CornerRadius(4f, 4f)
-                )
-                drawText(
-                    textLayoutResult = tr,
-                    topLeft = Offset(mx + 6f, rulerH - 17f)
-                )
-            }
-
-            // منطقة الحلقة A/B
-            if (loopEnabled && loopStart != null && loopEnd != null && loopEnd > loopStart) {
-                val ax = pad + loopStart * pxPerMs
-                val bx = pad + loopEnd * pxPerMs
+            // المنطقة المحددة تُظلل عبر مسار التعليق أيضًا
+            if (selection != null) {
+                val ax = pad + selection.first * pxPerMs
+                val bx = pad + selection.second * pxPerMs
                 drawRect(
-                    color = tertiary.copy(alpha = 0.16f),
-                    topLeft = Offset(ax, rulerH),
-                    size = Size(bx - ax, h - rulerH)
+                    color = cPrimary.copy(alpha = 0.14f),
+                    topLeft = Offset(ax.coerceAtLeast(0f), 0f),
+                    size = Size((bx - ax).coerceAtLeast(2f), h)
                 )
-                drawLine(tertiary, Offset(ax, rulerH), Offset(ax, h), 2f)
-                drawLine(tertiary, Offset(bx, rulerH), Offset(bx, h), 2f)
             }
 
             // الفواصل: صمت بين المقاطع حين لا كروس فيد
@@ -1088,7 +1513,7 @@ private fun MontageTimelineCanvas(
                     val gx1 = clipX(i + 1)
                     if (gx1 > gx0) {
                         drawRect(
-                            color = onSurfVar.copy(alpha = 0.10f),
+                            color = cOnSurfVar.copy(alpha = 0.10f),
                             topLeft = Offset(gx0, clipTop),
                             size = Size(gx1 - gx0, blockH)
                         )
@@ -1097,7 +1522,7 @@ private fun MontageTimelineCanvas(
                                 textMeasurer = textMeasurer,
                                 text = "فاصل",
                                 topLeft = Offset(gx0 + 4f, clipTop + 4f),
-                                style = TextStyle(fontSize = 9.sp, color = onSurfVar)
+                                style = TextStyle(fontSize = 9.sp, color = cOnSurfVar)
                             )
                         }
                     }
@@ -1114,18 +1539,18 @@ private fun MontageTimelineCanvas(
                         val x0 = pad + (startsMs[i] + d0 - xf) * pxPerMs
                         val x1 = pad + (startsMs[i + 1] + xf) * pxPerMs
                         drawRect(
-                            color = primary.copy(alpha = 0.16f),
+                            color = cPrimary.copy(alpha = 0.16f),
                             topLeft = Offset(x0, clipTop),
                             size = Size(x1 - x0, blockH)
                         )
                         drawLine(
-                            color = primary.copy(alpha = 0.6f),
+                            color = cPrimary.copy(alpha = 0.6f),
                             start = Offset(x0, clipTop),
                             end = Offset(x1, clipBottom),
                             strokeWidth = 2f
                         )
                         drawLine(
-                            color = primary.copy(alpha = 0.6f),
+                            color = cPrimary.copy(alpha = 0.6f),
                             start = Offset(x0, clipBottom),
                             end = Offset(x1, clipTop),
                             strokeWidth = 2f
@@ -1142,17 +1567,17 @@ private fun MontageTimelineCanvas(
                 val missing = !File(clip.path).isFile
                 val sel = clip.id == selectedId
                 drawRoundRect(
-                    color = if (missing) err.copy(alpha = 0.25f) else surface.copy(alpha = 0.92f),
+                    color = if (missing) cErr.copy(alpha = 0.25f) else cSurface.copy(alpha = 0.92f),
                     topLeft = Offset(cx, clipTop),
                     size = Size(cw, blockH),
                     cornerRadius = CornerRadius(8f, 8f)
                 )
                 drawRoundRect(
                     color = when {
-                        dragClipId == clip.id -> primary
-                        sel -> primary
-                        missing -> err
-                        else -> outline
+                        dragClipId == clip.id -> cPrimary
+                        sel -> cPrimary
+                        missing -> cErr
+                        else -> cOutline
                     },
                     topLeft = Offset(cx, clipTop),
                     size = Size(cw, blockH),
@@ -1171,7 +1596,7 @@ private fun MontageTimelineCanvas(
                         val halfH = env.peaks[b] * (blockH / 2f - 3f)
                         if (halfH <= 0.4f) continue
                         drawLine(
-                            color = if (env.clippedAt(b)) err else primary.copy(alpha = 0.85f),
+                            color = if (env.clippedAt(b)) cErr else cPrimary.copy(alpha = 0.85f),
                             start = Offset(bx, midY - halfH),
                             end = Offset(bx, midY + halfH),
                             strokeWidth = barW,
@@ -1180,7 +1605,7 @@ private fun MontageTimelineCanvas(
                     }
                 } else {
                     drawLine(
-                        color = onSurfVar.copy(alpha = 0.35f),
+                        color = cOnSurfVar.copy(alpha = 0.35f),
                         start = Offset(cx + 4f, clipTop + blockH / 2f),
                         end = Offset(cx + cw - 4f, clipTop + blockH / 2f),
                         strokeWidth = 1.5f
@@ -1211,23 +1636,14 @@ private fun MontageTimelineCanvas(
                 }
             }
 
-            // رأس التشغيل: خط كهرماني بمثلث علوي
+            // رأس التشغيل: خط كهرماني
             val px = pad + playheadMs * pxPerMs
             if (px >= 0f && px <= size.width) {
                 drawLine(
-                    color = amber,
-                    start = Offset(px, rulerH - 10f),
+                    color = Color(0xFFFFB300),
+                    start = Offset(px, 0f),
                     end = Offset(px, h),
                     strokeWidth = 2.5f
-                )
-                drawPath(
-                    color = amber,
-                    path = androidx.compose.ui.graphics.Path().apply {
-                        moveTo(px - 6f, rulerH - 16f)
-                        lineTo(px + 6f, rulerH - 16f)
-                        lineTo(px, rulerH - 6f)
-                        close()
-                    }
                 )
             }
         }
@@ -1472,23 +1888,34 @@ private fun LabeledNumber(
     }
 }
 
-// ================= المسار المزدوج والقوالب (v0.35.0 — البنود 16–17) =================
+// ================= المسارات الحرة — عدة خطوط عمل (v0.36.0) =================
+
+/** أوضاع السحب على المسارات الحرة: تقليم حافة أو تحريك بين الخطوط. */
+private sealed interface TrackDrag {
+    data object None : TrackDrag
+    data class TrimLeft(val clipId: String) : TrackDrag
+    data class TrimRight(val clipId: String) : TrackDrag
+    data class Move(val clipId: String, var lane: Int) : TrackDrag
+}
 
 /**
- * مسار الموسيقى المرافقة: شريط موازٍ تحت خط التعليق بموضع مطلق لكل مقطع،
- * ومناطق النطق مظللة بعدها (هناك يُخفض السرير آليًا بعمق [MontageProject.duckDb]).
- * السحب الأفقي يجسّم المقطع على مساره (لقطة تاريخ واحدة للسحبة)، والنقر
- * يحدده ويحرّك الرأس إلى موضع النقر.
+ * كل المسارات الحرة في كانفس واحد بمسارات أفقية — السحب الأفقي يحرك المقطع
+ * على زمنه، والسحب العمودي ينقله بين خطوط العمل (سحب عابر للمسارات)، وحوافه
+ * تُقلّم من ملفها، وأداة التقسيم ✂ تشطره عند النقر. ظل النطق عبر كل الخطوط
+ * يُظهر أين سيُخفض الخفض التلقائي، والمنطقة المحددة تُظلل قبل حذفها.
  */
 @Composable
-private fun MontageMusicLane(
+private fun MontageFreeTracksCanvas(
+    vm: AppViewModel,
     project: MontageProject,
+    tracks: List<com.saidjte.schoolradio.desktop.data.MontageTrack>,
     envelopes: Map<String, MontageEnvelope>,
     selectedId: String?,
+    selection: Pair<Long, Long>?,
+    tool: MontageTool,
     playheadMs: Long,
     pxPerSec: Float,
-    onSeek: (Long) -> Unit,
-    onSelectMusic: (String) -> Unit,
+    snap: (Long) -> Long,
     onMoveStart: () -> Unit,
     onMove: (clipId: String, deltaMs: Long) -> Unit
 ) {
@@ -1499,141 +1926,221 @@ private fun MontageMusicLane(
     }
     val pxPerMs = pxPerSec / 1000f
     val pad = 10f
-    val duckIntervals = remember(project) {
-        MontageLogic.narrationIntervals(project.clips, project.gapMs, project.crossfadeMs)
-    }
+    val laneH = with(density) { FREE_LANE_DP.toPx() }
+    val textMeasurer = rememberTextMeasurer()
+
     val projState = rememberUpdatedState(project)
+    val tracksState = rememberUpdatedState(tracks)
     val ppmState = rememberUpdatedState(pxPerMs)
     val moveState = rememberUpdatedState(onMove)
     val moveStartState = rememberUpdatedState(onMoveStart)
-    var dragId by remember { mutableStateOf<String?>(null) }
+    val snapState = rememberUpdatedState(snap)
+    val toolState = rememberUpdatedState(tool)
 
-    val cPrimary = MaterialTheme.colorScheme.primary
-    val cTertiary = MaterialTheme.colorScheme.tertiary
-    val cSurface = MaterialTheme.colorScheme.surface
-    val cOutline = MaterialTheme.colorScheme.outlineVariant
-    val cBg = MaterialTheme.colorScheme.surfaceVariant
-    val cOnSurf = MaterialTheme.colorScheme.onSurface
-    val amber = Color(0xFFFFB300)
-    val textMeasurer = rememberTextMeasurer()
+    var drag by remember { mutableStateOf<TrackDrag>(TrackDrag.None) }
+    var dragClipId by remember { mutableStateOf<String?>(null) }
 
-    fun musicX(m: MontageMusicClip): Float = pad + m.startMs * pxPerMs
-    fun musicW(m: MontageMusicClip): Float =
-        max(6f, MontageLogic.musicDurationMs(m) * pxPerMs)
-    fun musicAt(x: Float, p: MontageProject = projState.value): Int = p.musicClips.indices.firstOrNull {
-        x >= pad + p.musicClips[it].startMs * ppmState.value &&
-                x <= pad + p.musicClips[it].startMs * ppmState.value +
-                max(6f, MontageLogic.musicDurationMs(p.musicClips[it]) * ppmState.value)
-    } ?: -1
+    val duckIntervals = remember(project) {
+        MontageLogic.narrationIntervals(project.clips, project.gapMs, project.crossfadeMs)
+    }
 
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(vertical = 2.dp)
-        ) {
-            Text(
-                "مسار الموسيقى المرافقة",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.tertiary,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                "الظل = مناطق النطق (يُخفض السرير آليًا عندها) · اسحب جسم المقطع لتحريكه",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Box(
-            modifier = Modifier
-                .width(widthDp)
-                .height(58.dp)
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = { off ->
-                            val p = projState.value
-                            val ms = ((off.x - pad) / ppmState.value).toLong().coerceAtLeast(0L)
-                            onSeek(ms)
-                            val idx = musicAt(off.x)
-                            if (idx >= 0) onSelectMusic(p.musicClips[idx].id)
+    fun clipsOf(t: com.saidjte.schoolradio.desktop.data.MontageTrack, p: MontageProject) =
+        p.musicClips.filter { MontageLogic.effectiveTrackId(it) == t.id }
+
+    fun hitAt(x: Float, y: Float): Pair<MontageMusicClip, Int>? {
+        val p = projState.value
+        val ts = tracksState.value
+        if (ts.isEmpty()) return null
+        val lane = (y / laneH).toInt().coerceIn(0, ts.size - 1)
+        val t = ts[lane]
+        val c = clipsOf(t, p).firstOrNull {
+            val cx = pad + it.startMs * ppmState.value
+            val cw = max(6f, MontageLogic.musicDurationMs(it) * ppmState.value)
+            x >= cx && x <= cx + cw
+        } ?: return null
+        return c to lane
+    }
+
+    val heightDp = FREE_LANE_DP * tracks.size.coerceAtLeast(1)
+
+    Box(
+        modifier = Modifier
+            .width(widthDp)
+            .height(heightDp)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { off ->
+                        val ms = ((off.x - pad) / ppmState.value).toLong().coerceAtLeast(0L)
+                        val hit = hitAt(off.x, off.y)
+                        if (toolState.value == MontageTool.SPLIT && hit != null) {
+                            vm.splitMontageTrackClipAtMs(hit.first.id, snapState.value(ms))
+                        } else {
+                            vm.setMontagePlayhead(snapState.value(ms))
+                            if (hit != null) vm.selectMontageMusic(hit.first.id)
                         }
-                    )
-                }
-                .pointerInput(Unit) {
-                    detectDragGestures(
-                        onDragStart = { off ->
-                            val p = projState.value
-                            val idx = musicAt(off.x)
-                            if (idx >= 0) {
-                                dragId = p.musicClips[idx].id
-                                moveStartState.value()
-                            } else dragId = null
-                        },
-                        onDrag = { change, amt ->
-                            change.consume()
-                            val id = dragId ?: return@detectDragGestures
-                            val deltaMs = (amt.x / ppmState.value).toLong()
-                            if (deltaMs != 0L) moveState.value(id, deltaMs)
-                        },
-                        onDragEnd = { dragId = null },
-                        onDragCancel = { dragId = null }
-                    )
-                }
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val h = size.height
-                drawRoundRect(
-                    color = cBg.copy(alpha = 0.30f),
-                    topLeft = Offset(0f, 0f),
-                    size = Size(size.width, h),
-                    cornerRadius = CornerRadius(10f, 10f)
+                    }
                 )
-                // مناطق النطق مظللة — الموسيقى تُخفض عندها آليًا
-                for ((s, e) in duckIntervals) {
-                    val x0 = pad + s * pxPerMs
-                    val x1 = pad + e * pxPerMs
-                    if (x1 < 0f || x0 > size.width) continue
-                    drawRect(
-                        color = cPrimary.copy(alpha = 0.10f),
-                        topLeft = Offset(x0.coerceAtLeast(0f), 0f),
-                        size = Size(x1 - x0.coerceAtLeast(0f), h)
+            }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { off ->
+                        val hit = hitAt(off.x, off.y)
+                        if (hit == null) {
+                            drag = TrackDrag.None
+                            dragClipId = null
+                            return@detectDragGestures
+                        }
+                        val (c, lane) = hit
+                        val cx = pad + c.startMs * ppmState.value
+                        val cw = max(6f, MontageLogic.musicDurationMs(c) * ppmState.value)
+                        dragClipId = c.id
+                        when {
+                            off.x - cx <= 10f -> {
+                                drag = TrackDrag.TrimLeft(c.id)
+                                moveStartState.value()
+                            }
+                            cx + cw - off.x <= 10f -> {
+                                drag = TrackDrag.TrimRight(c.id)
+                                moveStartState.value()
+                            }
+                            else -> drag = TrackDrag.Move(c.id, lane)
+                        }
+                    },
+                    onDrag = { change, amt ->
+                        change.consume()
+                        val id = dragClipId ?: return@detectDragGestures
+                        val ppm = ppmState.value
+                        when (val d = drag) {
+                            is TrackDrag.TrimLeft -> vm.trimMontageTrackClipLeft(id, (amt.x / ppm).toLong())
+                            is TrackDrag.TrimRight -> vm.trimMontageTrackClipRight(id, (amt.x / ppm).toLong())
+                            is TrackDrag.Move -> {
+                                moveState.value(id, (amt.x / ppm).toLong())
+                                // سحب عمودي عابر للمسارات — تغيير الخط أثناء السحبة نفسها
+                                val laneCount = tracksState.value.size.coerceAtLeast(1)
+                                val targetLane = (change.position.y / laneH).toInt().coerceIn(0, laneCount - 1)
+                                if (targetLane != d.lane) {
+                                    val t = tracksState.value.getOrNull(targetLane)
+                                    if (t != null) {
+                                        vm.moveMontageTrackClipToTrack(id, t.id)
+                                        d.lane = targetLane
+                                    }
+                                }
+                            }
+                            TrackDrag.None -> { }
+                        }
+                    },
+                    onDragEnd = {
+                        // التقاط نهاية السحب: الموضع النهائي يلتقط أقرب علامة/حافة/شبكة
+                        val id = dragClipId
+                        if (drag is TrackDrag.Move && id != null) {
+                            val c = projState.value.musicClips.firstOrNull { it.id == id }
+                            if (c != null) {
+                                val target = snapState.value(c.startMs)
+                                if (target != c.startMs) moveState.value(id, target - c.startMs)
+                            }
+                        }
+                        drag = TrackDrag.None
+                        dragClipId = null
+                    },
+                    onDragCancel = {
+                        drag = TrackDrag.None
+                        dragClipId = null
+                    }
+                )
+            }
+    ) {
+        val cPrimary = MaterialTheme.colorScheme.primary
+        val cSurface = MaterialTheme.colorScheme.surface
+        val cOutline = MaterialTheme.colorScheme.outlineVariant
+        val cOnSurf = MaterialTheme.colorScheme.onSurface
+        val cBg = MaterialTheme.colorScheme.surfaceVariant
+        val amber = Color(0xFFFFB300)
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val ts = tracks
+            val laneHpx = if (ts.isEmpty()) h else h / ts.size
+            // خلفية كل مسار بلونه وخط فاصل
+            for (i in ts.indices) {
+                val color = Color(MontageLogic.TRACK_COLORS[Math.floorMod(ts[i].colorIndex, MontageLogic.TRACK_COLORS.size)])
+                drawRect(
+                    color = color.copy(alpha = 0.06f),
+                    topLeft = Offset(0f, i * laneHpx),
+                    size = Size(w, laneHpx)
+                )
+                if (i < ts.size - 1) {
+                    drawLine(
+                        color = color.copy(alpha = 0.35f),
+                        start = Offset(0f, (i + 1) * laneHpx - 0.5f),
+                        end = Offset(w, (i + 1) * laneHpx - 0.5f),
+                        strokeWidth = 1f
                     )
                 }
-                // مقاطع الموسيقى: مستطيل + ويڤ فورم مصغّر + عنوان
-                for ((i, m) in projState.value.musicClips.withIndex()) {
+            }
+            // ظل النطق عبر كل الخطوط — هناك يعمل الخفض التلقائي
+            for ((s, e) in duckIntervals) {
+                val x0 = pad + s * pxPerMs
+                val x1 = pad + e * pxPerMs
+                if (x1 < 0f || x0 > w) continue
+                drawRect(
+                    color = cPrimary.copy(alpha = 0.08f),
+                    topLeft = Offset(x0.coerceAtLeast(0f), 0f),
+                    size = Size(x1 - x0.coerceAtLeast(0f), h)
+                )
+            }
+            // المنطقة المحددة على المسطرة تمر عبر كل الخطوط
+            if (selection != null) {
+                val ax = pad + selection.first * pxPerMs
+                val bx = pad + selection.second * pxPerMs
+                drawRect(
+                    color = cPrimary.copy(alpha = 0.20f),
+                    topLeft = Offset(ax.coerceAtLeast(0f), 0f),
+                    size = Size((bx - ax).coerceAtLeast(2f), h)
+                )
+                drawLine(cPrimary, Offset(ax.coerceAtLeast(0f), 0f), Offset(ax.coerceAtLeast(0f), h), 1.5f)
+                drawLine(cPrimary, Offset(bx, 0f), Offset(bx, h), 1.5f)
+            }
+            // مقاطع كل مسار: مستطيل بلون مساره + ويڤ فورم + عنوان
+            for ((ti, t) in ts.withIndex()) {
+                val bandTop = ti * laneHpx
+                val color = Color(MontageLogic.TRACK_COLORS[Math.floorMod(t.colorIndex, MontageLogic.TRACK_COLORS.size)])
+                val mutedNow = t.muted || MontageLogic.anyTrackSolo(ts) && !t.solo
+                for (m in clipsOf(t, project)) {
                     val cx = pad + m.startMs * pxPerMs
                     val cw = max(6f, MontageLogic.musicDurationMs(m) * pxPerMs)
                     val missing = !File(m.path).isFile
                     val sel = m.id == selectedId
+                    val clipH = laneHpx - 10f
                     drawRoundRect(
-                        color = if (missing) cOutline.copy(alpha = 0.25f) else cSurface.copy(alpha = 0.92f),
-                        topLeft = Offset(cx, 4f),
-                        size = Size(cw, h - 8f),
+                        color = if (missing) cOutline.copy(alpha = 0.25f) else cSurface.copy(alpha = if (mutedNow) 0.55f else 0.94f),
+                        topLeft = Offset(cx, bandTop + 5f),
+                        size = Size(cw, clipH),
                         cornerRadius = CornerRadius(6f, 6f)
                     )
                     drawRoundRect(
                         color = when {
-                            dragId == m.id -> cTertiary
-                            sel -> cTertiary
-                            else -> cOutline
+                            dragClipId == m.id -> color
+                            sel -> color
+                            else -> color.copy(alpha = 0.75f)
                         },
-                        topLeft = Offset(cx, 4f),
-                        size = Size(cw, h - 8f),
+                        topLeft = Offset(cx, bandTop + 5f),
+                        size = Size(cw, clipH),
                         cornerRadius = CornerRadius(6f, 6f),
                         style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (sel) 2f else 1f)
                     )
                     val env = envelopes[m.id]
                     if (env != null && env.peaks.isNotEmpty()) {
                         val n = env.peaks.size
-                        val midY = h / 2f
+                        val midY = bandTop + 5f + clipH / 2f
                         val barW = max(1f, cw / n - 0.5f)
                         for (bk in 0 until n) {
                             val bx = cx + (bk + 0.5f) / n * cw
                             if (bx < cx + 2f || bx > cx + cw - 2f) continue
-                            val halfH = env.peaks[bk] * (h / 2f - 5f)
+                            val halfH = env.peaks[bk] * (clipH / 2f - 3f)
                             if (halfH <= 0.3f) continue
                             drawLine(
-                                color = cTertiary.copy(alpha = 0.8f),
+                                color = color.copy(alpha = if (mutedNow) 0.35f else 0.85f),
                                 start = Offset(bx, midY - halfH),
                                 end = Offset(bx, midY + halfH),
                                 strokeWidth = barW,
@@ -1644,17 +2151,17 @@ private fun MontageMusicLane(
                     if (cw > 60f) {
                         drawText(
                             textMeasurer = textMeasurer,
-                            text = "♪ ${m.title.take(14)}",
-                            topLeft = Offset(cx + 4f, 6f),
+                            text = (if (mutedNow) "🔇 " else "♪ ") + m.title.take(13),
+                            topLeft = Offset(cx + 4f, bandTop + 7f),
                             style = TextStyle(fontSize = 9.sp, color = cOnSurf)
                         )
                     }
                 }
-                // الرأس يمر عبر المسارين كي يقرأ المذيع التزامن
-                val px = pad + playheadMs * pxPerMs
-                if (px >= 0f && px <= size.width) {
-                    drawLine(amber, Offset(px, 0f), Offset(px, h), 2f)
-                }
+            }
+            // الرأس يمر عبر كل الخطوط كي يقرأ المذيع التزامن
+            val px = pad + playheadMs * pxPerMs
+            if (px >= 0f && px <= w) {
+                drawLine(amber, Offset(px, 0f), Offset(px, h), 2f)
             }
         }
     }
@@ -1665,6 +2172,7 @@ private fun MontageMusicLane(
 private fun MontageMusicRow(
     index: Int,
     clip: MontageMusicClip,
+    trackName: String,
     enabled: Boolean,
     selected: Boolean,
     onSelect: () -> Unit,
@@ -1703,7 +2211,7 @@ private fun MontageMusicRow(
             )
             val dur = MontageLogic.musicDurationMs(clip)
             Text(
-                "الموضع: ${formatMs(clip.startMs)} · القص: ${formatMs(clip.startInFileMs)} ← ${formatMs(clip.endInFileMs)} (${formatMs(dur)}) · الصوت ${clip.volumePercent}٪",
+                "المسار: $trackName · الموضع: ${formatMs(clip.startMs)} · القص: ${formatMs(clip.startInFileMs)} ← ${formatMs(clip.endInFileMs)} (${formatMs(dur)}) · الصوت ${clip.volumePercent}٪",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

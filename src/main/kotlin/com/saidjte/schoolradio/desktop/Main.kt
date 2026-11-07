@@ -145,6 +145,21 @@ fun main(args: Array<String>) {
                 vm.setMontageDuckDb(-18)
             }
         }
+        // المونتاج للأتمتة (v0.36.0): مسار عمل ثانٍ + نقل مقطع إليه + منطقة محددة
+        // على المسطرة + علامة عند بدايتها — تُظهر هندسة v0.36 كاملة في اللقطات
+        if (args.contains("--montage-v36")) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(4500)
+                vm.addMontageTrack()
+                val firstMusic = vm.montageProject.value.musicClips.firstOrNull()
+                val lastTrack = vm.montageTracksEffective().lastOrNull()
+                if (firstMusic != null && lastTrack != null) {
+                    vm.moveMontageTrackClipToTrack(firstMusic.id, lastTrack.id)
+                }
+                vm.setMontageSelection(2_000L, 6_500L)
+                vm.addMontageMarkerAt("منطقة الفحص", 2_000L)
+            }
+        }
         // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
         val windowIcon = remember {
             Thread.currentThread().contextClassLoader

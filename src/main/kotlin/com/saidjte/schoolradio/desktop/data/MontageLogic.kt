@@ -21,6 +21,12 @@ import kotlin.math.sin
  * v0.35.0 (البنود 16–17): مسار موسيقى مرافقة بمواضع مطلقة موازٍ لمسار
  * التعليق، مع خفض تلقائي نقي (عمق/هجوم/إفلات) يخرج من نطاقات النطق نفسها،
  * وعلامات مسمّاة على الخط الزمني — والقوالب الجاهزة في MontageTemplates.kt.
+ *
+ * v0.36.0 «المونتاج متعدد المسارات ومسطرة العمليات»: عدة خطوط عمل حقيقية —
+ * مسارات حرّة مسمّاة بلون ومستوى وكتم/منفرد تعيش بالتوازي مع مسار التعليق،
+ * ومسطرة العمليات تُسحَب عليها لتحديد منطقة زمنية تُحذف من المشروع كله
+ * (حذف متموّج Ripple: كل ما بعد المنطقة يُسحب يسارًا فلا فجوة يتيمة)،
+ * وتقسيم مقاطع المسارات بالنقر، والتقاط على العلامات وحواف المقاطع.
  */
 
 /** مقطع داخل مشروع المونتاج. */
@@ -42,9 +48,13 @@ data class MontageClip(
 
 /**
  * مقطع موسيقى مرافقة (v0.35.0 — البند 16 «مسار مزدوج: تعليق + موسيقى»):
- * يعيش على مسار ثانٍ موازٍ للتعليق ويُوضع بموضع مطلق على الخط الزمني —
+ * يعيش على مسار موازٍ للتعليق ويُوضع بموضع مطلق على الخط الزمني —
  * لا يُزاح بإضافة المقاطع ولا يشاركها الترتيب، وله نافذة قصّ داخل ملفه
  * ومستوى وتلاشين كأي مقطع.
+ *
+ * v0.36.0 «عدة خطوط عمل»: نوع المقطع نفسه يخدم كل المسارات الحرة —
+ * [trackId] يحدد أي مسار يسكنه، والفارغ يعني المسار الافتراضي «موسيقى»
+ * (مشاريع v0.35.0 تُحمّل كما هي وتُهاجر منطقيًا دون مساس ملفها).
  */
 data class MontageMusicClip(
     val id: String,
@@ -59,8 +69,33 @@ data class MontageMusicClip(
     val endInFileMs: Long = 0L,
     val volumePercent: Int = MontageLogic.VOLUME_DEFAULT,
     val fadeInMs: Long = 0L,
-    val fadeOutMs: Long = 0L
+    val fadeOutMs: Long = 0L,
+    /** معرّف المسار الحر المالك (v0.36.0) — الفارغ = المسار الافتراضي «موسيقى». */
+    val trackId: String = ""
 )
+
+/**
+ * مسار عمل حر (v0.36.0 «عدة خطوط عمل»): خط أفقي على الخط الزمني يسكنه
+ * مقاطع بمواضع مطلقة — موسيقى، مؤثرات، تعليق ثانٍ، أجواء — بمستوى موحّد
+ * وكتمن/منفرد كوحدة المزج الإذاعي. مسار التعليق (المتسلسل) خارج هذه القائمة
+ * فهو العمود الفقري الثابت للمشروع لا يُنشأ ولا يُحذف.
+ */
+data class MontageTrack(
+    val id: String,
+    val name: String,
+    /** فهرس اللون من لوحة ألوان المسارات — تمايز بصري بين الخطوط. */
+    val colorIndex: Int = 0,
+    val volumePercent: Int = MontageLogic.VOLUME_DEFAULT,
+    val muted: Boolean = false,
+    val solo: Boolean = false
+)
+
+/**
+ * أداة المؤشر على الخط الزمني (v0.36.0 — أدوات مونتاج احترافية):
+ * [SELECT] التحديد والحركة والتقليم، و[SPLIT] المقصّ — النقر داخل مقطع
+ * يشطره عند نقطة النقر بدل تحديده.
+ */
+enum class MontageTool { SELECT, SPLIT }
 
 /** علامة مسمّاة على الخط الزمني (v0.35.0 — البند 17): «الفاصل»، «النشيد»… */
 data class MontageMarker(
@@ -89,7 +124,13 @@ data class MontageProject(
     val duckAttackMs: Long = MontageLogic.DUCK_ATTACK_DEFAULT,
     val duckReleaseMs: Long = MontageLogic.DUCK_RELEASE_DEFAULT,
     /** العلامات المسمّاة على الخط الزمني — مرتبة بالزمن عند الحفظ. */
-    val markers: List<MontageMarker> = emptyList()
+    val markers: List<MontageMarker> = emptyList(),
+    // ==== v0.36.0: عدة خطوط عمل ومسطرة العمليات ====
+    /** المسارات الحرة (عدا مسار التعليق الثابت) — قائمة فارغة تعني مشروعًا قديمًا يُهاجر منطقيًا إلى «موسيقى». */
+    val tracks: List<MontageTrack> = emptyList(),
+    /** المنطقة المحددة على المسطرة [selectionStartMs, selectionEndMs) — null = لا تحديد. */
+    val selectionStartMs: Long = -1L,
+    val selectionEndMs: Long = -1L
 )
 
 /** مغلّف عرض مقطع: ذروات دلاء النافذة بعد المستوى والتلاشين (0..1 معياري). */
@@ -136,6 +177,284 @@ object MontageLogic {
     const val DUCK_RELEASE_MIN = 100L
     const val DUCK_RELEASE_MAX = 5_000L
     const val DUCK_RELEASE_DEFAULT = 800L
+
+    // ==== v0.36.0: ثوابت المسارات المتعددة ومسطرة العمليات ====
+
+    /** معرّف مسار التعليق الثابت — خارج قائمة المسارات الحرة ولا يُنشأ ولا يُحذف. */
+    const val VOICE_TRACK_ID = "voice"
+
+    /** معرّف المسار الحر الافتراضي «موسيقى» — مقاطع بلا trackId تعيش عليه. */
+    const val DEFAULT_TRACK_ID = "music"
+
+    /** سقف المسارات الحرة — عدة خطوط عمل حقيقية بلا فوضى عمودية. */
+    const val MAX_TRACKS = 5
+
+    /** سقف مقاطع المسارات الحرة مجتمعة. */
+    const val MAX_TRACK_CLIPS = 60
+
+    /** لوحة ألوان المسارات — تمايز بصري بين خطوط العمل. */
+    val TRACK_COLORS = intArrayOf(
+        0xFF7E57C2.toInt(), 0xFF26A69A.toInt(), 0xFFEF6C00.toInt(),
+        0xFF5C6BC0.toInt(), 0xFFD81B60.toInt()
+    )
+
+    /** الحد الأدنى لعرض المنطقة المحددة على المسطرة (مللي ثانية) — أصغر منها يُهمَل. */
+    const val SELECTION_MIN_MS = 30L
+
+    /** حد عتبة التقاط السحب (مللي ثانية) — الأقرب ضمنه يلتقط. */
+    const val SNAP_THRESHOLD_MS = 120L
+
+    /** شبكة التقاط عامة نصف ثانية — أساس احترافي حين لا علامة ولا حافة قريبة. */
+    const val SNAP_GRID_MS = 500L
+
+    /** اسم المسار الحر الافتراضي. */
+    const val DEFAULT_TRACK_NAME = "موسيقى"
+
+    /** معرّف مسار حر جديد فريد. */
+    fun newTrackId(): String = "tr${System.nanoTime()}"
+
+    /**
+     * المسارات الفعّالة للمشروع: القائمة المحفوظة إن وُجدت، وإلا مسار «موسيقى»
+     * افتراضي واحد — هجرة منطقية صامتة لمشاريع v0.35.0 دون مساس ملفها.
+     */
+    fun effectiveTracks(p: MontageProject): List<MontageTrack> {
+        val t = p.tracks.map {
+            it.copy(
+                name = it.name.trim().ifEmpty { DEFAULT_TRACK_NAME }.take(24),
+                colorIndex = Math.floorMod(it.colorIndex, TRACK_COLORS.size),
+                volumePercent = clampVolume(it.volumePercent)
+            )
+        }
+        return if (t.isEmpty()) listOf(MontageTrack(id = DEFAULT_TRACK_ID, name = DEFAULT_TRACK_NAME)) else t
+    }
+
+    /** معرّف المسار الفعلي لمقطع مسار — الفارغ يعني المسار الافتراضي. */
+    fun effectiveTrackId(c: MontageMusicClip): String =
+        c.trackId.trim().ifEmpty { DEFAULT_TRACK_ID }
+
+    /** المسار بمعرّفه من قائمة فعّالة — المجهول يعود للمسار الافتراضي. */
+    fun trackById(tracks: List<MontageTrack>, id: String): MontageTrack =
+        tracks.firstOrNull { it.id == id }
+            ?: tracks.firstOrNull()
+            ?: MontageTrack(id = DEFAULT_TRACK_ID, name = DEFAULT_TRACK_NAME)
+
+    /** مقاطع مسار محدد بترتيب الموضع. */
+    fun clipsOfTrack(p: MontageProject, trackId: String): List<MontageMusicClip> =
+        p.musicClips.filter { effectiveTrackId(it) == trackId }.sortedBy { it.startMs }
+
+    /**
+     * كسب المسار عند لحظة المزج: الكتم أو عزلة مسارٍ آخر تُسقطه صفريًا،
+     * وإلا مستواه المئوي. مسار التعليق خارج عقد الكتم/المنفرد — هو البرنامج.
+     */
+    fun trackGainPercent(track: MontageTrack, anySolo: Boolean): Int =
+        if (track.muted || (anySolo && !track.solo)) 0 else clampVolume(track.volumePercent)
+
+    /** هل من مسار حر منفرد؟ */
+    fun anyTrackSolo(tracks: List<MontageTrack>): Boolean = tracks.any { it.solo }
+
+    /**
+     * التقاط موضع زمني (v0.36.0): أقرب مرشح ضمن العتبة يفوز — العلامات
+     * وحواف المقاطع والشبكة نصف الثانية. النقي قابل للاختبار بدقة.
+     */
+    fun snapMs(targetMs: Long, candidates: List<Long>, thresholdMs: Long = SNAP_THRESHOLD_MS): Long {
+        val t = targetMs.coerceAtLeast(0L)
+        var best = t
+        var bestD = thresholdMs.coerceAtLeast(0L)
+        for (c in candidates) {
+            val d = Math.abs(c - t)
+            if (d <= bestD) { bestD = d; best = c }
+        }
+        return best
+    }
+
+    /** مرشحات التقاط مشروع: العلامات + حواف مقاطع التعليق على الخط الزمني + حواف مقاطع المسارات. */
+    fun snapCandidates(p: MontageProject): List<Long> {
+        val out = ArrayList<Long>()
+        out.addAll(p.markers.map { it.tMs })
+        val starts = clipStartMs(p.clips, p.gapMs, p.crossfadeMs)
+        for (i in p.clips.indices) {
+            out.add(starts[i])
+            out.add(starts[i] + clipDurationMs(p.clips[i]))
+        }
+        for (m in p.musicClips) {
+            out.add(m.startMs)
+            out.add(m.startMs + musicDurationMs(m))
+        }
+        return out
+    }
+
+    /**
+     * تقسيم مقطع مسار عند موضع داخل نافذته (v0.36.0 — أداة التقسيم على مقاطع
+     * المسارات): نصفان على نفس المسار بمواضع مطلقة متلاصقة، الأول يحمل التلاشي
+     * الداخلي والثاني الخارجي — فلا طقطقة عند نقطة الفصل. يعيد null خارج النافذة.
+     */
+    fun splitTrackClipAt(m: MontageMusicClip, offsetInWindowMs: Long): Pair<MontageMusicClip, MontageMusicClip>? {
+        val dur = musicDurationMs(m)
+        if (offsetInWindowMs <= 0L || offsetInWindowMs >= dur) return null
+        val (ws, we) = clampWindow(m.startInFileMs, m.endInFileMs, m.durationMs)
+        val cut = ws + offsetInWindowMs
+        val a = m.copy(endInFileMs = cut, fadeOutMs = 0L, id = newMusicClipId())
+        val b = m.copy(startInFileMs = cut, startMs = m.startMs + offsetInWindowMs, fadeInMs = 0L, id = newMusicClipId())
+        return a to b
+    }
+
+    /** أدنى مدة حية لمقطع بعد التقليم (مللي ثانية) — نفس حد مقابض التعليق. */
+    const val MIN_CLIP_MS = 50L
+
+    /**
+     * تقليم الحافة اليسرى لمقطع مسار بالسحب (v0.36.0 — الضغط والسحب): الموضع
+     * المطلق ونافذة الملف يزحفان معًا فنهاية المقطع تبقى ثابتة في ملفه —
+     * محبوسًا ألّا يتجاوز بداية الملف ولا يبتلع النافذة كلها.
+     */
+    fun trimTrackClipLeft(m: MontageMusicClip, deltaMs: Long): MontageMusicClip {
+        val (ws, we) = clampWindow(m.startInFileMs, m.endInFileMs, m.durationMs)
+        val dur = we - ws
+        val dx = deltaMs.coerceIn(-ws, dur - MIN_CLIP_MS)
+        return m.copy(startMs = (m.startMs + dx).coerceAtLeast(0L), startInFileMs = ws + dx)
+    }
+
+    /**
+     * تقليم الحافة اليمنى: النافذة تتمد أو تنكمش من نهايتها — محبوسة داخل
+     * مدة الملف وفوق أدنى مدة حية. الموضع المطلق لا يمسّ.
+     */
+    fun trimTrackClipRight(m: MontageMusicClip, deltaMs: Long): MontageMusicClip {
+        val (ws, we) = clampWindow(m.startInFileMs, m.endInFileMs, m.durationMs)
+        val dx = deltaMs.coerceIn(-(we - ws - MIN_CLIP_MS), m.durationMs.coerceAtLeast(0L) - we)
+        return m.copy(endInFileMs = we + dx)
+    }
+
+    /**
+     * حذف منطقة زمنية متموّجًا (v0.36.0 — عملية المسطرة الجوهرية «حدّد الجزء
+     * الذي تريد حذفه»): كل ما في [s, e) يُقتل من المشروع كله وكل ما بعد e
+     * يُسحب يسارًا بطول المنطقة — التعليق بنوافذه، ومقاطع المسارات بمواضعها،
+     * والعلامات والرأس. المقاطع العابرة للحدود تُقصّ، والعابرة للمنطقة كلها
+     * تنشطر نصفين يبقى النصفان خارجها. يعيد null إن كانت المنطقة معدومة.
+     */
+    fun deleteRegionRipple(p: MontageProject, s: Long, e: Long): MontageProject? {
+        val start = s.coerceAtLeast(0L)
+        val end = e.coerceAtLeast(start)
+        val len = end - start
+        if (len < SELECTION_MIN_MS) return null
+        val total = totalDurationFull(p)
+        val st = start.coerceAtMost(total)
+        val en = end.coerceAtMost(total)
+        val cut = en - st
+        if (cut < SELECTION_MIN_MS) return null
+
+        // مسار التعليق: مقاطع متسلسلة تُقصّ/تُقتل ويُعاد حساب البدايات تلقائيًا
+        val starts = clipStartMs(p.clips, p.gapMs, p.crossfadeMs)
+        val newClips = ArrayList<MontageClip>()
+        for (i in p.clips.indices) {
+            val c = p.clips[i]
+            val cs = starts[i]
+            val ce = cs + clipDurationMs(c)
+            when {
+                cs >= st && ce <= en -> { /* داخل المنطقة: يُقتل */ }
+                cs < st && ce > en -> {
+                    // عابر للمنطقة كلها: ينشطر — النصف الأيسر يبقى والأيمن يُلحق به
+                    val leftEnd = c.startMs + (st - cs)
+                    val rightStart = c.startMs + (en - cs)
+                    newClips.add(c.copy(endMs = leftEnd, fadeOutMs = 0L, id = newClipId()))
+                    newClips.add(c.copy(startMs = rightStart, fadeInMs = 0L, id = newClipId()))
+                }
+                cs < st && ce > st ->
+                    newClips.add(c.copy(endMs = c.startMs + (st - cs), fadeOutMs = 0L, id = newClipId()))
+                cs < en && ce >= en ->
+                    newClips.add(c.copy(startMs = c.startMs + (en - cs), fadeInMs = 0L, id = newClipId()))
+                else -> newClips.add(c)
+            }
+        }
+
+        // مقاطع المسارات الحرة: مواضع مطلقة تُقصّ وتُقتل وتُسحب
+        val newTrackClips = ArrayList<MontageMusicClip>()
+        for (m in p.musicClips) {
+            val cs = m.startMs.coerceAtLeast(0L)
+            val ce = cs + musicDurationMs(m)
+            when {
+                ce <= st || cs >= en -> {
+                    val shifted = if (cs >= en) m.copy(startMs = cs - cut) else m
+                    newTrackClips.add(shifted)
+                }
+                cs >= st && ce <= en -> { /* داخل المنطقة: يُقتل */ }
+                cs < st && ce > en -> {
+                    // ينشطر نصفين: الأيسر يبقى مكانه والأيمن يهبط على بداية المنطقة
+                    val (ws, _) = clampWindow(m.startInFileMs, m.endInFileMs, m.durationMs)
+                    val leftEndInFile = ws + (st - cs)
+                    val rightStartInFile = ws + (en - cs)
+                    newTrackClips.add(m.copy(endInFileMs = leftEndInFile, fadeOutMs = 0L, id = newMusicClipId()))
+                    newTrackClips.add(
+                        m.copy(
+                            startInFileMs = rightStartInFile,
+                            startMs = st,
+                            fadeInMs = 0L,
+                            id = newMusicClipId()
+                        )
+                    )
+                }
+                cs < st && ce > st -> {
+                    val (ws, _) = clampWindow(m.startInFileMs, m.endInFileMs, m.durationMs)
+                    newTrackClips.add(
+                        m.copy(endInFileMs = ws + (st - cs), fadeOutMs = 0L, id = newMusicClipId())
+                    )
+                }
+                else -> {
+                    val (_, we) = clampWindow(m.startInFileMs, m.endInFileMs, m.durationMs)
+                    newTrackClips.add(
+                        m.copy(
+                            startMs = st,
+                            startInFileMs = we - (ce - en),
+                            fadeInMs = 0L,
+                            id = newMusicClipId()
+                        )
+                    )
+                }
+            }
+        }
+
+        // العلامات: داخل المنطقة تُقتل وما بعدها يُسحب
+        val newMarkers = p.markers.mapNotNull { mk ->
+            when {
+                mk.tMs >= st && mk.tMs < en -> null
+                mk.tMs >= en -> mk.copy(tMs = mk.tMs - cut)
+                else -> mk
+            }
+        }
+
+        // الرأس: داخل المنطقة يقفز لبدايتها وما بعدها يُسحب
+        val head = p.playheadMs
+        val newHead = when {
+            head in st until en -> st
+            head >= en -> head - cut
+            else -> head
+        }
+
+        // المنطقة المحددة نفسها تُحدَّث: ما بقي منها بعد الحذف
+        val sel0 = p.selectionStartMs
+        val sel1 = p.selectionEndMs
+        val newSel: Pair<Long, Long> = if (sel0 >= 0L && sel1 > sel0) {
+            val ns = when {
+                sel0 >= en -> sel0 - cut
+                sel0 >= st -> st
+                else -> sel0
+            }
+            val ne = when {
+                sel1 >= en -> sel1 - cut
+                sel1 >= st -> st
+                else -> sel1
+            }
+            if (ne - ns >= SELECTION_MIN_MS) ns to ne else -1L to -1L
+        } else -1L to -1L
+
+        return p.copy(
+            clips = newClips.take(MAX_CLIPS),
+            // لا تعقيم قرصي هنا — دالة نموذجية نقية؛ المُصيّر يعقّم عند التصدير
+            musicClips = newTrackClips.take(MAX_TRACK_CLIPS),
+            markers = sanitizeMarkers(newMarkers),
+            playheadMs = newHead.coerceAtLeast(0L),
+            selectionStartMs = newSel.first,
+            selectionEndMs = newSel.second
+        )
+    }
 
     /** تحويل الديسيبل إلى كسب خطي — نفس رياضيات Ducker في البث الحي. */
     fun dbToAmp(db: Double): Float = Math.pow(10.0, db / 20.0).toFloat()
