@@ -160,6 +160,16 @@ fun main(args: Array<String>) {
                 vm.addMontageMarkerAt("منطقة الفحص", 2_000L)
             }
         }
+        // المونتاج للأتمتة (v0.37.0): مساران حرّان بمقاطع + تحديد منطقة — تُظهر
+        // رؤوس بلا كتم/منفرد والويڤ فورم الجاهز للنقر المزدوج على مقطع التعليق
+        if (args.contains("--montage-v37")) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(4500)
+                vm.addMontageTrack()
+                vm.addMontageTrack()
+                vm.setMontageSelection(2_000L, 6_000L)
+            }
+        }
         // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
         val windowIcon = remember {
             Thread.currentThread().contextClassLoader

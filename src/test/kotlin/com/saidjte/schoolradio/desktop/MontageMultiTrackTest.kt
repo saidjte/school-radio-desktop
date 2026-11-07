@@ -26,7 +26,7 @@ import org.junit.jupiter.api.io.TempDir
  * - التقسيم على مقاطع المسارات والتقليم المُحبوس.
  * - حذف منطقة المسطرة متموّجًا: التعليق والمسارات والعلامات والرأس والتحديد.
  * - التقاط على العلامات والحواف والشبكة.
- * - التصيير الفعلي بعدة مسارات: المكتوم يصمت والمنفرد يعزل والمدة أبعدها.
+ * - التصيير الفعلي بعدة مسارات: المدة أبعدها، وأعلام الكتم/المنفرد القديمة تُهرَج (منذ v0.37.0).
  */
 class MontageMultiTrackTest {
 
@@ -91,10 +91,12 @@ class MontageMultiTrackTest {
         assertEquals(listOf("m2"), MontageLogic.clipsOfTrack(p, "ghost").map { it.id })
     }
 
-    // ================= 2) كسب المسار: كتم ومنفرد =================
+    // ================= 2) كسب المسار المرجعي (أعلام الملفات القديمة) =================
 
     @Test
     fun `track gain honors mute and solo like a mixing console`() {
+        // الرياضيات المرجعية لوحدة المزج — المسارات الفعّالة تُهرج الأعلام قبلها
+        // منذ v0.37.0 فتعود دائمًا المستوى (انظر MontageV37Test)
         val t = MontageTrack(id = "t1", name = "موسيقى", volumePercent = 150)
         assertEquals(150, MontageLogic.trackGainPercent(t, anySolo = false))
         assertEquals(0, MontageLogic.trackGainPercent(t.copy(muted = true), anySolo = false))
@@ -270,7 +272,7 @@ class MontageMultiTrackTest {
     // ================= 6) التصيير الفعلي بعدة مسارات =================
 
     @Test
-    fun `render mixes multiple tracks and honors mute and solo`() {
+    fun `render mixes multiple tracks and strips legacy mute and solo flags`() {
         val dir = File(tmp, "tones")
         val voice = MontageDemo.tone(File(dir, "voice.wav"), 44_100, 1, 2_000, 440.0)
         val bed1 = MontageDemo.tone(File(dir, "bed1.wav"), 44_100, 1, 4_000, 330.0)
@@ -300,14 +302,14 @@ class MontageMultiTrackTest {
         val f1 = AudioSystem.getAudioInputStream(out1).format
         assertEquals(44_100f, f1.sampleRate)
 
-        // مسار مكتوم: يصمت كليًا — والبقية تجري
+        // أعلام كتم قديمة من مشاريع v0.36.0: تُهرَج فالمدة والصوت كما هي
         val p2 = p1.copy(tracks = tracks.map { if (it.id == "tb") it.copy(muted = true) else it })
         val out2 = File(tmp, "mix2.wav")
         val r2 = MontageRender.render(p2, out2)
         assertTrue(r2.ok) { r2.message ?: "" }
         assertTrue(Math.abs(r2.durationMs - 4_000L) <= 40L) { "durationMs=${r2.durationMs}" }
 
-        // منفرد على «مؤثرات»: «موسيقى» تصمت والمؤثرات تجري
+        // أعلام منفرد قديمة: تُهرَج أيضًا فلا عزل صامت
         val p3 = p1.copy(tracks = tracks.map { if (it.id == "tb") it.copy(solo = true) else it })
         val out3 = File(tmp, "mix3.wav")
         val r3 = MontageRender.render(p3, out3)

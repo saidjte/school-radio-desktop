@@ -60,6 +60,8 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.saidjte.schoolradio.desktop.AppViewModel
+import com.saidjte.schoolradio.desktop.audio.MontageExportFormat
+import com.saidjte.schoolradio.desktop.audio.MontageRender
 import com.saidjte.schoolradio.desktop.data.MontageClip
 import com.saidjte.schoolradio.desktop.data.MontageEnvelope
 import com.saidjte.schoolradio.desktop.data.MontageLogic
@@ -79,7 +81,10 @@ import kotlin.math.max
  * خط زمني واحد بموجات صوتية حقيقية — تكبير وخريطة مصغرة ورأس تشغيل ومقابض
  * قصّ بالسحب وسحب لإعادة الترتيب وكروس فيد بين المتجاورة — مع أدوات احترافية
  * (تراجع/إعادة، تقسيم عند الرأس، حذف ممتد، تطبيع، حلقة A/B، مؤشر VU وتحذير
- * تشبع) ومعاينة من أي نقطة وتصدير WAV واحد جاهز للبث، وحفظ/فتح ملف مشروع.
+ * تشبع) ومعاينة من أي نقطة وتصدير ملف واحد جاهز للبث (WAV أو MP3 منذ
+ * v0.37.0 بجودة قابلة للاختيار)، وحفظ/فتح ملف مشروع. منذ v0.37.0 أيضًا:
+ * النقر المزدوج على أي مقطع يفتح تسميته، ورؤوس المسارات بلا كتم ولا منفرد
+ * — مسار التعليق هو البرنامج لا يُكتم أبدًا والمسارات الحرة بعقد نفسه.
  * كل ذلك دون اتصال: التصيير فكّ محلي وكتابة محلية بلا جهاز صوت ولا شبكة.
  */
 @Composable
@@ -102,6 +107,8 @@ fun MontagePage(vm: AppViewModel) {
     val selection by vm.montageSelection.collectAsState()
     val tool by vm.montageTool.collectAsState()
     val snapEnabled by vm.montageSnapEnabled.collectAsState()
+    val exportFormat by vm.montageExportFormat.collectAsState()
+    val exportBitrate by vm.montageExportBitrate.collectAsState()
 
     var showPicker by remember { mutableStateOf(false) }
     var editTarget by remember { mutableStateOf<MontageClip?>(null) }
@@ -109,6 +116,9 @@ fun MontagePage(vm: AppViewModel) {
     var showMarkerDialog by remember { mutableStateOf(false) }
     var showMarkerAtSelection by remember { mutableStateOf(false) }
     var templateConfirm by remember { mutableStateOf<String?>(null) }
+    // أهداف إعادة التسمية بالنقر المزدوج (v0.37.0) — تعليقًا كان أو مقطع مسار حر
+    var renameVoiceTarget by remember { mutableStateOf<MontageClip?>(null) }
+    var renameMusicTarget by remember { mutableStateOf<MontageMusicClip?>(null) }
     val rendering = progress != null
     val totalMs = remember(project) { MontageLogic.totalDurationFull(project) }
     // تكبير الخط الزمني: بكسل لكل ثانية — 60 الافتراضي، والحدود تمنع ضياع الاتجاه
@@ -191,7 +201,7 @@ fun MontagePage(vm: AppViewModel) {
             )
         }
         Text(
-            "مسطرة العمليات فوق الخط الزمني: اسحبها لتحديد منطقة زمنية تُحذف من كل المسارات بنقرة، وانقرها لتضع الرأس — عدة خطوط عمل تحت مسار التعليق تسحب مقاطعها أفقياً وبين الخطوط، وأداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر، والالتقاط يزمّر العلامات والحواف وشبكة نصف الثانية.",
+            "مسطرة العمليات فوق الخط الزمني: اسحبها لتحديد منطقة زمنية تُحذف من كل المسارات بنقرة، وانقرها لتضع الرأس — عدة خطوط عمل تحت مسار التعليق تسحب مقاطعها أفقياً وبين الخطوط، وأداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر، والنقر المزدوج على أي مقطع يفتح تسميته، والالتقاط يزمّر العلامات والحواف وشبكة نصف الثانية.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -336,7 +346,9 @@ fun MontagePage(vm: AppViewModel) {
                 onMusicMoveStart = { vm.pushMontageHistory() },
                 onMusicMove = { id, deltaMs ->
                     vm.moveMontageMusicClip(id, deltaMs, record = false)
-                }
+                },
+                onRenameVoice = { renameVoiceTarget = it },
+                onRenameMusic = { renameMusicTarget = it }
             )
 
             // شريط عمليات المنطقة المحددة على المسطرة (v0.36.0):
@@ -518,6 +530,59 @@ fun MontagePage(vm: AppViewModel) {
             }
         }
 
+        // منتقي صيغة التصدير (v0.37.0): WAV للبث بلا فقد، أو MP3 بجودة قابلة للاختيار
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "صيغة التصدير:",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            SecondaryAction(
+                if (exportFormat == MontageExportFormat.WAV) "WAV ●" else "WAV",
+                enabled = !rendering,
+                onClick = { vm.setMontageExportFormat(MontageExportFormat.WAV) }
+            )
+            SecondaryAction(
+                if (exportFormat == MontageExportFormat.MP3) "MP3 ●" else "MP3",
+                enabled = !rendering,
+                onClick = { vm.setMontageExportFormat(MontageExportFormat.MP3) }
+            )
+            if (exportFormat == MontageExportFormat.MP3) {
+                val rates = MontageRender.MP3_BITRATES
+                val idx = rates.indexOf(exportBitrate).coerceAtLeast(0)
+                Text("الجودة:", style = MaterialTheme.typography.bodyMedium)
+                SecondaryAction(
+                    "−",
+                    enabled = !rendering && idx > 0,
+                    onClick = { vm.setMontageExportBitrate(rates[idx - 1]) }
+                )
+                Text(
+                    "${exportBitrate}k",
+                    style = MaterialTheme.typography.labelLarge.numeric(),
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+                SecondaryAction(
+                    "+",
+                    enabled = !rendering && idx < rates.size - 1,
+                    onClick = { vm.setMontageExportBitrate(rates[idx + 1]) }
+                )
+                Text(
+                    "MP3 مضغوط للمشاركة والهاتف — ترميز LAME نقي على الجهاز",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    "WAV بلا فقد جاهز للبث — اختر MP3 لمشاركة أخف حجمًا",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
         // التذييل: معاينة من الرأس وتصدير وتقدم وإلغاء وإضافة للقائمة
         val hasSource = project.clips.any { File(it.path).isFile } ||
                 project.musicClips.any { File(it.path).isFile }
@@ -531,7 +596,7 @@ fun MontagePage(vm: AppViewModel) {
                 onClick = { vm.toggleMontagePreview() }
             )
             PrimaryAction(
-                text = "تصدير ملف واحد",
+                text = if (exportFormat == MontageExportFormat.MP3) "تصدير MP3 ${exportBitrate}k" else "تصدير WAV",
                 enabled = !rendering && hasSource,
                 onClick = { vm.renderMontage(preview = false) }
             )
@@ -557,7 +622,7 @@ fun MontagePage(vm: AppViewModel) {
             }
         }
         Text(
-            "اختصارات الصفحة: مسافة معاينة/إيقاف · S تقسيم عند الرأس · Delete حذف المحدد · R حذف المنطقة المحددة · G الالتقاط · Esc مسح التحديد · ←/→ تحريك الرأس (Shift: دقة 10ms) · ↑/↓ تحديد · Ctrl+Z/Y تراجع/إعادة",
+            "اختصارات الصفحة: نقر مزدوج على مقطع = تسميته · مسافة معاينة/إيقاف · S تقسيم عند الرأس · Delete حذف المحدد · R حذف المنطقة المحددة · G الالتقاط · Esc مسح التحديد · ←/→ تحريك الرأس (Shift: دقة 10ms) · ↑/↓ تحديد · Ctrl+Z/Y تراجع/إعادة",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -654,6 +719,28 @@ fun MontagePage(vm: AppViewModel) {
                 editMusicTarget = null
             },
             onDismiss = { editMusicTarget = null }
+        )
+    }
+
+    // حوارا التسمية بالنقر المزدوج (v0.37.0) — تعليقًا كان أو مقطع مسار حر
+    renameVoiceTarget?.let { clip ->
+        MontageRenameDialog(
+            initial = clip.title,
+            onConfirm = { name ->
+                vm.renameMontageClip(clip.id, name)
+                renameVoiceTarget = null
+            },
+            onDismiss = { renameVoiceTarget = null }
+        )
+    }
+    renameMusicTarget?.let { m ->
+        MontageRenameDialog(
+            initial = m.title,
+            onConfirm = { name ->
+                vm.renameMontageMusicClip(m.id, name)
+                renameMusicTarget = null
+            },
+            onDismiss = { renameMusicTarget = null }
         )
     }
 
@@ -784,7 +871,8 @@ private val TRACK_HEADERS_W_DP = 168.dp
 
 /**
  * بطاقة الخط الزمني (v0.36.0 «مسطرة العمليات وعدة خطوط عمل»): عمود رؤوس
- * مسارات ثابت — مسار التعليق ثم المسارات الحرة بمستواها وكتمها ومنفردها —
+ * مسارات ثابت — مسار التعليق ثم المسارات الحرة بمستواها (بلا كتم ولا منفرد
+ * منذ v0.37.0) —
  * وبجانبه خط زمني مشترك التمرير: مسطرة عمليات تسحب عليها لتحديد منطقة زمنية،
  * ومسار التعليق، وكل مسار حر بخطه الخاص. الأدوات أعلاه: تكبير وتقسيم والتقاط.
  * الاتجاه داخل الخط الزمني LTR — عرف المحررات الصوتية حتى في الواجهات العربية.
@@ -810,7 +898,9 @@ private fun MontageTimelineCard(
     onTrimStart: () -> Unit,
     onTrim: (clipId: String, startMs: Long, endMs: Long) -> Unit,
     onMusicMoveStart: () -> Unit,
-    onMusicMove: (clipId: String, deltaMs: Long) -> Unit
+    onMusicMove: (clipId: String, deltaMs: Long) -> Unit,
+    onRenameVoice: (MontageClip) -> Unit,
+    onRenameMusic: (MontageMusicClip) -> Unit
 ) {
     val totalMs = remember(project) { MontageLogic.totalDurationFull(project) }
     val scope = rememberCoroutineScope()
@@ -887,7 +977,7 @@ private fun MontageTimelineCard(
             )
         }
         Text(
-            "المسطرة فوق: اسحب عليها لتحديد منطقة زمنية ثم احذفها من كل المسارات، وانقر لتضع الرأس — أداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر — اسحب جسم مقطع المسارات لتحريكه بين الخطوط، وحوافه لتقليمه، والالتقاط يزمّر العلامات والحواف والشبكة.",
+            "المسطرة فوق: اسحب عليها لتحديد منطقة زمنية ثم احذفها من كل المسارات، وانقر لتضع الرأس — أداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر، والنقر المزدوج يفتح تسمية أي مقطع — اسحب جسم مقطع المسارات لتحريكه بين الخطوط، وحوافه لتقليمه، والالتقاط يزمّر العلامات والحواف والشبكة.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -935,8 +1025,6 @@ private fun MontageTimelineCard(
                             height = FREE_LANE_DP,
                             clipCount = MontageLogic.clipsOfTrack(project, t.id).size,
                             enabled = !rendering,
-                            onMute = { vm.toggleMontageTrackMute(t.id) },
-                            onSolo = { vm.toggleMontageTrackSolo(t.id) },
                             onVolumeDown = { vm.setMontageTrackVolume(t.id, t.volumePercent - 10) },
                             onVolumeUp = { vm.setMontageTrackVolume(t.id, t.volumePercent + 10) },
                             onDelete = { vm.removeMontageTrack(t.id) }
@@ -977,7 +1065,8 @@ private fun MontageTimelineCard(
                         pxPerSec = pxPerSec,
                         snap = ::snap,
                         onTrimStart = onTrimStart,
-                        onTrim = onTrim
+                        onTrim = onTrim,
+                        onRename = onRenameVoice
                     )
                     // المسارات الحرة — عدة خطوط عمل بالسحب بينها
                     MontageFreeTracksCanvas(
@@ -992,7 +1081,8 @@ private fun MontageTimelineCard(
                         pxPerSec = pxPerSec,
                         snap = ::snap,
                         onMoveStart = onMusicMoveStart,
-                        onMove = onMusicMove
+                        onMove = onMusicMove,
+                        onRename = onRenameMusic
                     )
                 }
             }
@@ -1049,7 +1139,7 @@ private fun MontageVoiceHeaderCell(height: androidx.compose.ui.unit.Dp) {
                 maxLines = 1
             )
             Text(
-                "البرنامج — متسلسل",
+                "البرنامج — متسلسل بلا كتم ولا منفرد",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
@@ -1058,15 +1148,13 @@ private fun MontageVoiceHeaderCell(height: androidx.compose.ui.unit.Dp) {
     }
 }
 
-/** رأس مسار حر: لون واسم وكتم/منفرد ومستوى وحذف — وحدة مزج مصغّرة. */
+/** رأس مسار حر: لون واسم ومستوى وحذف — بلا كتم ولا منفرد منذ v0.37.0 (نفس عقد مسار التعليق). */
 @Composable
 private fun MontageTrackHeaderCell(
     track: com.saidjte.schoolradio.desktop.data.MontageTrack,
     height: androidx.compose.ui.unit.Dp,
     clipCount: Int,
     enabled: Boolean,
-    onMute: () -> Unit,
-    onSolo: () -> Unit,
     onVolumeDown: () -> Unit,
     onVolumeUp: () -> Unit,
     onDelete: () -> Unit
@@ -1103,20 +1191,6 @@ private fun MontageTrackHeaderCell(
                 maxLines = 1
             )
         }
-        MiniToolButton(
-            text = "M",
-            active = track.muted,
-            enabled = enabled,
-            tint = Color(0xFFE53935),
-            onClick = onMute
-        )
-        MiniToolButton(
-            text = "S",
-            active = track.solo,
-            enabled = enabled,
-            tint = Color(0xFFFFB300),
-            onClick = onSolo
-        )
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             MiniToolButton(text = "−", active = false, enabled = enabled && track.volumePercent > MontageLogic.VOLUME_MIN, tint = MaterialTheme.colorScheme.primary, onClick = onVolumeDown)
             MiniToolButton(text = "+", active = false, enabled = enabled && track.volumePercent < MontageLogic.VOLUME_MAX, tint = MaterialTheme.colorScheme.primary, onClick = onVolumeUp)
@@ -1344,7 +1418,8 @@ private fun MontageVoiceLaneCanvas(
     pxPerSec: Float,
     snap: (Long) -> Long,
     onTrimStart: () -> Unit,
-    onTrim: (clipId: String, startMs: Long, endMs: Long) -> Unit
+    onTrim: (clipId: String, startMs: Long, endMs: Long) -> Unit,
+    onRename: (MontageClip) -> Unit
 ) {
     val totalMs = remember(project) {
         MontageLogic.totalDurationMs(project.clips, project.gapMs, project.crossfadeMs)
@@ -1371,6 +1446,7 @@ private fun MontageVoiceLaneCanvas(
     val trimStartState = rememberUpdatedState(onTrimStart)
     val snapState = rememberUpdatedState(snap)
     val toolState = rememberUpdatedState(tool)
+    val renameState = rememberUpdatedState(onRename)
 
     fun liveClipX(i: Int): Float = pad + startsState.value[i] * pxPerMsState.value
     fun liveClipW(i: Int): Float =
@@ -1396,6 +1472,11 @@ private fun MontageVoiceLaneCanvas(
                             vm.setMontagePlayhead(rawMs)
                             if (idx >= 0) vm.selectMontageClip(project.clips[idx].id)
                         }
+                    },
+                    onDoubleTap = { off ->
+                        // النقر المزدوج على مقطع يفتح تسميته (v0.37.0) — بأي أداة
+                        val idx = liveClipAt(off.x)
+                        if (idx >= 0) renameState.value(projState.value.clips[idx])
                     }
                 )
             }
@@ -1869,6 +1950,46 @@ private fun MontageClipEditDialog(
     )
 }
 
+/**
+ * حوار تسمية مقطع (v0.37.0 — النقر المزدوج): حقل حر بالاسم الحالي، والتعقيم
+ * (تقليم الاسم وحد 40 حرفًا وعدم الفراغ) في VM عبر sanitizeClipTitle فالتراجع
+ * يعيد الاسم السابق كأي تحرير.
+ */
+@Composable
+private fun MontageRenameDialog(
+    initial: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تسمية المقطع") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "اكتب الاسم الجديد — يظهر على الموجة وفي قائمة المقاطع ويُحفظ مع المشروع.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it.take(60) },
+                    placeholder = { Text(initial) },
+                    modifier = Modifier.fillMaxWidth().observesTextEditing(),
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(text) }) { Text("حفظ الاسم") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("إلغاء") }
+        }
+    )
+}
+
 /** حقل رقمي بعنوان صغير — إدخال حر تحرسه حبوس الحفظ. */
 @Composable
 private fun LabeledNumber(
@@ -1917,7 +2038,8 @@ private fun MontageFreeTracksCanvas(
     pxPerSec: Float,
     snap: (Long) -> Long,
     onMoveStart: () -> Unit,
-    onMove: (clipId: String, deltaMs: Long) -> Unit
+    onMove: (clipId: String, deltaMs: Long) -> Unit,
+    onRename: (MontageMusicClip) -> Unit
 ) {
     val totalMs = remember(project) { MontageLogic.totalDurationFull(project).coerceAtLeast(1L) }
     val density = LocalDensity.current
@@ -1936,6 +2058,7 @@ private fun MontageFreeTracksCanvas(
     val moveStartState = rememberUpdatedState(onMoveStart)
     val snapState = rememberUpdatedState(snap)
     val toolState = rememberUpdatedState(tool)
+    val renameState = rememberUpdatedState(onRename)
 
     var drag by remember { mutableStateOf<TrackDrag>(TrackDrag.None) }
     var dragClipId by remember { mutableStateOf<String?>(null) }
@@ -1978,6 +2101,11 @@ private fun MontageFreeTracksCanvas(
                             vm.setMontagePlayhead(snapState.value(ms))
                             if (hit != null) vm.selectMontageMusic(hit.first.id)
                         }
+                    },
+                    onDoubleTap = { off ->
+                        // النقر المزدوج على مقطع مسار يفتح تسميته (v0.37.0)
+                        val hit = hitAt(off.x, off.y)
+                        if (hit != null) renameState.value(hit.first)
                     }
                 )
             }
@@ -2105,7 +2233,6 @@ private fun MontageFreeTracksCanvas(
             for ((ti, t) in ts.withIndex()) {
                 val bandTop = ti * laneHpx
                 val color = Color(MontageLogic.TRACK_COLORS[Math.floorMod(t.colorIndex, MontageLogic.TRACK_COLORS.size)])
-                val mutedNow = t.muted || MontageLogic.anyTrackSolo(ts) && !t.solo
                 for (m in clipsOf(t, project)) {
                     val cx = pad + m.startMs * pxPerMs
                     val cw = max(6f, MontageLogic.musicDurationMs(m) * pxPerMs)
@@ -2113,7 +2240,7 @@ private fun MontageFreeTracksCanvas(
                     val sel = m.id == selectedId
                     val clipH = laneHpx - 10f
                     drawRoundRect(
-                        color = if (missing) cOutline.copy(alpha = 0.25f) else cSurface.copy(alpha = if (mutedNow) 0.55f else 0.94f),
+                        color = if (missing) cOutline.copy(alpha = 0.25f) else cSurface.copy(alpha = 0.94f),
                         topLeft = Offset(cx, bandTop + 5f),
                         size = Size(cw, clipH),
                         cornerRadius = CornerRadius(6f, 6f)
@@ -2140,7 +2267,7 @@ private fun MontageFreeTracksCanvas(
                             val halfH = env.peaks[bk] * (clipH / 2f - 3f)
                             if (halfH <= 0.3f) continue
                             drawLine(
-                                color = color.copy(alpha = if (mutedNow) 0.35f else 0.85f),
+                                color = color.copy(alpha = 0.85f),
                                 start = Offset(bx, midY - halfH),
                                 end = Offset(bx, midY + halfH),
                                 strokeWidth = barW,
@@ -2151,7 +2278,7 @@ private fun MontageFreeTracksCanvas(
                     if (cw > 60f) {
                         drawText(
                             textMeasurer = textMeasurer,
-                            text = (if (mutedNow) "🔇 " else "♪ ") + m.title.take(13),
+                            text = "♪ " + m.title.take(13),
                             topLeft = Offset(cx + 4f, bandTop + 7f),
                             style = TextStyle(fontSize = 9.sp, color = cOnSurf)
                         )

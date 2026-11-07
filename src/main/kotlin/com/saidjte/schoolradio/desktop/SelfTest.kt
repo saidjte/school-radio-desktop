@@ -5,6 +5,7 @@ import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.LevelMeter
 import com.saidjte.schoolradio.desktop.audio.MixBus
 import com.saidjte.schoolradio.desktop.audio.MontageDemo
+import com.saidjte.schoolradio.desktop.audio.MontageExportFormat
 import com.saidjte.schoolradio.desktop.audio.MontageRender
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.FakeToneVoice
@@ -27,6 +28,7 @@ import com.saidjte.schoolradio.desktop.data.MontageProject
 import com.saidjte.schoolradio.desktop.data.MontageStore
 import com.saidjte.schoolradio.desktop.data.MontageTemplateCatalog
 import com.saidjte.schoolradio.desktop.data.MontageTemplatesLogic
+import com.saidjte.schoolradio.desktop.data.MontageTrack
 import com.saidjte.schoolradio.desktop.data.LiveAnnounceLogic
 import com.saidjte.schoolradio.desktop.audio.BundledJingles
 import com.saidjte.schoolradio.desktop.data.ReadingJson
@@ -1620,6 +1622,65 @@ object SelfTest {
                 check(!LiveAnnounceLogic.isActive(1000L, 1000L + LiveAnnounceLogic.DURATION_MS)) { "announce end exclusive" }
                 check(LiveAnnounceLogic.remainingMs(1000L, 99999L) == 0L) { "announce remaining floor" }
                 check(BundledJingles.ALL.any { it.id == LiveAnnounceLogic.JINGLE_ID }) { "announce jingle exists" }
+            }
+
+
+            // ================= v0.37.0: تسمية المقاطع وبلا كتم وتصدير MP3 =================
+            run {
+                // 1) تعقيم أسماء المقاطع للنقر المزدوج
+                check(MontageLogic.sanitizeClipTitle("  افتتاحية الحصة  ") == "افتتاحية الحصة") { "rename trim" }
+                check(MontageLogic.sanitizeClipTitle("سطر\nثاني") == "سطر ثاني") { "rename newline" }
+                check(MontageLogic.sanitizeClipTitle("   ") == "مقطع") { "rename empty" }
+                check(MontageLogic.sanitizeClipTitle("ا".repeat(80)).length == 40) { "rename clamp" }
+
+                // 2) الكتم/المنفرد خارج عقد المونتاج — أعلام الملفات القديمة تُهرَج
+                val legacy = listOf(
+                    MontageTrack(id = "t1", name = "موسيقى", volumePercent = 130, muted = true),
+                    MontageTrack(id = "t2", name = "مؤثرات", volumePercent = 80, solo = true)
+                )
+                val eff = MontageLogic.effectiveTracks(MontageProject(tracks = legacy))
+                check(eff.size == 2 && eff.none { it.muted } && eff.none { it.solo }) { "legacy flags stripped" }
+                check(eff[0].volumePercent == 130 && eff[1].volumePercent == 80) { "legacy volumes kept" }
+                check(!MontageLogic.anyTrackSolo(eff)) { "no solo after strip" }
+
+                // 3) تصدير MP3 إلى جانب WAV — LAME نقي بنفس خطة التصيير
+                val m37 = File(tmp, "m37").apply { mkdirs() }
+                val a37 = MontageDemo.tone(File(m37, "a.wav"), 44100, 2, 2500, 440.0)
+                val b37 = MontageDemo.tone(File(m37, "b.wav"), 22050, 1, 2000, 330.0)
+                val p37 = MontageProject(
+                    clips = listOf(
+                        MontageClip(id = "a", path = a37.path, title = "أول", durationMs = 2500, startMs = 0, endMs = 2500),
+                        MontageClip(id = "b", path = b37.path, title = "ثانٍ", durationMs = 2000, startMs = 0, endMs = 2000)
+                    ),
+                    gapMs = 500
+                )
+                val plan37 = MontageLogic.totalDurationMs(p37.clips, p37.gapMs, p37.crossfadeMs)
+                val mp3out = File(m37, "out.mp3")
+                val r37 = MontageRender.render(p37, mp3out, format = MontageExportFormat.MP3, bitrateKbps = 192)
+                check(r37.ok) { "mp3 render: " + (r37.message ?: "") }
+                check(mp3out.length() > 5_000) { "mp3 small: " + mp3out.length() }
+                check(Math.abs(r37.durationMs - plan37) <= 60) { "mp3 sink duration=" + r37.durationMs }
+                val info37 = Mp3Info.analyze(mp3out) ?: error("mp3 header parse")
+                check(info37.first.sampleRate == 44100 && info37.first.channels == 2) { "mp3 format" }
+                check(info37.first.bitRateKbps == 192 && !info37.isVbr) { "mp3 cbr 192" }
+                check(Math.abs(info37.durationMs - plan37) <= 260) { "mp3 duration=" + info37.durationMs }
+                // الجودة تغيّر الحجم بنفس المدة: 320 أكبر من 128
+                val lo37 = File(m37, "lo.mp3")
+                val hi37 = File(m37, "hi.mp3")
+                check(MontageRender.render(p37, lo37, format = MontageExportFormat.MP3, bitrateKbps = 128).ok) { "mp3 128" }
+                check(MontageRender.render(p37, hi37, format = MontageExportFormat.MP3, bitrateKbps = 320).ok) { "mp3 320" }
+                check(hi37.length() > lo37.length()) { "bitrate size order" }
+                check(Mp3Info.analyze(lo37)!!.first.bitRateKbps == 128) { "mp3 128 header" }
+                check(Mp3Info.analyze(hi37)!!.first.bitRateKbps == 320) { "mp3 320 header" }
+                // WAV الافتراضي بلا مساس
+                val wav37 = File(m37, "out.wav")
+                check(MontageRender.render(p37, wav37).ok) { "wav default" }
+                val wh37 = WavHeader.read(wav37) ?: error("wav header")
+                check(wh37.sampleRate == 44100 && wh37.channels == 2) { "wav format" }
+                // ثوابت الصيغة والجودة
+                check(MontageExportFormat.entries.map { it.name }.toSet() == setOf("WAV", "MP3")) { "format enum" }
+                check(MontageRender.MP3_BITRATES == listOf(128, 192, 256, 320)) { "bitrate ladder" }
+                check(MontageRender.MP3_DEFAULT_KBPS == 192) { "bitrate default" }
             }
 
             println("SELFTEST OK — version $APP_VERSION")

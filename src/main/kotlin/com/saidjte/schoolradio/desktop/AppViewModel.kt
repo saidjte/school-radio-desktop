@@ -5,6 +5,7 @@ import com.saidjte.schoolradio.desktop.audio.DuckBus
 import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.MicLiveEngine
 import com.saidjte.schoolradio.desktop.audio.MixBus
+import com.saidjte.schoolradio.desktop.audio.MontageExportFormat
 import com.saidjte.schoolradio.desktop.audio.MontageRender
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
@@ -1422,6 +1423,26 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     private val _lastMontageExport = MutableStateFlow<File?>(null)
     val lastMontageExport: StateFlow<File?> = _lastMontageExport.asStateFlow()
 
+    // ---- v0.37.0: صيغة التصدير وجودة MP3 ----
+
+    /** صيغة تصدير المونتاج: WAV للبث بلا فقد، أو MP3 مضغوط للمشاركة (المعاينة WAV دائمًا). */
+    private val _montageExportFormat = MutableStateFlow(MontageExportFormat.WAV)
+    val montageExportFormat: StateFlow<MontageExportFormat> = _montageExportFormat.asStateFlow()
+
+    /** جودة MP3 (CBR) — من الشبكة المسموحة فقط. */
+    private val _montageExportBitrate = MutableStateFlow(MontageRender.MP3_DEFAULT_KBPS)
+    val montageExportBitrate: StateFlow<Int> = _montageExportBitrate.asStateFlow()
+
+    fun setMontageExportFormat(f: MontageExportFormat) {
+        _montageExportFormat.value = f
+    }
+
+    /** جودة MP3: أقرب قيمة مسموحة تُثبّت (128/192/256/320). */
+    fun setMontageExportBitrate(kbps: Int) {
+        _montageExportBitrate.value = MontageRender.MP3_BITRATES
+            .minByOrNull { kotlin.math.abs(it - kbps) } ?: MontageRender.MP3_DEFAULT_KBPS
+    }
+
     // ---- v0.34.0: حالة الاحتراف ----
 
     /** سجل التراجع/الإعادة — لقطة قبل كل تغيير (وأثناء السحب لقطة واحدة). */
@@ -1912,6 +1933,10 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
      * والتصدير يكتب في مجلد التسجيلات ويوقَّع باسم المذيع ويظهر في مكتبة
      * التسجيلات فورًا. الحارس: لا تصييران معًا. thenPlayFromPlayhead يفتح
      * المعاينة موقوفة عند الرأس — «معاينة من أي نقطة» (البند 9).
+     *
+     * v0.37.0: التصدير يتبع صيغة [montageExportFormat] — WAV كما هو أو MP3
+     * بجودة [montageExportBitrate] عبر LAME، بامتداد صحيح ورسالة تُسمّي الصيغة.
+     * المعاينة WAV دائمًا — ملف مؤقت للمشغل لا للمشاركة.
      */
     fun renderMontage(preview: Boolean, thenPlayFromPlayhead: Boolean = false) {
         if (_montageRenderProgress.value != null) return
@@ -1920,16 +1945,24 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
             _lastLibraryMessage.value = "أضف مقاطع موجودة على القرص أولًا"
             return
         }
+        val fmt = if (preview) MontageExportFormat.WAV else _montageExportFormat.value
+        val kbps = _montageExportBitrate.value
         val target = if (preview)
             File(File(dataDir(), "montage"), "preview.wav")
         else
-            RecordingsScanner.newRecordingFile(_recordingsDir.value, prefix = "مونتاج")
+            RecordingsScanner.newRecordingFile(
+                _recordingsDir.value,
+                prefix = "مونتاج",
+                extension = fmt.extension
+            )
         if (preview) montagePreviewStamp = null // ما يُصيَّر الآن هو الأحدث دائمًا
         montageRenderCancelled = false
         _montageRenderProgress.value = 0f
         montageRenderJob = runScope.launch(Dispatchers.IO) {
             val r = MontageRender.render(
                 p, target,
+                format = fmt,
+                bitrateKbps = kbps,
                 onProgress = { pr -> _montageRenderProgress.value = pr },
                 cancelled = { montageRenderCancelled }
             )
@@ -1955,8 +1988,9 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
                 r.ok -> {
                     signRecording(target, r.durationMs)
                     _lastMontageExport.value = target
+                    val fmtTag = if (fmt == MontageExportFormat.MP3) "MP3 ${kbps}k" else "WAV"
                     _lastLibraryMessage.value =
-                        "صُدِّر المونتاج «${target.name}» — مدته ${montageClock(r.durationMs)} — جاهز في التسجيلات"
+                        "صُدِّر المونتاج «${target.name}» — $fmtTag — مدته ${montageClock(r.durationMs)} — جاهز في التسجيلات"
                 }
                 montageRenderCancelled -> _lastLibraryMessage.value = "أُلغي التصيير"
                 else -> _lastLibraryMessage.value = r.message ?: "فشل التصيير"
@@ -2106,6 +2140,21 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         applyMontage(_montageProject.value.copy(musicClips = _montageProject.value.musicClips.filterNot { it.id == clipId }))
     }
 
+    /**
+     * إعادة تسمية مقطع تعليق بالنقر المزدوج (v0.37.0) — الاسم يُعقَّم ويُحفظ
+     * في المشروع ويظهر على الموجة وفي القائمة، والتراجع يعيد الاسم السابق.
+     */
+    fun renameMontageClip(clipId: String, title: String) {
+        val t = MontageLogic.sanitizeClipTitle(title)
+        updateMontageClip(clipId, { it.copy(title = t) })
+    }
+
+    /** إعادة تسمية مقطع مسار حر بالنقر المزدوج (v0.37.0) — نفس عقد التعليق. */
+    fun renameMontageMusicClip(clipId: String, title: String) {
+        val t = MontageLogic.sanitizeClipTitle(title)
+        updateMontageMusicClip(clipId, { it.copy(title = t) })
+    }
+
     // ================= v0.36.0: مسطرة العمليات وأدوات المونتاج والمسارات المتعددة =================
 
     /** ضبط المنطقة المحددة على المسطرة — تحت الحد الأدنى تُمسح لا تُقبَل. */
@@ -2233,24 +2282,6 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
             p.copy(tracks = base.map { if (it.id == trackId) it.copy(volumePercent = MontageLogic.clampVolume(percent)) else it }),
             record = false
         )
-    }
-
-    /** كتم/إلغاء كتم مسار — مسار التعليق خارج العقد فهو البرنامج. */
-    fun toggleMontageTrackMute(trackId: String) {
-        val p = _montageProject.value
-        val base = if (p.tracks.isEmpty()) {
-            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
-        } else p.tracks
-        applyMontage(p.copy(tracks = base.map { if (it.id == trackId) it.copy(muted = !it.muted) else it }))
-    }
-
-    /** منفرد/إلغاء منفرد مسار — بقية المسارات الحرة تصمت ومسار التعليق يبقى. */
-    fun toggleMontageTrackSolo(trackId: String) {
-        val p = _montageProject.value
-        val base = if (p.tracks.isEmpty()) {
-            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
-        } else p.tracks
-        applyMontage(p.copy(tracks = base.map { if (it.id == trackId) it.copy(solo = !it.solo) else it }))
     }
 
     /** نقل مقطع مسار إلى مسار آخر (سحب عمودي بين الخطوط). */

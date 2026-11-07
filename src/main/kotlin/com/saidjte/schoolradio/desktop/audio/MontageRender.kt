@@ -5,17 +5,102 @@ import com.saidjte.schoolradio.desktop.data.MontageEnvelope
 import com.saidjte.schoolradio.desktop.data.MontageLogic
 import com.saidjte.schoolradio.desktop.data.MontageMusicClip
 import com.saidjte.schoolradio.desktop.data.MontageProject
+import de.sciss.jump3r.lowlevel.LameEncoder
 import javazoom.jl.decoder.Bitstream
 import javazoom.jl.decoder.Decoder
 import javazoom.jl.decoder.SampleBuffer
 import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.Closeable
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioInputStream
 import javax.sound.sampled.AudioSystem
 import kotlin.math.min
+
+/** صيغة تصدير المونتاج (v0.37.0): WAV بلا فقد للبث، أو MP3 مضغوط للمشاركة. */
+enum class MontageExportFormat(val labelAr: String, val extension: String) {
+    WAV("WAV — بلا فقد، جاهز للبث", "wav"),
+    MP3("MP3 — مضغوط للمشاركة والهاتف", "mp3")
+}
+
+/**
+ * مَصِبّ PCM موحّد للمُصيّر (v0.37.0): نفس عقد WavFileWriter (كتابة بايتات
+ * ستيريو 16-bit little-endian ومدة المكتبوكة) — فالمزج الكتلي لا يعرف
+ * هل يكتب WAV أم يُرمّز MP3، والتبديل نقطة واحدة عند الفتح.
+ */
+internal interface PcmSink : Closeable {
+    fun write(b: ByteArray, offset: Int, length: Int)
+    val durationMs: Long
+}
+
+private class WavPcmSink(file: File) : PcmSink {
+    private val w = WavFileWriter(file, MontageRender.RATE, MontageRender.CHANNELS)
+    override val durationMs: Long get() = w.durationMs
+    override fun write(b: ByteArray, offset: Int, length: Int) = w.write(b, offset, length)
+    override fun close() = w.close()
+}
+
+/**
+ * مصبّ MP3 متدفق (v0.37.0): نفس كتل PCM ستيريو 44.1k تُرمَّز عبر LAME
+ * (jump3r — بورت LAME الخالص على JVM، نفس محرك استيراد اليوتيوب) بجودة
+ * CBR قابلة للاختيار، بلا أي أداة خارجية ولا شبكة. الكتل تُجمَع إلى حجم
+ * تغذية LAME المفضّل وتُدفَع كما هي، ونهاية البِتستريم تُفرَغ بـ encodeFinish
+ * فلا يُقطع ذيل الملف.
+ */
+private class Mp3PcmSink(file: File, bitrateKbps: Int) : PcmSink {
+    private val fos = BufferedOutputStream(FileOutputStream(file), 1 shl 16)
+    private val encoder = LameEncoder(
+        AudioFormat(MontageRender.RATE.toFloat(), 16, MontageRender.CHANNELS, true, false),
+        bitrateKbps.coerceIn(64, 320),
+        LameEncoder.MPEG_VERSION_1,
+        LameEncoder.CHANNEL_MODE_JOINT_STEREO,
+        false
+    )
+    private val chunkSize = encoder.pcmBufferSize.coerceAtLeast(4096)
+    private val inBuf = ByteArray(chunkSize)
+    private var inLen = 0
+    private val outBuf = ByteArray(chunkSize / 2 + 8192)
+    private var pcmBytes = 0L
+
+    override val durationMs: Long
+        get() = WavFileWriter.durationMsOf(pcmBytes, MontageRender.RATE, MontageRender.CHANNELS)
+
+    override fun write(b: ByteArray, offset: Int, length: Int) {
+        var p = offset
+        var rem = length
+        while (rem > 0) {
+            val n = minOf(rem, chunkSize - inLen)
+            System.arraycopy(b, p, inBuf, inLen, n)
+            inLen += n
+            p += n
+            rem -= n
+            if (inLen == chunkSize) flushChunk()
+        }
+    }
+
+    private fun flushChunk() {
+        if (inLen == 0) return
+        val n = encoder.encodeBuffer(inBuf, 0, inLen, outBuf)
+        if (n > 0) fos.write(outBuf, 0, n)
+        pcmBytes += inLen
+        inLen = 0
+    }
+
+    override fun close() {
+        try {
+            flushChunk()
+            val fin = encoder.encodeFinish(outBuf)
+            if (fin > 0) fos.write(outBuf, 0, fin)
+        } catch (_: Throwable) {
+        } finally {
+            try { fos.close() } catch (_: Exception) { }
+            try { encoder.close() } catch (_: Throwable) { }
+        }
+    }
+}
 
 /**
  * مُصيِّر المونتاج (v0.33.0 «أضف صفحة المونتاج»): تصيير دون اتصال خالص —
@@ -45,6 +130,10 @@ object MontageRender {
 
     /** حجم كتلة المزج بإطارات الوجهة (~371 مللي ثانية) — توازن ذاكرة/نداءات. */
     private const val MIX_BLOCK = 16_384
+
+    /** جودات MP3 المسموحة (v0.37.0) والافتراضي — CBR ثابت لسعي دقيق في المحرك. */
+    val MP3_BITRATES = listOf(128, 192, 256, 320)
+    const val MP3_DEFAULT_KBPS = 192
 
     /** نتيجة التصيير: نجاح وزمن الملف الناتج ورسالة عربية عند الفشل. */
     data class Result(val ok: Boolean, val durationMs: Long, val message: String? = null)
@@ -107,10 +196,15 @@ object MontageRender {
      * ينبض عبر onProgress، و cancelled يُفحص بين الكتل فالإلغاء سريع ونظيف.
      * الخلاط الكتلي: كل كتلة زمنية تُمزج من مصادرها النشطة (اثنان كحد أقصى
      * عند حدود الكروس فيد، وأكثر من مسار الموسيقى) أو تُكتب صمتًا إن كانت في فاصل.
+     *
+     * v0.37.0: [format] يختار الوجهة — WAV قانوني كما هو، أو MP3 عبر LAME
+     * بجودة [bitrateKbps] (CBR) بنفس كتل المزج نفسها فلا مسار مزج ثانٍ.
      */
     fun render(
         project: MontageProject,
         out: File,
+        format: MontageExportFormat = MontageExportFormat.WAV,
+        bitrateKbps: Int = MP3_DEFAULT_KBPS,
         onProgress: ((Float) -> Unit)? = null,
         cancelled: () -> Boolean = { false }
     ): Result {
@@ -118,14 +212,19 @@ object MontageRender {
         val music = MontageLogic.sanitizeMusic(project.musicClips)
         if (clips.isEmpty() && music.isEmpty()) return Result(false, 0L, "لا توجد مقاطع صالحة في المشروع")
         out.parentFile?.mkdirs()
-        val writer = try {
-            WavFileWriter(out, RATE, CHANNELS)
+        runCatching { if (out.isFile) out.delete() }
+        val sink = try {
+            when (format) {
+                MontageExportFormat.WAV -> WavPcmSink(out)
+                MontageExportFormat.MP3 -> Mp3PcmSink(out, bitrateKbps)
+            }
         } catch (t: Throwable) {
             return Result(false, 0L, "تعذّر إنشاء ملف التصدير: ${t.message ?: ""}")
         }
         try {
             val plan = plan(project, clips)
-            // المسارات الحرة (v0.36.0): كسب كل مقطع من مستوى مساره وكتمه/منفرده
+            // المسارات الحرة (v0.36.0): كسب كل مقطع من مستوى مساره — والأعلام
+            // القديمة للكتم/المنفرد تُهرَج في effectiveTracks منذ v0.37.0
             val tracks = MontageLogic.effectiveTracks(project)
             val anySolo = MontageLogic.anyTrackSolo(tracks)
             val musicStarts = LongArray(music.size)
@@ -224,9 +323,9 @@ object MontageRender {
                             bytes[bi++] = (v and 0xFF).toByte()
                             bytes[bi++] = ((v shr 8) and 0xFF).toByte()
                         }
-                        writer.write(bytes)
+                        sink.write(bytes, 0, bytes.size)
                     } else {
-                        writeSilence(writer, blockFrames.toLong())
+                        writeSilence(sink, blockFrames.toLong())
                     }
                     f = blockEnd
                     onProgress?.invoke(f.toFloat() / totalFrames)
@@ -236,13 +335,13 @@ object MontageRender {
                 for (st in musicStreams) st?.close()
             }
         } catch (c: ClipCancelled) {
-            return Result(false, writer.durationMs, "أُلغي التصيير")
+            return Result(false, sink.durationMs, "أُلغي التصيير")
         } catch (t: Throwable) {
             return Result(false, 0L, "فشل التصيير: ${t.message ?: t.javaClass.simpleName}")
         } finally {
-            try { writer.close() } catch (_: Exception) { }
+            try { sink.close() } catch (_: Exception) { }
         }
-        return Result(true, writer.durationMs, null)
+        return Result(true, sink.durationMs, null)
     }
 
     /**
@@ -278,20 +377,20 @@ object MontageRender {
         }
     }
 
-    /** صمت الفاصل: أصفار قانونية تُكتب متدفقة. */
-    private fun writeSilence(writer: WavFileWriter, frames: Long) {
+    /** صمت الفاصل: أصفار قانونية تُكتب متدفقة (وفي MP3 تُرمَّز صمتًا حقيقيًا). */
+    private fun writeSilence(sink: PcmSink, frames: Long) {
         var remaining = frames
         val chunk = ByteArray(64 * 1024)
         while (remaining > 0) {
             val bytes = (min(remaining, chunk.size / 4L).toInt() * 4)
-            writer.write(chunk, 0, bytes)
+            sink.write(chunk, 0, bytes)
             remaining -= bytes / 4L
         }
     }
 
     /**
      * مزج إطارات مقطع مسار حر (v0.35.0 البند 16 — معمّم v0.36.0 لعدة خطوط):
-     * كسب المسار (مستوى × كتم/منفرد) × كسب المقطع × تلاشيه × التلاشي الدقيق ×
+     * كسب المسار (مستواه المئوي) × كسب المقطع × تلاشيه × التلاشي الدقيق ×
      * كسب الخفض التلقائي عند اللحظة العالمية — كل المسارات الحرة تنخفض تحت
      * التعليق حين يفعّل المذيع الخفض، والمكتوم أو المعزول يصمت كليًا.
      */
