@@ -170,6 +170,21 @@ sealed interface MontageShortcutAction {
 
     /** Escape: مسح تحديد المسطرة (v0.36.0). */
     data object ClearSelection : MontageShortcutAction
+
+    /** X أو Ctrl+X: قص المحدد إلى حافظة المونتاج (v0.38.0). */
+    data object CutSelected : MontageShortcutAction
+
+    /** C أو Ctrl+C: نسخ المحدد إلى حافظة المونتاج (v0.38.0). */
+    data object CopySelected : MontageShortcutAction
+
+    /** V أو Ctrl+V: لصق الحافظة بمعرّف جديد (v0.38.0). */
+    data object PasteClipboard : MontageShortcutAction
+
+    /** D: تكرار المحدد مرة واحدة خلفه (v0.38.0) — العدد الأكبر من زر «تكرار…». */
+    data object DuplicateSelected : MontageShortcutAction
+
+    /** J: دمج المحدد مع التالي في مقطع واحد (v0.38.0). */
+    data object MergeWithNext : MontageShortcutAction
 }
 
 /**
@@ -194,6 +209,12 @@ fun resolveMontageShortcut(
         key == Key.R && !ctrl && !shift -> MontageShortcutAction.DeleteRegion
         key == Key.G && !ctrl && !shift -> MontageShortcutAction.ToggleSnap
         key == Key.Escape -> MontageShortcutAction.ClearSelection
+        // v0.38.0: الحافظة والتكرار والدمج — حرة أو بـCtrl للعُرف المحرراتي
+        key == Key.X -> MontageShortcutAction.CutSelected
+        key == Key.C && !shift -> MontageShortcutAction.CopySelected
+        key == Key.V && !shift -> MontageShortcutAction.PasteClipboard
+        key == Key.D && !shift -> MontageShortcutAction.DuplicateSelected
+        key == Key.J && !shift -> MontageShortcutAction.MergeWithNext
         else -> null
     }
 }
@@ -279,6 +300,9 @@ fun ShortcutsDialog(onDismiss: () -> Unit) {
                 "Delete" to "حذف المقطع المحدد ويُغلق الخط مكانه",
                 "R" to "حذف المنطقة المحددة على المسطرة من كل المسارات متموّجًا",
                 "G" to "تفعيل / تعطيل الالتقاط على العلامات والحواف والشبكة",
+                "X / C / V" to "قص / نسخ / لصق المقطع المحدد عبر حافظة المونتاج",
+                "D" to "تكرار المقطع المحدد مرة خلفه",
+                "J" to "دمج المحدد مع التالي في مقطع واحد",
                 "Esc" to "مسح تحديد المسطرة",
                 "← / →" to "تحريك رأس التشغيل 100ms (مع Shift: 10ms بدقة)",
                 "↑ / ↓" to "تحديد المقطع السابق / التالي",

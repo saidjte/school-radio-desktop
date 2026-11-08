@@ -1683,6 +1683,99 @@ object SelfTest {
                 check(MontageRender.MP3_DEFAULT_KBPS == 192) { "bitrate default" }
             }
 
+            // ================= v0.38.0: أدوات الحفرة — الحافظة والعكس والسرعة والنبرة =================
+            run {
+                // 1) عكس الموجة — قلب إطارات بلا مساس الاقتران
+                val rev38 = com.saidjte.schoolradio.desktop.audio.ClipTransforms.reversePcm(
+                    shortArrayOf(1, 2, 3, 4, 5, 6)
+                )
+                check(rev38.toList() == listOf(5, 6, 3, 4, 1, 2).map { it.toShort() }) { "reverse order" }
+
+                // 2) شد WSOLA: مدة تُقسَم بالمعامل والنبرة ثابتة — على موجة معروفة
+                fun sine38(hz: Double, ms: Long): ShortArray {
+                    val n = (ms * 44100 / 1000L).toInt()
+                    return ShortArray(n * 2) { i ->
+                        val f = i / 2
+                        (Math.sin(2.0 * Math.PI * hz * f / 44100.0) * 12000.0).toInt().toShort()
+                    }
+                }
+                val t38 = com.saidjte.schoolradio.desktop.audio.ClipTransforms
+                val fast38 = t38.wsolaChangeTempo(sine38(440.0, 2000), 2.0)
+                val fastDur = fast38.size / 2.0 / 44100.0
+                check(Math.abs(fastDur - 1.0) <= 0.08) { "wsola tempo2 dur=$fastDur" }
+                val fastHz = t38.estimateDominantHz(fast38)
+                check(Math.abs(fastHz - 440.0) <= 35.0) { "wsola tempo2 hz=$fastHz" }
+                val slow38 = t38.wsolaChangeTempo(sine38(440.0, 1500), 0.5)
+                val slowDur = slow38.size / 2.0 / 44100.0
+                check(Math.abs(slowDur - 3.0) <= 0.12) { "wsola tempo05 dur=$slowDur" }
+                check(Math.abs(t38.estimateDominantHz(slow38) - 440.0) <= 35.0) { "wsola tempo05 hz" }
+
+                // 3) النبرة: ±12 ثُمانية كاملة بطولة محفوظة
+                val up38 = t38.pitchShift(sine38(440.0, 2000), 12)
+                check(Math.abs(up38.size / 2.0 / 44100.0 - 2.0) <= 0.10) { "pitch+12 dur=${up38.size / 2.0 / 44100.0}" }
+                val upHz = t38.estimateDominantHz(up38)
+                check(Math.abs(upHz - 880.0) <= 45.0) { "pitch+12 hz=$upHz" }
+                val down38 = t38.pitchShift(sine38(440.0, 2000), -12)
+                val downHz = t38.estimateDominantHz(down38)
+                check(Math.abs(downHz - 220.0) <= 25.0) { "pitch-12 hz=$downHz" }
+                check(Math.abs(down38.size / 2.0 / 44100.0 - 2.0) <= 0.10) { "pitch-12 dur" }
+                // الحبوس وعقد المعامل
+                check(t38.clampSpeedPercent(1) == 50 && t38.clampSpeedPercent(5000) == 200) { "speed clamp" }
+                check(t38.clampPitchSemitones(-99) == -12 && t38.clampPitchSemitones(99) == 12) { "pitch clamp" }
+                check(Math.abs(t38.pitchFactor(12) - 2.0) < 1e-9) { "pitch factor octave" }
+
+                // 4) الارتداد المخزَّن على ملف حقيقي: إعادة الاستخدام والصلاحية
+                val m38 = File(tmp, "m38").apply { mkdirs() }
+                val tone38 = MontageDemo.tone(File(m38, "tone.wav"), 44100, 2, 2500, 440.0)
+                val clip38 = MontageClip(id = "a", path = tone38.path, title = "مقطع", durationMs = 2500, startMs = 0, endMs = 2500)
+                val cache38 = File(m38, "bounce")
+                val b1 = t38.bounce(clip38, "reverse", "-", t38::reversePcm, cache38)
+                val b2 = t38.bounce(clip38, "reverse", "-", t38::reversePcm, cache38)
+                check(b1.file.absolutePath == b2.file.absolutePath && b1.file.isFile) { "bounce reuse" }
+                check(Math.abs(b1.durationMs - 2500) <= 40) { "bounce dur=${b1.durationMs}" }
+                val wh38 = WavHeader.read(b1.file) ?: error("bounce wav header")
+                check(wh38.sampleRate == 44100 && wh38.channels == 2) { "bounce wav format" }
+                // الدمج عبر المُصيِّر نفسه: 2500 + 500 + 2500 = 5500
+                val toneB38 = MontageDemo.tone(File(m38, "toneB.wav"), 22050, 1, 2500, 330.0)
+                val clipB38 = MontageClip(id = "b", path = toneB38.path, title = "ثانٍ", durationMs = 2500, startMs = 0, endMs = 2500)
+                val mg38 = t38.bounceMerge(clip38, clipB38, gapMs = 500, crossfadeMs = 0, cacheDir = cache38)
+                check(Math.abs(mg38.durationMs - 5500) <= 80) { "merge dur=${mg38.durationMs}" }
+                check(WavHeader.read(mg38.file) != null) { "merge wav header" }
+
+                // 5) الحافظة والتكرار والدمج — الرياضيات النقية
+                fun vc38(id: String, dur: Long = 1000L) = MontageClip(id = id, path = "/p/$id.wav", title = id, durationMs = dur, startMs = 0, endMs = dur)
+                val base38 = listOf(vc38("a"), vc38("b"), vc38("c"))
+                val copy38 = MontageLogic.pastedVoiceCopy(vc38("b"))
+                check(copy38.id != "b" && copy38.path == "/p/b.wav") { "paste fresh id" }
+                val mid38 = MontageLogic.pasteVoiceAfter(base38, copy38, "b")
+                check(mid38.size == 4 && mid38[2].id == copy38.id) { "paste after selection" }
+                check(MontageLogic.pasteVoiceAfter(base38, copy38, null).last().id == copy38.id) { "paste at end" }
+                val dup38 = MontageLogic.duplicateVoiceAfter(base38, "a", 3)
+                check(dup38.size == 6 && dup38.first().id == "a" && dup38.last().id == "c") { "duplicate voice x3" }
+                check(dup38.map { it.id }.toSet().size == 6) { "duplicate unique ids" }
+                check(MontageLogic.duplicateVoiceAfter(base38, "a", 0) === base38) { "duplicate zero guard" }
+                val srcMu = MontageMusicClip(id = "m1", path = "/p/m.wav", title = "سرير", durationMs = 2000, startMs = 500)
+                val dmu38 = MontageLogic.duplicateTrackClip(srcMu, 3)
+                check(dmu38.map { it.startMs } == listOf(2500L, 4500L, 6500L)) { "duplicate track contiguous" }
+                // عقد الدمج: الأخير لا يُدمج والقصير مستبعد
+                check(MontageLogic.mergeableVoicePair(base38, "c") == null) { "merge last rejected" }
+                check(MontageLogic.mergeableVoicePair(listOf(vc38("a"), vc38("b", 30)), "a") == null) { "merge short rejected" }
+                check(MontageLogic.mergeableVoicePair(listOf(vc38("a", 800), vc38("b", 900)), "a") != null) { "merge valid pair" }
+                check(t38.mergedTitle(" أول ", " ثانٍ ") == "أول+ثانٍ") { "merged title" }
+
+                // 6) اختصارات الحفرة الحديثة
+                fun r38(key: Key) = com.saidjte.schoolradio.desktop.ui.resolveMontageShortcut(key, false, false, false, false)
+                check(
+                    r38(Key.X) == com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.CutSelected &&
+                        r38(Key.V) == com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.PasteClipboard &&
+                        r38(Key.J) == com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.MergeWithNext &&
+                        r38(Key.D) == com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.DuplicateSelected &&
+                        r38(Key.C) == com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.CopySelected &&
+                        com.saidjte.schoolradio.desktop.ui.resolveMontageShortcut(Key.X, true, false, false, false) == com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.CutSelected &&
+                        com.saidjte.schoolradio.desktop.ui.resolveMontageShortcut(Key.S, false, false, false, false) == com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.SplitAtPlayhead
+                ) { "v38 shortcuts" }
+            }
+
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
             tmp.listFiles()?.forEach { it.delete() }

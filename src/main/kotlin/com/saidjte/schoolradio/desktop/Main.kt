@@ -170,6 +170,19 @@ fun main(args: Array<String>) {
                 vm.setMontageSelection(2_000L, 6_000L)
             }
         }
+        // المونتاج للأتمتة (v0.38.0): تحديد أول مقطع ونسخه ولصقه — الحافظة
+        // تعمل عند الإقلاع فتبقى النقرات الحقيقية للحوارات والأدوات الجديدة
+        if (args.contains("--montage-v38")) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(4500)
+                val first = vm.montageProject.value.clips.firstOrNull()?.id
+                if (first != null) {
+                    vm.selectMontageClip(first)
+                    vm.montageCopySelected()
+                    vm.montagePasteClipboard()
+                }
+            }
+        }
         // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
         val windowIcon = remember {
             Thread.currentThread().contextClassLoader

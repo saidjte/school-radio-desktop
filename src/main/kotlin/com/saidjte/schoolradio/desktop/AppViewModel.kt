@@ -1,6 +1,7 @@
 package com.saidjte.schoolradio.desktop
 
 import com.saidjte.schoolradio.desktop.audio.BundledJingles
+import com.saidjte.schoolradio.desktop.audio.ClipTransforms
 import com.saidjte.schoolradio.desktop.audio.DuckBus
 import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.MicLiveEngine
@@ -1487,6 +1488,20 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     private val _montageSnapEnabled = MutableStateFlow(true)
     val montageSnapEnabled: StateFlow<Boolean> = _montageSnapEnabled.asStateFlow()
 
+    // ---- v0.38.0: الحافظة وتحويلات المقطع (عكس/سرعة/نبرة/دمج/تكرار) ----
+
+    /** خانة الحافظة الموحّدة — القص والنسخ يملآنانها واللصق يقرؤها. */
+    private val _montageClipboard = MutableStateFlow<MontageLogic.MontageClipboardEntry?>(null)
+    val montageClipboard: StateFlow<MontageLogic.MontageClipboardEntry?> = _montageClipboard.asStateFlow()
+
+    /** هل جرى تحويل ارتداد الآن (عكس/سرعة/نبرة/دمج)؟ — يقفل أدوات التحويل. */
+    private val _montageTransformBusy = MutableStateFlow(false)
+    val montageTransformBusy: StateFlow<Boolean> = _montageTransformBusy.asStateFlow()
+
+    /** مخزن ملفات الارتداد (عكس/سرعة/نبرة/دمج) — أسماء ببصمة SHA-1 فتُعاد بلا حساب. */
+    private val montageBounceDir: File
+        get() = File(File(dataDir(), "montage"), "bounce")
+
     /** مغلّفات المقاطع (ويڤ فورم/VU/تشبع) بحسب المقطع — تُحسب في خيط عمل. */
     private val _montageEnvelopes = MutableStateFlow<Map<String, MontageEnvelope>>(emptyMap())
     val montageEnvelopes: StateFlow<Map<String, MontageEnvelope>> = _montageEnvelopes.asStateFlow()
@@ -1534,8 +1549,10 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
             _montageSelectedClipId.value = p.clips.firstOrNull()?.id
         }
         val musicIds = p.musicClips.map { it.id }.toSet()
+        // التحديد وحيد: بلا نقر على مقطع مسار يبقى بلا تحديد مسارات — أدوات
+        // المقطع تستهدف ما نقره المستخدم فعلًا لا أول مقطع مسار بالقائمة
         if (_montageSelectedMusicId.value !in musicIds) {
-            _montageSelectedMusicId.value = p.musicClips.firstOrNull()?.id
+            _montageSelectedMusicId.value = null
         }
         requestMontageEnvelopes()
     }
@@ -1661,7 +1678,9 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     }
 
     fun selectMontageClip(clipId: String?) {
+        // حصرية التحديد بين التعليق والمسارات الحرة — نقر خطٍّ يستهدفه وحده
         _montageSelectedClipId.value = clipId
+        if (clipId != null) _montageSelectedMusicId.value = null
     }
 
     /**
@@ -1799,9 +1818,9 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     /** ختم محتوى المشروع — المعاينة تُعاد فقط عند تغيّره فعليًا. */
     private fun montageStamp(p: MontageProject): String =
         p.clips.joinToString("|") {
-            "${it.id}:${it.startMs}-${it.endMs}:${it.volumePercent}:${it.fadeInMs}-${it.fadeOutMs}"
+            "${it.id}:${it.path}:${it.startMs}-${it.endMs}:${it.volumePercent}:${it.fadeInMs}-${it.fadeOutMs}"
         } + "#" + p.musicClips.joinToString("|") { m ->
-            "${m.id}@${m.startMs}:${m.startInFileMs}-${m.endInFileMs}:${m.volumePercent}:${m.fadeInMs}-${m.fadeOutMs}:${m.trackId}"
+            "${m.id}@${m.path}:${m.startMs}:${m.startInFileMs}-${m.endInFileMs}:${m.volumePercent}:${m.fadeInMs}-${m.fadeOutMs}:${m.trackId}"
         } + "#duck=${p.duckingEnabled}:${p.duckDb}" + "#${p.gapMs}#${p.crossfadeMs}" +
             "#trks=" + p.tracks.joinToString(",") { t -> "${t.id}:${t.volumePercent}:${t.muted}:${t.solo}" }
 
@@ -2104,9 +2123,10 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         }
     }
 
-    /** تحديد مقطع موسيقى في المسار الثاني. */
+    /** تحديد مقطع موسيقى في المسار الثاني — وإسقاط تحديد التعليق (حصرية الأدوات). */
     fun selectMontageMusic(clipId: String?) {
         _montageSelectedMusicId.value = clipId
+        if (clipId != null) _montageSelectedClipId.value = null
     }
 
     /** تحرير مقطع موسيقى (موضع/نافذة/مستوى/تلاشين) — الحبوس تُطبق هنا والمشروع يُحفظ. */
@@ -2153,6 +2173,298 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     fun renameMontageMusicClip(clipId: String, title: String) {
         val t = MontageLogic.sanitizeClipTitle(title)
         updateMontageMusicClip(clipId, { it.copy(title = t) })
+    }
+
+    // ================= v0.38.0: الحافظة والتكرار والدمج والتحويلات =================
+    // «قص الصوت / نسخ ولصق / دمج المقاطع / تكرار المقاطع / عكس الصوت /
+    //  تعديل السرعة دون تغيير النبرة / تغيير طبقة الصوت» — أدوات المقطع
+    // الحديثة: الحافظة رياضيات فورية، والتحويلات ارتداد في خيط عمل عبر
+    // ClipTransforms ثم توجيه المقطع إلى ملفه الجديد — الأصل لا يُمسّ أبدًا.
+
+    /**
+     * المقطع الهدف لأدوات المقطع: محدد المسارات الحر أولويةً إن كان محددًا،
+     * وإلا محدد التعليق — زر واحد يخدم الخطّين بلا ازدواج.
+     */
+    private fun focusedMontageTarget(): Pair<Boolean, String>? {
+        val mid = _montageSelectedMusicId.value
+        if (mid != null && _montageProject.value.musicClips.any { it.id == mid }) return true to mid
+        val vid = _montageSelectedClipId.value
+        if (vid != null && _montageProject.value.clips.any { it.id == vid }) return false to vid
+        return null
+    }
+
+    /** نسخ المحدد إلى الحافظة — بلا مساس بالترتيب. */
+    fun montageCopySelected() {
+        val p = _montageProject.value
+        val mid = _montageSelectedMusicId.value
+        val music = mid?.let { id -> p.musicClips.firstOrNull { it.id == id } }
+        if (music != null) {
+            _montageClipboard.value = MontageLogic.MontageClipboardEntry.Free(music)
+            _lastLibraryMessage.value = "نُسخ «${music.title.take(24)}» من مسار ${trackNameOf(music)} — Ctrl+V للصقه"
+            return
+        }
+        val voice = _montageSelectedClipId.value?.let { id -> p.clips.firstOrNull { it.id == id } }
+        if (voice != null) {
+            _montageClipboard.value = MontageLogic.MontageClipboardEntry.Voice(voice)
+            _lastLibraryMessage.value = "نُسخ «${voice.title.take(24)}» — Ctrl+V للصقه بعد أي محدد"
+        } else _lastLibraryMessage.value = "حدّد مقطعًا أولًا (نقرًا عليه)"
+    }
+
+    /** قص المحدد: نسخ إلى الحافظة ثم إزالة — التراجع يعيد المقطع كاملًا. */
+    fun montageCutSelected() {
+        val p = _montageProject.value
+        val mid = _montageSelectedMusicId.value
+        val music = mid?.let { id -> p.musicClips.firstOrNull { it.id == id } }
+        if (music != null) {
+            _montageClipboard.value = MontageLogic.MontageClipboardEntry.Free(music)
+            removeMontageMusicClip(music.id)
+            _montageSelectedMusicId.value = null
+            _lastLibraryMessage.value = "قُصّ «${music.title.take(24)}» — حُذف من مساره وهو في الحافظة"
+            return
+        }
+        val voice = _montageSelectedClipId.value?.let { id -> p.clips.firstOrNull { it.id == id } }
+        if (voice != null) {
+            _montageClipboard.value = MontageLogic.MontageClipboardEntry.Voice(voice)
+            removeMontageClip(voice.id)
+            _montageSelectedClipId.value = null
+            _lastLibraryMessage.value = "قُصّ «${voice.title.take(24)}» — أُغلق مكانه وهو في الحافظة"
+        } else _lastLibraryMessage.value = "حدّد مقطعًا أولًا (نقرًا عليه)"
+    }
+
+    /** لصق الحافظة: تعليقًا بعد المحدد أو في النهاية، ومسارًا عند الرأس على مساره. */
+    fun montagePasteClipboard() {
+        val entry = _montageClipboard.value
+        if (entry == null) {
+            _lastLibraryMessage.value = "الحافظة فارغة — انسخ أو اقص مقطعًا أولًا"
+            return
+        }
+        val p = _montageProject.value
+        when (entry) {
+            is MontageLogic.MontageClipboardEntry.Voice -> {
+                val copy = MontageLogic.pastedVoiceCopy(entry.clip)
+                val afterId = _montageSelectedClipId.value
+                applyMontage(p.copy(clips = MontageLogic.pasteVoiceAfter(p.clips, copy, afterId)))
+                _montageSelectedClipId.value = copy.id
+                _lastLibraryMessage.value = "لُصق «${copy.title.take(24)}» — لصق جديد يعيد نسخة جديدة"
+            }
+            is MontageLogic.MontageClipboardEntry.Free -> {
+                val copy = MontageLogic.pastedTrackCopy(entry.clip, _montagePlayheadMs.value)
+                applyMontage(p.copy(musicClips = MontageLogic.pasteTrackAt(p.musicClips, copy)))
+                _montageSelectedMusicId.value = copy.id
+                _lastLibraryMessage.value =
+                    "لُصق «${copy.title.take(24)}» على مسار ${trackNameOf(copy)} عند ${montageClock(copy.startMs)}"
+            }
+        }
+    }
+
+    /** اسم مسار مقطع حر للرسائل — «التعليق» احتياطًا للمجهول. */
+    private fun trackNameOf(m: MontageMusicClip): String =
+        MontageLogic.trackById(MontageLogic.effectiveTracks(_montageProject.value), MontageLogic.effectiveTrackId(m)).name
+
+    /** تكرار المحدد ×عدد — حوار العدد في الواجهة، والحد [MontageLogic.DUPLICATE_MAX]. */
+    fun duplicateMontageSelected(times: Int) {
+        val target = focusedMontageTarget() ?: run {
+            _lastLibraryMessage.value = "حدّد مقطعًا أولًا (نقرًا عليه)"
+            return
+        }
+        val n = times.coerceIn(0, MontageLogic.DUPLICATE_MAX)
+        if (n == 0) return
+        val p = _montageProject.value
+        if (target.first) {
+            val src = p.musicClips.firstOrNull { it.id == target.second } ?: return
+            val copies = MontageLogic.duplicateTrackClip(src, n)
+            applyMontage(p.copy(musicClips = (p.musicClips + copies).take(MontageLogic.MAX_TRACK_CLIPS)))
+            _lastLibraryMessage.value = "تكرر «${src.title.take(24)}» ×$n متلاصقًا على مساره — ${montageClock(src.startMs)} حتى ${montageClock(src.startMs + n * MontageLogic.musicDurationMs(src))}"
+        } else {
+            val clips = MontageLogic.duplicateVoiceAfter(p.clips, target.second, n)
+            if (clips == p.clips) return
+            applyMontage(p.copy(clips = clips))
+            _lastLibraryMessage.value = "تكرر المقطع ×$n خلف الأصل — المدة زادت ${montageClock(n * MontageLogic.clipDurationMs(p.clips.first { it.id == target.second }))}"
+        }
+    }
+
+    /** دمج المحدد مع التالي: على التعليق بالفاصل/الكروس فيد الحاليين، وعلى المسار لصقًا متلاصقًا. */
+    fun mergeMontageSelectedWithNext() {
+        val target = focusedMontageTarget() ?: run {
+            _lastLibraryMessage.value = "حدّد مقطعًا أولًا (نقرًا عليه)"
+            return
+        }
+        val p = _montageProject.value
+        if (target.first) {
+            val pair = MontageLogic.mergeableTrackPair(p.musicClips, target.second)
+            if (pair == null) {
+                _lastLibraryMessage.value = "الدمج يحتاج تالٍ على نفس المسار — اختر مقطعًا ليس أخير مساره"
+                return
+            }
+            val (a, b) = pair
+            bounceTransform("merge") {
+                val r = ClipTransforms.bounceMerge(
+                    MontageRender.musicAsSourceClip(a),
+                    MontageRender.musicAsSourceClip(b),
+                    gapMs = 0L, crossfadeMs = 0L,
+                    cacheDir = montageBounceDir
+                )
+                val merged = MontageMusicClip(
+                    id = MontageLogic.newMusicClipId(),
+                    path = r.file.absolutePath,
+                    title = ClipTransforms.mergedTitle(a.title, b.title),
+                    durationMs = r.durationMs,
+                    startMs = a.startMs,
+                    startInFileMs = 0L,
+                    endInFileMs = r.durationMs,
+                    volumePercent = MontageLogic.VOLUME_DEFAULT,
+                    fadeInMs = 0L, fadeOutMs = 0L,
+                    trackId = a.trackId
+                )
+                applyMontage(
+                    _montageProject.value.copy(
+                        musicClips = _montageProject.value.musicClips.filterNot { it.id == a.id || it.id == b.id } + merged
+                    ),
+                    record = true
+                )
+                _montageSelectedMusicId.value = merged.id
+                "دُمج «${a.title.take(20)}» مع «${b.title.take(20)}» متلاصقين عند ${montageClock(a.startMs)} — مدة الدمج ${montageClock(r.durationMs)}"
+            }
+        } else {
+            val pair = MontageLogic.mergeableVoicePair(p.clips, target.second)
+            if (pair == null) {
+                _lastLibraryMessage.value = "الدمج يحتاج مقطعًا تالٍ — المحدد الأخير لا يُدمج"
+                return
+            }
+            val (a, b) = pair
+            bounceTransform("merge") {
+                val r = ClipTransforms.bounceMerge(a, b, p.gapMs, p.crossfadeMs, montageBounceDir)
+                val merged = MontageClip(
+                    id = MontageLogic.newClipId(),
+                    path = r.file.absolutePath,
+                    title = ClipTransforms.mergedTitle(a.title, b.title),
+                    durationMs = r.durationMs,
+                    startMs = 0L, endMs = r.durationMs,
+                    // المزج مخبوز في الملف المدموج (المستويات والتلاشين الداخلية)
+                    // فالمقطع الناتج محايد — تلاشي الخارجية عادت عبر المُصيِّر نفسه
+                    volumePercent = MontageLogic.VOLUME_DEFAULT,
+                    fadeInMs = 0L, fadeOutMs = 0L
+                )
+                applyMontage(
+                    _montageProject.value.copy(
+                        // المدموج يحل مكان المتتاليتين نفسه — ما قبلهما وما بعدهما بلا مساس
+                        clips = p.clips.let { all ->
+                            val i = all.indexOfFirst { it.id == a.id }
+                            if (i < 0) all
+                            else all.subList(0, i) + merged + all.subList((i + 2).coerceAtMost(all.size), all.size)
+                        }
+                    ),
+                    record = true
+                )
+                _montageSelectedClipId.value = merged.id
+                "دُمج «${a.title.take(20)}» مع «${b.title.take(20)}» في مقطع واحد مدته ${montageClock(r.durationMs)}"
+            }
+        }
+    }
+
+    /** عكس الموجة: المقطع يُشغَّل من نهايته إلى بدايته — ارتداد مخزَّن. */
+    fun reverseMontageSelected() {
+        transformSelectedClip("العكس") { src ->
+            ClipTransforms.bounce(src, "reverse", "-", ClipTransforms::reversePcm, montageBounceDir)
+        }
+    }
+
+    /** تعديل السرعة دون تغيير النبرة — 200٪ ضعف السرعة ونصف المدة. */
+    fun speedMontageSelected(percent: Int) {
+        val sp = ClipTransforms.clampSpeedPercent(percent)
+        transformSelectedClip("السرعة $sp٪") { src ->
+            ClipTransforms.bounce(src, "speed", "$sp", { pcm -> ClipTransforms.changeSpeed(pcm, sp) }, montageBounceDir)
+        }
+    }
+
+    /** تغيير النبرة بأنصاف النغمات دون تغيير الطول — ±12 حدًّا موسيقيًا. */
+    fun pitchMontageSelected(semitones: Int) {
+        val st = ClipTransforms.clampPitchSemitones(semitones)
+        transformSelectedClip("النبرة ${if (st > 0) "+" else ""}$st نغمة") { src ->
+            ClipTransforms.bounce(src, "pitch", "$st", { pcm -> ClipTransforms.pitchShift(pcm, st) }, montageBounceDir)
+        }
+    }
+
+    /**
+     * بوابة التحويلات على المحدد: يفكّ الهدف ويطبّق الارتداد في خيط عمل
+     * ثم يوجّه المقطع إلى ملفه الجديد بنافذة كاملة — المدة تُحل من الملف
+     * الجديد نفسه، والتراجع يعيد المقطع إلى ملفه الأصلي كما هو.
+     */
+    private fun transformSelectedClip(labelAr: String, op: (MontageClip) -> ClipTransforms.Bounced) {
+        val target = focusedMontageTarget() ?: run {
+            _lastLibraryMessage.value = "حدّد مقطعًا أولًا (نقرًا عليه)"
+            return
+        }
+        val p = _montageProject.value
+        if (target.first) {
+            val music = p.musicClips.firstOrNull { it.id == target.second } ?: return
+            if (!File(music.path).isFile) {
+                _lastLibraryMessage.value = "ملف المقطع مفقود فلا تحويل ممكن"
+                return
+            }
+            bounceTransform(labelAr) {
+                val r = op(MontageRender.musicAsSourceClip(music))
+                applyMontage(
+                    _montageProject.value.copy(
+                        musicClips = _montageProject.value.musicClips.map {
+                            if (it.id == music.id) it.copy(
+                                path = r.file.absolutePath,
+                                durationMs = r.durationMs,
+                                startInFileMs = 0L, endInFileMs = r.durationMs
+                            ) else it
+                        }
+                    ),
+                    record = true
+                )
+                "$labelAr أُطبّق على «${music.title.take(24)}» — ارتداد ${montageClock(r.durationMs)} والملف الأصلي سليم"
+            }
+        } else {
+            val voice = p.clips.firstOrNull { it.id == target.second } ?: return
+            if (!File(voice.path).isFile) {
+                _lastLibraryMessage.value = "ملف المقطع مفقود فلا تحويل ممكن"
+                return
+            }
+            bounceTransform(labelAr) {
+                val r = op(voice)
+                applyMontage(
+                    _montageProject.value.copy(
+                        clips = _montageProject.value.clips.map {
+                            if (it.id == voice.id) it.copy(
+                                path = r.file.absolutePath,
+                                durationMs = r.durationMs,
+                                startMs = 0L, endMs = r.durationMs
+                            ) else it
+                        }
+                    ),
+                    record = true
+                )
+                "$labelAr أُطبّق على «${voice.title.take(24)}» — ارتداد ${montageClock(r.durationMs)} والملف الأصلي سليم"
+            }
+        }
+    }
+
+    /**
+     * حارس الارتداد: علم انشغال واحد فلا تحويلان يتسابقان، والفشل يُترجَم —
+     * تجاوز الحد وملف مفقود ونافذة فارغة لكلٍّ رسالة عربية واضحة.
+     */
+    private fun bounceTransform(labelAr: String, work: () -> String) {
+        if (_montageTransformBusy.value) {
+            _lastLibraryMessage.value = "تحويل آخر قيد التنفيذ — انتظر انتهاءه"
+            return
+        }
+        _montageTransformBusy.value = true
+        runScope.launch(Dispatchers.IO) {
+            try {
+                val msg = work()
+                _lastLibraryMessage.value = msg
+            } catch (t: ClipTransforms.TransformTooLong) {
+                _lastLibraryMessage.value = ClipTransforms.tooLongMessage(t.durationMs)
+            } catch (t: Exception) {
+                _lastLibraryMessage.value = "فشل $labelAr: ${t.message ?: t.javaClass.simpleName}"
+            } finally {
+                _montageTransformBusy.value = false
+            }
+        }
     }
 
     // ================= v0.36.0: مسطرة العمليات وأدوات المونتاج والمسارات المتعددة =================
@@ -2405,6 +2717,12 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
             com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.DeleteRegion -> deleteMontageRegion()
             com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.ToggleSnap -> toggleMontageSnap()
             com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.ClearSelection -> clearMontageSelection()
+            // v0.38.0: الحافظة والتكرار والدمج
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.CutSelected -> montageCutSelected()
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.CopySelected -> montageCopySelected()
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.PasteClipboard -> montagePasteClipboard()
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.DuplicateSelected -> duplicateMontageSelected(1)
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.MergeWithNext -> mergeMontageSelectedWithNext()
         }
     }
     // ================= النسخ الاحتياطي JSON =================

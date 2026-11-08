@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.sp
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.audio.MontageExportFormat
 import com.saidjte.schoolradio.desktop.audio.MontageRender
+import com.saidjte.schoolradio.desktop.audio.ClipTransforms
 import com.saidjte.schoolradio.desktop.data.MontageClip
 import com.saidjte.schoolradio.desktop.data.MontageEnvelope
 import com.saidjte.schoolradio.desktop.data.MontageLogic
@@ -109,6 +110,9 @@ fun MontagePage(vm: AppViewModel) {
     val snapEnabled by vm.montageSnapEnabled.collectAsState()
     val exportFormat by vm.montageExportFormat.collectAsState()
     val exportBitrate by vm.montageExportBitrate.collectAsState()
+    // v0.38.0: الحافظة وحالة تحويلات الارتداد
+    val clipboard by vm.montageClipboard.collectAsState()
+    val transformBusy by vm.montageTransformBusy.collectAsState()
 
     var showPicker by remember { mutableStateOf(false) }
     var editTarget by remember { mutableStateOf<MontageClip?>(null) }
@@ -119,7 +123,11 @@ fun MontagePage(vm: AppViewModel) {
     // أهداف إعادة التسمية بالنقر المزدوج (v0.37.0) — تعليقًا كان أو مقطع مسار حر
     var renameVoiceTarget by remember { mutableStateOf<MontageClip?>(null) }
     var renameMusicTarget by remember { mutableStateOf<MontageMusicClip?>(null) }
-    val rendering = progress != null
+    // v0.38.0: حوارات أدوات المقطع الحديثة
+    var showSpeedDialog by remember { mutableStateOf(false) }
+    var showPitchDialog by remember { mutableStateOf(false) }
+    var showDuplicateDialog by remember { mutableStateOf(false) }
+    val rendering = progress != null || transformBusy
     val totalMs = remember(project) { MontageLogic.totalDurationFull(project) }
     // تكبير الخط الزمني: بكسل لكل ثانية — 60 الافتراضي، والحدود تمنع ضياع الاتجاه
     var pxPerSec by remember { mutableFloatStateOf(60f) }
@@ -201,7 +209,7 @@ fun MontagePage(vm: AppViewModel) {
             )
         }
         Text(
-            "مسطرة العمليات فوق الخط الزمني: اسحبها لتحديد منطقة زمنية تُحذف من كل المسارات بنقرة، وانقرها لتضع الرأس — عدة خطوط عمل تحت مسار التعليق تسحب مقاطعها أفقياً وبين الخطوط، وأداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر، والنقر المزدوج على أي مقطع يفتح تسميته، والالتقاط يزمّر العلامات والحواف وشبكة نصف الثانية.",
+            "مسطرة العمليات فوق الخط الزمني: اسحبها لتحديد منطقة زمنية تُحذف من كل المسارات بنقرة، وانقرها لتضع الرأس — عدة خطوط عمل تحت مسار التعليق تسحب مقاطعها أفقياً وبين الخطوط، وأداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر، والنقر المزدوج على أي مقطع يفتح تسميته، والالتقاط يزمّر العلامات والحواف وشبكة نصف الثانية. أدوات المقطع الحديثة: قص/نسخ/لصق بحافظة المونتاج، تكرار ×N، دمج مع التالي، عكس الموجة، وتعديل السرعة دون تغيير النبرة وتغيير النبرة دون تغيير الطول — كل التحويلات مرتدات غير إتلافية والتراجع يعيد الأصل.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -311,6 +319,72 @@ fun MontagePage(vm: AppViewModel) {
                     if (f != null) vm.importMontageProject(f)
                 }
             )
+        }
+
+        // أدوات المقطع الحديثة (v0.38.0): الحافظة والتكرار والدمج والعكس والسرعة والنبرة
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+        ) {
+            Text(
+                "أدوات المقطع:",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+            SecondaryAction(
+                text = "قص (X)",
+                enabled = !rendering && (selectedId != null || selectedMusicId != null),
+                onClick = { vm.montageCutSelected() }
+            )
+            SecondaryAction(
+                text = "نسخ (C)",
+                enabled = !rendering && (selectedId != null || selectedMusicId != null),
+                onClick = { vm.montageCopySelected() }
+            )
+            SecondaryAction(
+                text = "لصق (V)",
+                enabled = !rendering && clipboard != null,
+                onClick = { vm.montagePasteClipboard() }
+            )
+            SecondaryAction(
+                text = "تكرار… (D)",
+                enabled = !rendering && (selectedId != null || selectedMusicId != null),
+                onClick = { showDuplicateDialog = true }
+            )
+            SecondaryAction(
+                text = "دمج مع التالي (J)",
+                enabled = !rendering && (selectedId != null || selectedMusicId != null),
+                onClick = { vm.mergeMontageSelectedWithNext() }
+            )
+            SecondaryAction(
+                text = "عكس الموجة",
+                enabled = !rendering && (selectedId != null || selectedMusicId != null),
+                onClick = { vm.reverseMontageSelected() }
+            )
+            SecondaryAction(
+                text = "السرعة…",
+                enabled = !rendering && (selectedId != null || selectedMusicId != null),
+                onClick = { showSpeedDialog = true }
+            )
+            SecondaryAction(
+                text = "النبرة…",
+                enabled = !rendering && (selectedId != null || selectedMusicId != null),
+                onClick = { showPitchDialog = true }
+            )
+            if (clipboard != null) {
+                val label = when (val c = clipboard) {
+                    is MontageLogic.MontageClipboardEntry.Voice -> "الحافظة: «${c.clip.title.take(18)}» (تعليق)"
+                    is MontageLogic.MontageClipboardEntry.Free -> "الحافظة: «${c.clip.title.take(18)}» (مسار)"
+                    null -> ""
+                }
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
 
         if (project.clips.isEmpty() && project.musicClips.isEmpty()) {
@@ -836,6 +910,35 @@ fun MontagePage(vm: AppViewModel) {
                 }
             )
         } else templateConfirm = null
+    }
+
+    // v0.38.0: حوارات أدوات المقطع — السرعة والنبرة والتكرار
+    if (showSpeedDialog) {
+        MontageSpeedDialog(
+            onApply = { pct ->
+                showSpeedDialog = false
+                vm.speedMontageSelected(pct)
+            },
+            onDismiss = { showSpeedDialog = false }
+        )
+    }
+    if (showPitchDialog) {
+        MontagePitchDialog(
+            onApply = { st ->
+                showPitchDialog = false
+                vm.pitchMontageSelected(st)
+            },
+            onDismiss = { showPitchDialog = false }
+        )
+    }
+    if (showDuplicateDialog) {
+        MontageDuplicateDialog(
+            onApply = { n ->
+                showDuplicateDialog = false
+                vm.duplicateMontageSelected(n)
+            },
+            onDismiss = { showDuplicateDialog = false }
+        )
     }
 }
 
@@ -1987,6 +2090,149 @@ private fun MontageRenameDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("إلغاء") }
         }
+    )
+}
+
+/**
+ * حوار تعديل السرعة دون تغيير النبرة (v0.38.0): أنماط جاهزة ومضاعف ±5 —
+ * 200٪ ضعف السرعة ونصف المدة، و50٪ نصف السرعة وضعف المدة، والنبرة ثابتة
+ * دائمًا (WSOLA). ينطبق على المحدد: تعليقًا كان أو مقطع مسار.
+ */
+@Composable
+private fun MontageSpeedDialog(
+    onApply: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var pct by remember { mutableStateOf(100) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تعديل السرعة — دون تغيير النبرة") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "النبرة تبقى كما هي مهما تغيرت السرعة (شد WSOLA خالص) — 200٪ نصف مدة، و50٪ ضعف المدة، والمدة الجديدة تظهر بعد التطبيق.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    SecondaryAction("− 5", onClick = { pct = (pct - 5).coerceAtLeast(ClipTransforms.SPEED_MIN_PERCENT) })
+                    Text(
+                        "$pct٪",
+                        style = MaterialTheme.typography.headlineSmall.numeric(),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.width(110.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    SecondaryAction("+ 5", onClick = { pct = (pct + 5).coerceAtMost(ClipTransforms.SPEED_MAX_PERCENT) })
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ClipTransforms.SPEED_PRESETS.forEach { p ->
+                        SecondaryAction(
+                            text = "$p٪",
+                            onClick = { pct = p }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onApply(pct) }) { Text("تطبيق") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
+}
+
+/**
+ * حوار تغيير النبرة بأنصاف النغمات (v0.38.0): ±1 نغمة دقة و±12 حدًّا،
+ * والطول لا يتغير — إعادة تشكيل ثم شد عائد. +12 نغمة = ثُمانية أعلى.
+ */
+@Composable
+private fun MontagePitchDialog(
+    onApply: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var st by remember { mutableStateOf(0) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تغيير النبرة — دون تغيير الطول") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "أنصاف نغمات موسيقية: +12 نغمة أعلى بثُمانية و−12 أخفض بثُمانية، ومدة المقطع كما هي. يُطبَّق على المحدد.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    SecondaryAction("− 12", onClick = { st = (st - 12).coerceAtLeast(ClipTransforms.PITCH_MIN_SEMITONES) })
+                    SecondaryAction("− 1", onClick = { st = (st - 1).coerceAtLeast(ClipTransforms.PITCH_MIN_SEMITONES) })
+                    Text(
+                        "${if (st > 0) "+" else ""}$st",
+                        style = MaterialTheme.typography.headlineSmall.numeric(),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.width(90.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    SecondaryAction("+ 1", onClick = { st = (st + 1).coerceAtMost(ClipTransforms.PITCH_MAX_SEMITONES) })
+                    SecondaryAction("+ 12", onClick = { st = (st + 12).coerceAtMost(ClipTransforms.PITCH_MAX_SEMITONES) })
+                }
+                Text(
+                    when {
+                        st == 0 -> "بلا تغيير — 0 نغمة"
+                        st > 0 -> "أعلى بـ$st نغمة (${("%.2f").format(ClipTransforms.pitchFactor(st))}×)"
+                        else -> "أخفض بـ${-st} نغمة (${("%.2f").format(ClipTransforms.pitchFactor(st))}×)"
+                    },
+                    style = MaterialTheme.typography.labelMedium.numeric(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onApply(st) }) { Text("تطبيق") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
+}
+
+/** حوار تكرار المقطع ×عدد (v0.38.0) — 1..20 والمتلاصق خلف الأصل. */
+@Composable
+private fun MontageDuplicateDialog(
+    onApply: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var n by remember { mutableStateOf(1) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تكرار المقطع") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "النسخ متلاصقة خلف الأصل بنفس القصّ والمستوى والتلاشين — على التعليق تتوالى في الترتيب وعلى المسارات تتوضع تباعًا.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    SecondaryAction("− 1", onClick = { n = (n - 1).coerceAtLeast(1) })
+                    Text(
+                        "×$n",
+                        style = MaterialTheme.typography.headlineSmall.numeric(),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.width(90.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    SecondaryAction("+ 1", onClick = { n = (n + 1).coerceAtMost(ClipTransforms.DUPLICATE_MAX) })
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onApply(n) }) { Text("تكرار") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
     )
 }
 

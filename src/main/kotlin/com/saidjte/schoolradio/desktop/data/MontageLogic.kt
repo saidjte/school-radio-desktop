@@ -34,6 +34,13 @@ import kotlin.math.sin
  * تعيش بعقد نفسه فلا يصمت أي خط عمل بمفتاح واحد (الأعلام القديمة من
  * مشاريع v0.36.0 تُهاجر صامتة إلى false في المسارات الفعّالة)، وتصدير
  * المونتاج MP3 بجودة قابلة للاختيار إلى جانب WAV بلا فقد.
+ *
+ * v0.38.0 «أدوات الحفرة الاحترافية — الحفرة الحديثة»: حافظة قص/نسخ/لصق
+ * (Ctrl+X/C/V) تعمل بين مسار التعليق والمسارات الحرة، وتكرار المقاطع ×N،
+ * ودمج متتاليتين في مقطع واحد مرتَدًا عبر المُصيِّر نفسه، وعكس الموجة،
+ * وتعديل السرعة دون تغيير النبرة، وتغيير النبرة دون تغيير الطول — كل
+ * التحويلات الصوتية في ClipTransforms.kt (WSOLA خالص على JVM) وهنا
+ * رياضيات الحافظة والإدراج والتكرار النقية القابلة للاختبار.
  */
 
 /** مقطع داخل مشروع المونتاج. */
@@ -768,6 +775,106 @@ object MontageLogic {
 
     /** معرّف مقطع جديد فريد داخل المشروع. */
     fun newClipId(): String = "c${System.nanoTime()}"
+
+    // ==== v0.38.0: الحافظة والتكرار والدمج — رياضيات نقية ====
+
+    /** حد التقليم قبل الدمج: متتاليتان أقصر من هذا لا تستحقان الدمج. */
+    const val MERGE_MIN_MS = 50L
+
+    /** سقف تكرار المقطع الواحد بنقرة — الحافظة ليست مولّد سبام. */
+    const val DUPLICATE_MAX = 20
+
+    /**
+     * خانة الحافظة: مقطع تعليق أو مقطع مسار حر — القص والنسخ يملآنانها
+     * واللصق يقرؤها بمعرّفات جديدة في كل مرة فاللصق المتكرر يضيف نسخًا.
+     */
+    sealed interface MontageClipboardEntry {
+        /** مقطع تعليق مُنسوخ — يُلصق بعد المحدد أو في نهاية الترتيب. */
+        data class Voice(val clip: MontageClip) : MontageClipboardEntry
+
+        /** مقطع مسار حر مُنسوخ — يُلصق عند الرأس على مساره. */
+        data class Free(val clip: MontageMusicClip) : MontageClipboardEntry
+    }
+
+    /** نسخة لصق بمعرّف جديد — الأصل يبقى كما هو تمامًا. */
+    fun pastedVoiceCopy(c: MontageClip): MontageClip = c.copy(id = newClipId())
+
+    /** نسخة لصق لمقطع مسار بموضع جديد ومعرّف جديد. */
+    fun pastedTrackCopy(m: MontageMusicClip, atMs: Long): MontageMusicClip =
+        m.copy(id = newMusicClipId(), startMs = atMs.coerceAtLeast(0L))
+
+    /**
+     * لصق مقطع تعليق بعد مقطع محدد: منتصف الترتيب يدسّ خلفه مباشرة،
+     * وبلا محدد يُضاف في النهاية — محبوسًا بسقف [MAX_CLIPS].
+     */
+    fun pasteVoiceAfter(clips: List<MontageClip>, copy: MontageClip, afterId: String?): List<MontageClip> {
+        val i = if (afterId == null) -1 else clips.indexOfFirst { it.id == afterId }
+        val out = if (i < 0) clips + copy
+        else ArrayList(clips).apply { add(i + 1, copy) }
+        return out.take(MAX_CLIPS)
+    }
+
+    /** لصق مقطع مسار عند موضع زمني — محبوسًا بسقف [MAX_TRACK_CLIPS]. */
+    fun pasteTrackAt(clips: List<MontageMusicClip>, copy: MontageMusicClip): List<MontageMusicClip> =
+        (clips + copy).take(MAX_TRACK_CLIPS)
+
+    /**
+     * تكرار مقطع تعليق ×عدد: النسخ تُدرَس خلف الأصل بترتيبها فالخط الزمني
+     * المتسلسل يشغلها تباعًا — 0 يعيد القائمة كما هي، وسقف [MAX_CLIPS] يحمي.
+     */
+    fun duplicateVoiceAfter(clips: List<MontageClip>, clipId: String, times: Int): List<MontageClip> {
+        val i = clips.indexOfFirst { it.id == clipId }
+        if (i < 0 || times <= 0) return clips
+        val copies = (1..times.coerceAtMost(DUPLICATE_MAX)).map {
+            clips[i].copy(id = newClipId())
+        }
+        val out = ArrayList<MontageClip>(clips.size + copies.size)
+        out.addAll(clips)
+        out.addAll(i + 1, copies)
+        return out.take(MAX_CLIPS)
+    }
+
+    /**
+     * تكرار مقطع مسار ×عدد على مساره: كل نسخة خلف سابقتها متلاصقة —
+     * «تكرار المقاطع» على الخطوط الحرة بمواضع مطلقة محسوبة.
+     */
+    fun duplicateTrackClip(source: MontageMusicClip, times: Int): List<MontageMusicClip> {
+        if (times <= 0) return emptyList()
+        val dur = musicDurationMs(source)
+        return (1..times.coerceAtMost(DUPLICATE_MAX)).map { k ->
+            source.copy(id = newMusicClipId(), startMs = source.startMs + k * dur)
+        }
+    }
+
+    /**
+     * هل يصح دمج متتاليتين على التعليق؟ ليست الأخيرة (لا يوجد بعدها تالٍ)،
+     * وكلتاهما حية النافذة.
+     */
+    fun mergeableVoicePair(clips: List<MontageClip>, clipId: String): Pair<MontageClip, MontageClip>? {
+        val i = clips.indexOfFirst { it.id == clipId }
+        if (i < 0 || i >= clips.size - 1) return null
+        val a = clips[i]
+        val b = clips[i + 1]
+        if (clipDurationMs(a) < MERGE_MIN_MS || clipDurationMs(b) < MERGE_MIN_MS) return null
+        return a to b
+    }
+
+    /**
+     * هل يصح دمج مقطعي مسار؟ متتاليان على نفس المسار — والدمج يلصقهما
+     * متلاصقين عند بداية الأول حتى لو كانت بينهما فجوة على الخط.
+     */
+    fun mergeableTrackPair(clips: List<MontageMusicClip>, clipId: String): Pair<MontageMusicClip, MontageMusicClip>? {
+        val sorted = clipsOfTrack(
+            MontageProject(musicClips = clips),
+            effectiveTrackId(clips.firstOrNull { it.id == clipId } ?: return null)
+        )
+        val i = sorted.indexOfFirst { it.id == clipId }
+        if (i < 0 || i >= sorted.size - 1) return null
+        val a = sorted[i]
+        val b = sorted[i + 1]
+        if (musicDurationMs(a) < MERGE_MIN_MS || musicDurationMs(b) < MERGE_MIN_MS) return null
+        return a to b
+    }
 }
 
 /**
