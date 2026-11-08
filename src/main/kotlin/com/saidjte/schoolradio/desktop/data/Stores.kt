@@ -79,6 +79,21 @@ class ScriptStore(private val file: File) {
         return true
     }
 
+    /**
+     * استعادة فقرات محفوظة كما كانت (تراجع/إعادة عام v0.39.0): اللقطة المعادة
+     * هي بنية الفقرات نفسها بمعرفاتها، فيصير السكريبت نصًّا كما كان قبل التغيير
+     * تمامًا. لقطة فارغة تعيد كون السكريبت فارغًا، والمعرّف التراكمي لا يرجع
+     * للخلف أبدًا فلا تصادم معرّفات بعد الاستعادة.
+     */
+    fun restoreSections(sections: List<ScriptSection>) {
+        val safe = sections
+            .filter { it.id > 0L }
+            .map { it.copy(title = it.title ?: "", body = it.body ?: "") }
+        nextId = maxOf(nextId, (safe.maxOfOrNull { it.id } ?: 0L) + 1L)
+        doc = doc.copy(sections = safe)
+        persist()
+    }
+
     private fun persist() {
         Json.save(file, doc)
     }

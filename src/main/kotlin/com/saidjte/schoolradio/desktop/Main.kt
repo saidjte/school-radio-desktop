@@ -38,8 +38,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
@@ -183,6 +185,28 @@ fun main(args: Array<String>) {
                 }
             }
         }
+        // سحب وإفلات للأتمتة (v0.39.0): ملف WAV حقيقي يُمرّر عبر مسار الإفلات
+        // نفسه فتظهر رسالة الاستيراد والمقطع في المكتبة — بلا فأرة نظام
+        if (args.contains(com.saidjte.schoolradio.desktop.data.DropLogic.AUTOMATION_FLAG)) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(2500)
+                val dir = java.io.File("automation").apply { mkdirs() }
+                val wav = java.io.File(dir, "dropped-demo.wav")
+                if (!wav.isFile || wav.length() == 0L) {
+                    val w = com.saidjte.schoolradio.desktop.audio.WavFileWriter(wav, 8000, 1)
+                    val sec = ByteArray(16000)
+                    var j = 0
+                    while (j < sec.size) {
+                        val v = (Math.sin(2.0 * Math.PI * 440.0 * (j / 2) / 8000.0) * 12000).toInt()
+                        sec[j] = (v and 0xFF).toByte()
+                        sec[j + 1] = ((v shr 8) and 0xFF).toByte()
+                        j += 2
+                    }
+                    w.use { it.write(sec) }
+                }
+                vm.handleDroppedFiles(listOf(wav.absoluteFile))
+            }
+        }
         // أيقونة النافذة وشريط المهام من موارد الجرة (v0.22.0 «طوّر GUI التطبيق»)
         val windowIcon = remember {
             Thread.currentThread().contextClassLoader
@@ -203,9 +227,26 @@ fun main(args: Array<String>) {
         ) {
             // حد أدنى لحجم النافذة يحفظ تخطيط الاستوديو من الانهيار
             LaunchedEffect(Unit) { window.minimumSize = java.awt.Dimension(1024, 640) }
+            // سحب وإفلات ملفات نظام التشغيل (v0.39.0): هدف إفلات AWT خالص على
+            // النافذة كلها — MP3/WAV/OGG/FLAC تُستقبل في أي صفحة وتُوجَّه بحسبها
+            LaunchedEffect(Unit) {
+                com.saidjte.schoolradio.desktop.ui.DropSupport.install(
+                    window,
+                    onHover = { vm.dropHover.value = it },
+                    onFiles = { files -> vm.handleDroppedFiles(files) }
+                )
+            }
             AppTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     AppRoot(startTab = startTab, vm = vm)
+                    // دليل الاختصارات بF1 (v0.39.0): حالة في النموذج فتعمل من أي
+                    // نافذة مركّزة وتُغلق بنفس المفتاح أو زر الإغلاق
+                    val showSc by vm.showShortcutsDialog.collectAsState()
+                    if (showSc) {
+                        com.saidjte.schoolradio.desktop.ui.ShortcutsDialog(
+                            onDismiss = { vm.showShortcutsDialog.value = false }
+                        )
+                    }
                 }
             }
         }
@@ -226,10 +267,11 @@ fun main(args: Array<String>) {
         if (readingOpen) {
             ReadingWindow(vm = vm, onClose = { vm.readingDisplayOpen.value = false })
         }
-        // خروج نظيف: الجلسة الأخيرة تُحفظ أولًا (v0.32.0) ثم صوت الجينلات يُغلق
+        // خروج نظيف: الجلسة الأخيرة تُحفظ أولًا (v0.32.0) ولقطة نسخ احتياطية
+        // وتحرير قفل التشغيل (v0.39.0)، ثم صوت الجينلات يُغلق
         androidx.compose.runtime.DisposableEffect(Unit) {
             onDispose {
-                vm.persistSessionNow()
+                vm.onCleanShutdown()
                 vm.jingles.shutdown()
             }
         }
@@ -238,9 +280,27 @@ fun main(args: Array<String>) {
 
 @Composable
 fun AppRoot(vm: AppViewModel = remember { AppViewModel() }, startTab: Tab? = null) {
-    // الانتقال إلى صفحة البداية إن حُددت من سطر الأوامر (للأتمتة) — غير ذلك تبقى «الاستوديو المدمج»
-    LaunchedEffect(startTab) { startTab?.let(vm::selectTab) }
+    // الانتقال إلى صفحة البداية إن حُددت من سطر الأوامر (للأتمتة) — غير ذلك
+    // تُستعاد آخر صفحة إن فعّل المذيع «تذكر آخر صفحة» (v0.39.0)
+    val ws0 by vm.workspace.collectAsState()
+    val restoredLast = remember { mutableStateOf(false) }
+    LaunchedEffect(startTab) {
+        if (startTab != null) {
+            vm.selectTab(startTab)
+        } else if (!restoredLast.value && ws0.rememberLastTab && ws0.lastTab != null) {
+            restoredLast.value = true
+            Tab.entries.firstOrNull { it.name == ws0.lastTab }?.let(vm::selectTab)
+        }
+    }
     val tab by vm.tab.collectAsState()
+    // مساحة العمل (v0.39.0): مقياس الخط العام يُطبق على كل الصفحات ونوافذ
+    // التطبيق — والقائمة الجانبية بعرض المذيع المفضل
+    val ws by vm.workspace.collectAsState()
+    val baseDensity = LocalDensity.current
+    val scaled = Density(
+        density = baseDensity.density * ws.fontScale.toFloat(),
+        fontScale = baseDensity.fontScale * ws.fontScale.toFloat()
+    )
     var showSettings by remember { mutableStateOf(false) }
     val micState by vm.mic.state.collectAsState()
     val recording by vm.mic.recording.collectAsState()
@@ -253,37 +313,79 @@ fun AppRoot(vm: AppViewModel = remember { AppViewModel() }, startTab: Tab? = nul
         musicPlaying = playing && !paused
     ).onAir
 
-    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-        // حوار الإعدادات والمستخدمين — يُفتح من القائمة الجانبية في كل الصفحات
-        if (showSettings) {
-            SettingsDialog(vm = vm, onDismiss = { showSettings = false })
-        }
-        // انتقال ناعم بين الصفحات يخدم السلاسة دون إبطاء التنقّل
-        Crossfade(targetState = tab, animationSpec = tween(160), label = "pages") { t ->
-            if (t == Tab.STUDIO) {
-                // الاستوديو المدمج: الجدولة + السكريبت + البث في شاشة واحدة بلا قائمة جانبية
-                StudioScreen(vm)
-            } else {
-                Row(modifier = Modifier.fillMaxSize()) {
-                    SideNav(
-                        selected = t,
-                        onSelect = vm::selectTab,
-                        onAir = onAir,
-                        vm = vm,
-                        onOpenSettings = { showSettings = true }
-                    )
-                    when (t) {
-                        Tab.STUDIO -> StudioScreen(vm)
-                        Tab.LIVE -> LivePage(vm)
-                        Tab.SCHEDULE -> ScheduleTab(vm)
-                        Tab.SCRIPT -> ScriptTab(vm)
-                        Tab.MUSIC -> MusicTab(vm)
-                        Tab.MIXER -> MixerPage(vm)
-                        Tab.RECORDINGS -> RecordingsTab(vm)
-                        Tab.MONTAGE -> MontagePage(vm)
+    CompositionLocalProvider(LocalDensity provides scaled) {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+            // حوار الإعدادات والمستخدمين — يُفتح من القائمة الجانبية في كل الصفحات
+            if (showSettings) {
+                SettingsDialog(vm = vm, onDismiss = { showSettings = false })
+            }
+            // حافة الإبراز أثناء سحب ملفات نظام التشغيل فوق النافذة (v0.39.0)
+            val dropHover by vm.dropHover.collectAsState()
+            if (dropHover) {
+                DropHoverOverlay()
+            }
+            // انتقال ناعم بين الصفحات يخدم السلاسة دون إبطاء التنقّل
+            Crossfade(targetState = tab, animationSpec = tween(160), label = "pages") { t ->
+                if (t == Tab.STUDIO) {
+                    // الاستوديو المدمج: الجدولة + السكريبت + البث في شاشة واحدة بلا قائمة جانبية
+                    StudioScreen(vm)
+                } else {
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        SideNav(
+                            selected = t,
+                            onSelect = vm::selectTab,
+                            onAir = onAir,
+                            vm = vm,
+                            widthDp = ws.sidebarWidth.dp,
+                            onOpenSettings = { showSettings = true }
+                        )
+                        when (t) {
+                            Tab.STUDIO -> StudioScreen(vm)
+                            Tab.LIVE -> LivePage(vm)
+                            Tab.SCHEDULE -> ScheduleTab(vm)
+                            Tab.SCRIPT -> ScriptTab(vm)
+                            Tab.MUSIC -> MusicTab(vm)
+                            Tab.MIXER -> MixerPage(vm)
+                            Tab.RECORDINGS -> RecordingsTab(vm)
+                            Tab.MONTAGE -> MontagePage(vm)
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * حافة الإبراز أثناء سحب ملفات من نظام التشغيل فوق النافذة (v0.39.0) —
+ * طبقة شفافة بإطار متقطع ورسالة عربية تعلم المذيع أن الإفلات هنا يعمل.
+ */
+@Composable
+private fun DropHoverOverlay() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
+            .border(
+                width = 3.dp,
+                color = MaterialTheme.colorScheme.primary,
+                shape = RoundedCornerShape(18.dp)
+            )
+            .padding(18.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 8.dp
+        ) {
+            Text(
+                "أفلِت الملفات الصوتية هنا — MP3 وWAV وOGG وFLAC",
+                modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
     }
 }
@@ -306,6 +408,7 @@ private fun SideNav(
     onSelect: (Tab) -> Unit,
     onAir: Boolean,
     vm: AppViewModel,
+    widthDp: androidx.compose.ui.unit.Dp = 232.dp,
     onOpenSettings: () -> Unit
 ) {
     val sc = LocalStudioColors.current
@@ -313,7 +416,7 @@ private fun SideNav(
     val schoolName by vm.schoolName.collectAsState()
     Column(
         modifier = Modifier
-            .width(232.dp)
+            .width(widthDp)
             .fillMaxHeight()
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(14.dp),

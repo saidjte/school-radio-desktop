@@ -60,17 +60,55 @@ sealed interface ShortcutAction {
 
     /** M: كتم/إلغاء كتم الموسيقى (نفس كتم وحدة المزج). */
     data object ToggleMute : ShortcutAction
+
+    /** Alt+1..8: التنقل بين صفحات التطبيق الثمانية بالترتيب (v0.39.0). */
+    data class SwitchTab(val index: Int) : ShortcutAction
+
+    /** F1: فتح/إغلاق دليل الاختصارات (v0.39.0). */
+    data object ShowShortcuts : ShortcutAction
+
+    /** Ctrl+Z: تراجع سياقي — القائمة في الموسيقى/الاستوديو، السكريبت في صفحته (v0.39.0). */
+    data object ContextualUndo : ShortcutAction
+
+    /** Ctrl+Y أو Ctrl+Shift+Z: إعادة سياقية بنفس التوجيه (v0.39.0). */
+    data object ContextualRedo : ShortcutAction
 }
 
 /**
- * حلّ المفتاح إلى فعل: بلا مفاتيح تعديل (Ctrl/Alt/Meta) حتى لا نسرق اختصارات
- * النظام والتطبيق. يعيد null للمفاتيح غير المربوطة.
+ * حلّ المفتاح إلى فعل: بلا مفاتيح تعديل حتى لا نسرق اختصارات
+ * النظام والتطبيق — استثناءات العُرف المحرراتي (v0.39.0):
+ * Alt+رقم 1..8 = تبديل الصفحات، F1 = دليل الاختصارات، Ctrl+Z/Y = تراجع/إعادة
+ * سياقيان. يعيد null للمفاتيح غير المربوطة.
  * المفاتيح الحرفية (N/P/M) تعمل بتخطيط لاتيني — وتخطيطات أخرى تُنتج رموز مفاتيح
  * مختلفة فتُهمَل بهدوء: سلوك قياسي لا يفسد شيء.
  */
-fun resolveShortcut(key: Key, ctrl: Boolean, alt: Boolean, meta: Boolean): ShortcutAction? {
-    if (ctrl || alt || meta) return null
+fun resolveShortcut(
+    key: Key, ctrl: Boolean, alt: Boolean, meta: Boolean, shift: Boolean = false
+): ShortcutAction? {
+    if (meta) return null
+    if (ctrl) {
+        return when {
+            key == Key.Z && shift -> ShortcutAction.ContextualRedo
+            key == Key.Z -> ShortcutAction.ContextualUndo
+            key == Key.Y -> ShortcutAction.ContextualRedo
+            else -> null
+        }
+    }
+    if (alt) {
+        return when (key) {
+            Key.One -> ShortcutAction.SwitchTab(1)
+            Key.Two -> ShortcutAction.SwitchTab(2)
+            Key.Three -> ShortcutAction.SwitchTab(3)
+            Key.Four -> ShortcutAction.SwitchTab(4)
+            Key.Five -> ShortcutAction.SwitchTab(5)
+            Key.Six -> ShortcutAction.SwitchTab(6)
+            Key.Seven -> ShortcutAction.SwitchTab(7)
+            Key.Eight -> ShortcutAction.SwitchTab(8)
+            else -> null
+        }
+    }
     return when (key) {
+        Key.F1 -> ShortcutAction.ShowShortcuts
         Key.Spacebar -> ShortcutAction.PlayPauseMusic
         Key.DirectionLeft -> ShortcutAction.SeekBack
         Key.DirectionRight -> ShortcutAction.SeekForward
@@ -127,7 +165,7 @@ fun handleGlobalShortcut(vm: AppViewModel, event: KeyEvent, guardTextEditing: Bo
     // ولا أرقام تُطلق جينلات والاستوديو بعيد، والعكس صحيح.
     if (vm.tab.value == Tab.MONTAGE) return handleMontageShortcut(vm, event)
     val action = resolveShortcut(
-        event.key, event.isCtrlPressed, event.isAltPressed, event.isMetaPressed
+        event.key, event.isCtrlPressed, event.isAltPressed, event.isMetaPressed, event.isShiftPressed
     ) ?: return false
     vm.applyShortcut(action)
     return true
@@ -262,7 +300,10 @@ fun ShortcutsDialog(onDismiss: () -> Unit) {
                 "1 – 9" to "إطلاق أو إيقاف جينل الموضع (1 هو أول موضع في الجدار)",
                 "→ / ←" to "سعي خمس ثوانٍ إلى الأمام / الخلف",
                 "N / P" to "المقطع التالي / السابق في القائمة",
-                "M" to "كتم أو إلغاء كتم الموسيقى"
+                "M" to "كتم أو إلغاء كتم الموسيقى",
+                "Alt + 1 – 8" to "التنقل بين الصفحات الثمانية بالترتيب (v0.39.0)",
+                "F1" to "فتح / إغلاق دليل الاختصارات هذا",
+                "Ctrl+Z / Ctrl+Y" to "تراجع / إعادة سياقيان: القائمة في الموسيقى والاستوديو، السكريبت في صفحته"
             )
             rows.forEach { (keys, label) ->
                 Row(

@@ -247,10 +247,123 @@ fun SettingsDialog(vm: AppViewModel, onDismiss: () -> Unit) {
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
+
+                HorizontalDivider()
+
+                // ============ مساحة العمل القابلة للتخصيص (v0.39.0) ============
+                WorkspaceSection(vm = vm)
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("إغلاق") }
         }
     )
+}
+
+/**
+ * قسم «مساحة العمل» في الإعدادات (v0.39.0 «مساحة عمل قابلة للتخصيص») —
+ * حجم الخط العام، عرض القائمة الجانبية، إظهار/إخفاء لوحات الاستوديو،
+ * وتذكّر آخر صفحة عند الإقلاع. كل تعديل يُحفظ فورًا في settings.json.
+ */
+@Composable
+private fun WorkspaceSection(vm: AppViewModel) {
+    val ws by vm.workspace.collectAsState()
+
+    Text(
+        "مساحة العمل",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Text(
+        "تخصيص بيئة العمل يُحفظ فورًا ويعود بين الجلسات — للجميع بلا صلاحيات.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    // حجم الخط العام: أربعة أحجام
+    Text(
+        "حجم الخط العام",
+        style = MaterialTheme.typography.labelLarge
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        com.saidjte.schoolradio.desktop.data.WorkspaceLogic.SCALE_OPTIONS.forEach { (label, value) ->
+            val selected = kotlin.math.abs(ws.fontScale - value) < 0.001
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surface
+                    )
+                    .clickable { vm.setFontScale(value) }
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            )
+        }
+    }
+
+    // عرض القائمة الجانبية
+    Text(
+        "عرض القائمة الجانبية: ${ws.sidebarWidth.toInt()} dp",
+        style = MaterialTheme.typography.labelLarge
+    )
+    androidx.compose.material3.Slider(
+        value = ws.sidebarWidth.toFloat(),
+        onValueChange = { vm.setSidebarWidth(it.toDouble()) },
+        valueRange = com.saidjte.schoolradio.desktop.data.WorkspaceLogic.SIDEBAR_MIN_DP.toFloat()
+            ..com.saidjte.schoolradio.desktop.data.WorkspaceLogic.SIDEBAR_MAX_DP.toFloat(),
+        steps = 11
+    )
+
+    // لوحات الاستوديو المدمج
+    Text(
+        "لوحات الاستوديو المدمج",
+        style = MaterialTheme.typography.labelLarge
+    )
+    val panels = listOf(
+        "recordings" to "لوحة التسجيلات",
+        "schedule" to "لوحة الجدولة",
+        "script" to "شاشة السكريبت",
+        "broadcast" to "حيّز البث والمزج"
+    )
+    panels.forEach { (key, label) ->
+        val visible = when (key) {
+            "recordings" -> ws.showRecordings
+            "schedule" -> ws.showSchedule
+            "script" -> ws.showScript
+            else -> ws.showBroadcast
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            androidx.compose.material3.Switch(
+                checked = visible,
+                onCheckedChange = { vm.setStudioPanel(key, it) }
+            )
+        }
+    }
+
+    // تذكّر آخر صفحة
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("تذكّر آخر صفحة عند الإقلاع", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "يفتح التطبيق على الصفحة التي كانت مفتوحة عند الإغلاق",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        androidx.compose.material3.Switch(
+            checked = ws.rememberLastTab,
+            onCheckedChange = { vm.setRememberLastTab(it) }
+        )
+    }
 }

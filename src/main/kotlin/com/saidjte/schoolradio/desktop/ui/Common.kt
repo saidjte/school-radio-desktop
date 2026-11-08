@@ -214,7 +214,9 @@ fun PrimaryAction(
             Text(
                 text,
                 style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false
             )
         }
     } else {
@@ -227,7 +229,9 @@ fun PrimaryAction(
             Text(
                 text,
                 style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false
             )
         }
     }
@@ -249,7 +253,10 @@ fun SecondaryAction(
         Text(
             text,
             style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.SemiBold,
+            // تسمية زر لا تلتف عموديًا مهما كبر الخط — سطر واحد دائمًا
+            maxLines = 1,
+            softWrap = false
         )
     }
 }

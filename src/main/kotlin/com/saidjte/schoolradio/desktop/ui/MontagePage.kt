@@ -169,6 +169,9 @@ fun MontagePage(vm: AppViewModel) {
                 "المونتاج",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
+                // لا التفاف عمودي مهما كبر الخط — العنوان سطر واحد لا ينحشر
+                maxLines = 1,
+                softWrap = false,
                 modifier = Modifier.weight(1f, fill = false)
             )
             Text(

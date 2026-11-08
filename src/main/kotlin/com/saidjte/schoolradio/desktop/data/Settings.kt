@@ -81,7 +81,9 @@ data class AppSettings(
     /** الكروس فيد بين المقاطع (v0.31.0). */
     val crossfade: CrossfadeJson? = null,
     /** مؤقت الفاصل الآلي (v0.31.0). */
-    val segmentTimer: SegmentTimerJson? = null
+    val segmentTimer: SegmentTimerJson? = null,
+    /** مساحة العمل القابلة للتخصيص: الخط والقائمة الجانبية واللوحات (v0.39.0). */
+    val workspace: WorkspaceJson? = null
 )
 
 /**
@@ -287,6 +289,18 @@ class SettingsStore(private val file: File) {
                 warnSeconds = SegmentTimerLogic.clampWarnSeconds(warnSeconds)
             )
         )
+        persist()
+    }
+
+    // ================= مساحة العمل: الخط واللوحات وآخر صفحة (v0.39.0) =================
+
+    /** مساحة العمل المحسومة بحبس كل قيمة داخل حدودها — التعقيم في WorkspaceLogic. */
+    fun workspace(validTabNames: Set<String>): WorkspaceJson =
+        WorkspaceLogic.resolve(doc.workspace, validTabNames)
+
+    /** حفظ مساحة العمل دفعة واحدة — يُستدعى عند كل تعديل من حوار الإعدادات. */
+    fun setWorkspace(w: WorkspaceJson, validTabNames: Set<String>) {
+        doc = doc.copy(workspace = WorkspaceLogic.resolve(w, validTabNames))
         persist()
     }
 

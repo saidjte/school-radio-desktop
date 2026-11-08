@@ -1776,6 +1776,89 @@ object SelfTest {
                 ) { "v38 shortcuts" }
             }
 
+            // ================= v0.39.0: بيئة العمل — تخصيص وتراجع وسحب وموثوقية =================
+            run {
+                val d39 = File(tmp, "ws39").apply { mkdirs() }
+
+                // 1) مساحة العمل: حبس القيم وتعقيم آخر صفحة
+                val st39 = com.saidjte.schoolradio.desktop.data.WorkspaceLogic.resolveState(
+                    com.saidjte.schoolradio.desktop.data.WorkspaceJson(
+                        fontScale = 99.0, sidebarWidth = 5.0, lastTab = "GHOST", rememberLastTab = true
+                    ),
+                    setOf("STUDIO", "MUSIC", "MONTAGE", "SCRIPT")
+                )
+                check(st39.fontScale == 1.5 && st39.sidebarWidth == 180.0) { "ws clamp" }
+                check(st39.rememberLastTab && st39.lastTab == null) { "ws lastTab sanitize" }
+                val def39 = com.saidjte.schoolradio.desktop.data.WorkspaceLogic.resolveState(null, emptySet())
+                check(def39.fontScale == 1.0 && def39.sidebarWidth == 232.0 && def39.showScript) { "ws defaults" }
+
+                // 2) التراجع/الإعادة العام: دفع وتراجع وإعادة وقطع فرع الإعادة
+                val h39 = com.saidjte.schoolradio.desktop.data.SnapshotHistory<String>()
+                check(!h39.canUndo && !h39.canRedo) { "history empty" }
+                h39.push("A")
+                check(h39.undo("B") == "A" && !h39.canUndo && h39.canRedo) { "undo39" }
+                check(h39.redo("A") == "B" && !h39.canRedo) { "redo39" }
+                h39.push("X")
+                check(h39.undo("Y") == "X") { "undo second" }
+                h39.push("Z")
+                check(!h39.canRedo) { "redo branch cut" }
+                check(h39.undo("W") == "Z") { "undo after branch cut" }
+
+                // 3) السحب والإفلات: القرار النقي (الصوت يمر والباقي يُعدّ للرسالة)
+                val wav39 = File(d39, "t.wav").apply { writeBytes(ByteArray(4)) }
+                val txt39 = File(d39, "t.txt").apply { writeBytes(ByteArray(4)) }
+                val dec39 = com.saidjte.schoolradio.desktop.data.DropLogic.decide(listOf(wav39, txt39))
+                check(dec39.audioFiles == listOf(wav39) && dec39.skippedUnsupported == 1) { "drop decide" }
+                check(com.saidjte.schoolradio.desktop.data.DropLogic.destinationFor("MONTAGE")
+                    == com.saidjte.schoolradio.desktop.data.DropLogic.Destination.MONTAGE) { "drop dest montage" }
+                check(com.saidjte.schoolradio.desktop.data.DropLogic.destinationFor("MUSIC")
+                    == com.saidjte.schoolradio.desktop.data.DropLogic.Destination.LIBRARY) { "drop dest library" }
+                check(com.saidjte.schoolradio.desktop.data.DropLogic.decide(emptyList()).message("المكتبة") == null) { "drop silent" }
+                check(com.saidjte.schoolradio.desktop.data.DropLogic.DEFAULT_IMPORT_CATEGORY.isNotEmpty()) { "drop category" }
+
+                // 4) النسخ الاحتياطية المتدحرجة: أول لقطة ثم تخطي الثابت ثم التدوير
+                val store39 = File(d39, "script.json").apply { writeText("""{"sections":[]}""") }
+                val rep1 = com.saidjte.schoolradio.desktop.data.AutoBackup.snapshot(d39, names = listOf("script.json"), nowMs = 1)
+                check(rep1.copied == listOf("script.json")) { "backup first snapshot" }
+                val rep2 = com.saidjte.schoolradio.desktop.data.AutoBackup.snapshot(d39, names = listOf("script.json"), nowMs = 2)
+                check(rep2.isEmpty) { "backup skips unchanged" }
+                for (i in 3..9) {
+                    store39.writeText("""{"n":$i}""")
+                    com.saidjte.schoolradio.desktop.data.AutoBackup.snapshot(d39, names = listOf("script.json"), keep = 3, nowMs = i.toLong() * 10)
+                }
+                val copies39 = com.saidjte.schoolradio.desktop.data.AutoBackup.backupsDir(d39).listFiles { f -> f.isFile } ?: arrayOf()
+                check(copies39.size == 3) { "backup rotation kept=${copies39.size}" }
+                check(com.saidjte.schoolradio.desktop.data.AutoBackup.newestBackup(
+                    com.saidjte.schoolradio.desktop.data.AutoBackup.backupsDir(d39), "script.json"
+                )?.name == "script.json.90.bak") { "backup newest" }
+
+                // 5) الاستعادة بعد انقطاع مفاجئ: عزل التالف واستعادة أحدث نسخة سليمة + قفل التشغيل
+                store39.writeText("""{"sections":[{"id":2,"tit""")
+                val rec39 = com.saidjte.schoolradio.desktop.data.Recovery.recoverCorruptStores(d39, names = listOf("script.json"), nowMs = 999)
+                check(rec39.recoveredFromBackup == listOf("script.json") && rec39.quarantined == listOf("script.json")) { "recover39" }
+                check(com.saidjte.schoolradio.desktop.data.Recovery.isParseableJson(store39)) { "recovered parses" }
+                check(store39.readText().contains("\"n\":9")) { "recovered is newest snapshot" }
+                check(com.saidjte.schoolradio.desktop.data.Recovery.corruptDir(d39).listFiles()?.size == 1) { "quarantine kept" }
+                check(!com.saidjte.schoolradio.desktop.data.Recovery.wasInterrupted(d39)) { "lock absent" }
+                com.saidjte.schoolradio.desktop.data.Recovery.acquireLock(d39, 1)
+                check(com.saidjte.schoolradio.desktop.data.Recovery.wasInterrupted(d39)) { "lock acquired" }
+                com.saidjte.schoolradio.desktop.data.Recovery.releaseLock(d39)
+                check(!com.saidjte.schoolradio.desktop.data.Recovery.wasInterrupted(d39)) { "lock released" }
+
+                // 6) اختصارات v0.39.0: F1 وAlt+أرقام وCtrl+Z/Y وحرس المفاتيح
+                fun rs39(k: Key, c: Boolean = false, a: Boolean = false) =
+                    com.saidjte.schoolradio.desktop.ui.resolveShortcut(k, c, a, false)
+                check(rs39(Key.F1) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.ShowShortcuts) { "f1" }
+                check(rs39(Key.One, a = true) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.SwitchTab(1)) { "alt1" }
+                check(rs39(Key.Eight, a = true) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.SwitchTab(8)) { "alt8" }
+                check(rs39(Key.Nine, a = true) == null) { "alt9 unused" }
+                check(rs39(Key.Z, c = true) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.ContextualUndo) { "ctrlz" }
+                check(rs39(Key.Y, c = true) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.ContextualRedo) { "ctrly" }
+                check(com.saidjte.schoolradio.desktop.ui.resolveShortcut(Key.Z, true, false, false, true)
+                    == com.saidjte.schoolradio.desktop.ui.ShortcutAction.ContextualRedo) { "ctrlshiftz" }
+                check(rs39(Key.Spacebar, a = true) == null && rs39(Key.One, c = true, a = true) == null) { "modifier guards" }
+            }
+
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
             tmp.listFiles()?.forEach { it.delete() }

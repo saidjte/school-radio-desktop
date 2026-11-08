@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -59,6 +60,9 @@ fun ScriptTab(vm: AppViewModel) {
     val script by vm.script.collectAsState()
     val selectedId by vm.selectedSectionId.collectAsState()
     val fullReading by vm.fullScriptReading.collectAsState()
+    // تراجع/إعادة السكريبت (v0.39.0) — أزرار الشريط وحارسا Ctrl+Z/Ctrl+Y
+    val scriptCanUndo by vm.scriptCanUndo.collectAsState()
+    val scriptCanRedo by vm.scriptCanRedo.collectAsState()
 
     var editorSection by remember { mutableStateOf<ScriptSection?>(null) }
     var showCreate by remember { mutableStateOf(false) }
@@ -90,15 +94,23 @@ fun ScriptTab(vm: AppViewModel) {
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                // عند حجم خط كبير تبقى كل الأزرار في متناول سحب أفقي بدل انحشارها
+                modifier = Modifier.horizontalScroll(rememberScrollState())
             ) {
                 Text(
                     "سكريبت المذيع",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
+                    // في صف يُسحب أفقيًا لا وزن للعناوين — العرض الجوهري ثم تمرّ للأزرار
+                    maxLines = 1,
+                    softWrap = false
                 )
                 PrimaryAction(text = "فقرة جديدة", onClick = { showCreate = true })
+                // تراجع/إعادة السكريبت (v0.39.0): الإضافة والتعديل والحذف والترتيب
+                // واستبدال القالب كلها ترتد — الفقرات تعود بمعرفاتها كما كانت
+                SecondaryAction(text = "تراجع", onClick = { vm.undoScript() }, enabled = scriptCanUndo)
+                SecondaryAction(text = "إعادة", onClick = { vm.redoScript() }, enabled = scriptCanRedo)
                 // قوالب السكريبت (v0.30.0): هياكل برامج جاهزة تُولّد فقراتها بضغطة
                 SecondaryAction(text = "قوالب جاهزة", onClick = { showTemplates = true })
                 // تصدير PDF (v0.30.0): وثيقة A4 عربية جاهزة للطباعة والاعتماد الإداري
@@ -231,7 +243,13 @@ fun ScriptTab(vm: AppViewModel) {
                     checked = fullReading,
                     onCheckedChange = { vm.fullScriptReading.value = it }
                 )
-                Text("قراءة السكريبت كاملًا", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "قراءة السكريبت كاملًا",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
             Column(

@@ -72,6 +72,7 @@ import com.saidjte.schoolradio.desktop.data.SessionJson
 import com.saidjte.schoolradio.desktop.data.SessionRestore
 import com.saidjte.schoolradio.desktop.data.SessionStore
 import com.saidjte.schoolradio.desktop.data.SettingsStore
+import com.saidjte.schoolradio.desktop.data.SnapshotHistory
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 import com.saidjte.schoolradio.desktop.data.User
 import com.saidjte.schoolradio.desktop.data.UsersStore
@@ -79,6 +80,8 @@ import com.saidjte.schoolradio.desktop.data.VoiceFxState
 import com.saidjte.schoolradio.desktop.data.WeeklyEvent
 import com.saidjte.schoolradio.desktop.data.WeeklyMath
 import com.saidjte.schoolradio.desktop.data.WeeklyStore
+import com.saidjte.schoolradio.desktop.data.WorkspaceJson
+import com.saidjte.schoolradio.desktop.data.WorkspaceLogic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -119,6 +122,47 @@ class AppViewModel {
 
     val mic = MicLiveEngine()
     val player = MusicPlayerEngine()
+
+    // ================= استعادة المشاريع بعد انقطاع مفاجئ (v0.39.0) =================
+    // تُنفَّذ قبل بناء أي مخزن — ترتيب تهيئة الخصائص يكفلها أولًا: فحص كل مخازن
+    // JSON، عزل التالف في corrupt/، استعادة أحدث نسخة سليمة من النسخ المتدحرجة،
+    // وكشف انقطاع الجلسة السابقة عبر قفل التشغيل (يُحذف عند الإغلاق النظيف فقط).
+    private val recoveryReport: com.saidjte.schoolradio.desktop.data.Recovery.Report =
+        com.saidjte.schoolradio.desktop.data.Recovery.recoverCorruptStores(
+            dataDir(), nowMs = System.currentTimeMillis()
+        )
+    private val lastRunInterrupted: Boolean =
+        com.saidjte.schoolradio.desktop.data.Recovery.wasInterrupted(dataDir())
+
+    init {
+        com.saidjte.schoolradio.desktop.data.Recovery.acquireLock(dataDir(), System.currentTimeMillis())
+    }
+
+    private val _recoveryNotices = MutableStateFlow<List<String>>(
+        buildList {
+            if (lastRunInterrupted)
+                add("يبدو أن التطبيق أُغلق فجأة آخر مرة — فُحصت المشاريع واستُعيدت آخر حالة سليمة")
+            addAll(recoveryReport.notices)
+        }
+    )
+
+    /** شعار الاستعادة بعد انقطاع مفاجئ — قائمة رسائل عربية تُعرض مرة واحدة. */
+    val recoveryNotices: StateFlow<List<String>> = _recoveryNotices.asStateFlow()
+
+    fun dismissRecoveryNotices() {
+        _recoveryNotices.value = emptyList()
+    }
+
+    /** إغلاق نظيف: حفظ الجلسة ثم لقطة نسخ احتياطية أخيرة ثم تحرير قفل التشغيل. */
+    fun onCleanShutdown() {
+        runCatching { persistSessionNow() }
+        runCatching {
+            com.saidjte.schoolradio.desktop.data.AutoBackup.snapshot(
+                dataDir(), nowMs = System.currentTimeMillis()
+            )
+        }
+        com.saidjte.schoolradio.desktop.data.Recovery.releaseLock(dataDir())
+    }
 
     // ================= جدار الجينغل (v0.28.0 «أضف جدار الجينغل») =================
 
@@ -211,6 +255,27 @@ class AppViewModel {
             com.saidjte.schoolradio.desktop.ui.ShortcutAction.NextTrack -> next()
             com.saidjte.schoolradio.desktop.ui.ShortcutAction.PreviousTrack -> previous()
             com.saidjte.schoolradio.desktop.ui.ShortcutAction.ToggleMute -> setMusicMuted(!musicMuted.value)
+            is com.saidjte.schoolradio.desktop.ui.ShortcutAction.SwitchTab -> {
+                val tabs = Tab.entries
+                val idx = (a.index - 1).coerceIn(0, tabs.size - 1)
+                selectTab(tabs[idx])
+            }
+            com.saidjte.schoolradio.desktop.ui.ShortcutAction.ShowShortcuts ->
+                showShortcutsDialog.value = !showShortcutsDialog.value
+            com.saidjte.schoolradio.desktop.ui.ShortcutAction.ContextualUndo -> {
+                when (_tab.value) {
+                    Tab.SCRIPT -> undoScript()
+                    Tab.MUSIC, Tab.STUDIO -> undoPlaylist()
+                    else -> { } // بقية الصفحات بلا سجل عام — المونتاج له بروتوكوله
+                }
+            }
+            com.saidjte.schoolradio.desktop.ui.ShortcutAction.ContextualRedo -> {
+                when (_tab.value) {
+                    Tab.SCRIPT -> redoScript()
+                    Tab.MUSIC, Tab.STUDIO -> redoPlaylist()
+                    else -> { }
+                }
+            }
         }
     }
 
@@ -322,6 +387,43 @@ class AppViewModel {
         settingsStore.setSchoolName(name)
         _schoolName.value = settingsStore.schoolName()
     }
+
+    // ================= مساحة عمل قابلة للتخصيص (v0.39.0) =================
+    // حجم الخط العام وعرض القائمة الجانبية ولوحات الاستوديو وتذكّر آخر صفحة —
+    // كلها في settings.json فتعود بين الجلسات، وكل قيمة محبوسة داخل حدودها.
+
+    private fun workspaceTabNames(): Set<String> = Tab.entries.map { it.name }.toSet()
+
+    private val _workspace = MutableStateFlow(
+        com.saidjte.schoolradio.desktop.data.WorkspaceLogic.resolveState(
+            settingsStore.workspace(workspaceTabNames()), workspaceTabNames()
+        )
+    )
+    val workspace: StateFlow<com.saidjte.schoolradio.desktop.data.WorkspaceState> = _workspace.asStateFlow()
+
+    /** تعديل حقل واحد من مساحة العمل: كتابة محبوسة ثم إعادة حسم الحالة. */
+    private fun patchWorkspace(patch: (WorkspaceJson) -> WorkspaceJson) {
+        settingsStore.setWorkspace(patch(settingsStore.workspace(workspaceTabNames())), workspaceTabNames())
+        _workspace.value = com.saidjte.schoolradio.desktop.data.WorkspaceLogic.resolveState(
+            settingsStore.workspace(workspaceTabNames()), workspaceTabNames()
+        )
+    }
+
+    fun setFontScale(scale: Double) = patchWorkspace { it.copy(fontScale = scale) }
+    fun setSidebarWidth(dp: Double) = patchWorkspace { it.copy(sidebarWidth = dp) }
+
+    /** إظهار/إخفاء لوحة استوديو — اسم الحقل محفوظ نصًّا من الواجهة. */
+    fun setStudioPanel(panel: String, visible: Boolean) = patchWorkspace { w ->
+        when (panel) {
+            "recordings" -> w.copy(showRecordings = visible)
+            "schedule" -> w.copy(showSchedule = visible)
+            "script" -> w.copy(showScript = visible)
+            "broadcast" -> w.copy(showBroadcast = visible)
+            else -> w
+        }
+    }
+
+    fun setRememberLastTab(on: Boolean) = patchWorkspace { it.copy(rememberLastTab = on) }
 
     // ================= حفظ اختيار الأجهزة بين الجلسات (v0.20.0) =================
     // الأسماء وحدها تُخزَّن في settings.json — عند الإقلاع تُطابق مع الأجهزة
@@ -519,27 +621,37 @@ class AppViewModel {
     val fullScriptReading = MutableStateFlow(false)
 
     fun addSection(title: String, body: String) {
+        pushScriptHistory()
         val s = scriptStore.add(title, body)
         _script.value = scriptStore.sections()
         _selectedSectionId.value = s.id
+        refreshScriptUndoStates()
     }
 
     fun updateSection(id: Long, title: String, body: String) {
+        pushScriptHistory()
         scriptStore.update(id, title, body)
         _script.value = scriptStore.sections()
+        refreshScriptUndoStates()
     }
 
     fun deleteSection(id: Long) {
+        if (scriptStore.sections().none { it.id == id }) return
+        pushScriptHistory()
         scriptStore.delete(id)
         _script.value = scriptStore.sections()
         if (_selectedSectionId.value == id) {
             _selectedSectionId.value = _script.value.firstOrNull()?.id
         }
+        refreshScriptUndoStates()
     }
 
     fun moveSection(id: Long, delta: Int) {
+        if (scriptStore.sections().none { it.id == id }) return
+        pushScriptHistory()
         scriptStore.move(id, delta)
         _script.value = scriptStore.sections()
+        refreshScriptUndoStates()
     }
 
     fun selectSection(id: Long) {
@@ -567,13 +679,17 @@ class AppViewModel {
     /**
      * تطبيق قالب سكريبت جاهز (v0.30.0 «قوالب السكريبت»): الإلحاق يضيف فقراته
      * للنهاية، والاستبدال يفرّغ الحالي أولًا — وكلاهما حفظ دفعة واحدة ويحدد
-n     * الفقرة الأولى المولّدة لتبدأ لوحة القراءة منها مباشرة.
+     * الفقرة الأولى المولّدة لتبدأ لوحة القراءة منها مباشرة.
      */
     fun applyScriptTemplate(template: ScriptTemplate, replaceExisting: Boolean) {
-        if (replaceExisting) scriptStore.clear()
+        if (replaceExisting) {
+            pushScriptHistory()
+            scriptStore.clear()
+        }
         val added = scriptStore.addAll(ScriptTemplatesLogic.drafts(template))
         _script.value = scriptStore.sections()
         _selectedSectionId.value = added.firstOrNull()?.id ?: _selectedSectionId.value
+        refreshScriptUndoStates()
     }
 
     /** توليد ملف PDF للسكريبت الحالي (v0.30.0 «تصدير PDF») — يستدعى من خيط خلفي. */
@@ -1006,11 +1122,110 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         if (loadTracks) loadActivePlaylistTracks()
     }
 
+    // ================= تراجع/إعادة قائمة التشغيل والسكريبت (v0.39.0) =================
+    // سجل لقطات لكل مجال على حِدة: القائمة (المسارات والفهرس) والسكريبت (الفقرات
+    // بمعرفاتها) — كل تغيير بشري يدفع لقطة «ما قبله» فيعود التراجع إليها حرفيًا.
+    // المونتاج يحتفظ بسجلّه الخاص (v0.34.0) فلا تداخُل، وCtrl+Z يتوجه بالسياق:
+    // صفحة الموسيقى/الاستوديو تتراجع عن القائمة، وصفحة السكريبت عن السكريبت.
+
+    /** لقطة القائمة الجارية: مساراتها وفهرس الجاري — خفيفة تُقارن فورًا. */
+    private data class PlaylistSnapshot(val paths: List<String>, val currentIndex: Int)
+
+    private val playlistHistory = SnapshotHistory<PlaylistSnapshot>()
+    private val _playlistCanUndo = MutableStateFlow(false)
+    val playlistCanUndo: StateFlow<Boolean> = _playlistCanUndo.asStateFlow()
+    private val _playlistCanRedo = MutableStateFlow(false)
+    val playlistCanRedo: StateFlow<Boolean> = _playlistCanRedo.asStateFlow()
+
+    private fun playlistSnapshot() = PlaylistSnapshot(
+        _playlist.value.map { it.file.path }, _currentIndex.value
+    )
+
+    private fun refreshPlaylistUndoStates() {
+        _playlistCanUndo.value = playlistHistory.canUndo
+        _playlistCanRedo.value = playlistHistory.canRedo
+    }
+
+    private fun pushPlaylistHistory() {
+        playlistHistory.push(playlistSnapshot())
+        refreshPlaylistUndoStates()
+    }
+
+    /** استعادة لقطة قائمة: القائمة تُعاد كما كانت والجاري يُشار إن بقى موجودًا. */
+    private fun restorePlaylistSnapshot(s: PlaylistSnapshot) {
+        val playingFile = _playlist.value.getOrNull(_currentIndex.value)?.file
+        playlistStore.setPaths(_activePlaylistId.value, s.paths, s.currentIndex)
+        loadActivePlaylistTracks()
+        // الجاري المسموع يبقى مسموعًا: إن كان في القائمة المستعادة يُشار إليه
+        val cur = _playlist.value.indexOfFirst { it.file.path == playingFile?.path }
+        _currentIndex.value = if (cur >= 0) cur else _currentIndex.value.coerceIn(-1, _playlist.value.size - 1)
+        if (playingFile != null && cur < 0 && player.isPlaying.value) {
+            // الملف الذي كان يعمل اختفى من القائمة المستعادة — التشغيل يتوقف نظيفًا
+            player.stop()
+        }
+        playlistStore.setIndex(_activePlaylistId.value, _currentIndex.value)
+        refreshPlaylistUndoStates()
+    }
+
+    /** تراجع عن آخر تغيير في القائمة الجارية (صفحة الموسيقى/الاستوديو). */
+    fun undoPlaylist() {
+        val snap = playlistHistory.undo(playlistSnapshot()) ?: return
+        restorePlaylistSnapshot(snap)
+    }
+
+    /** إعادة آخر تراجع في القائمة الجارية. */
+    fun redoPlaylist() {
+        val snap = playlistHistory.redo(playlistSnapshot()) ?: return
+        restorePlaylistSnapshot(snap)
+    }
+
+    private val scriptHistory = SnapshotHistory<List<ScriptSection>>()
+    private val _scriptCanUndo = MutableStateFlow(false)
+    val scriptCanUndo: StateFlow<Boolean> = _scriptCanUndo.asStateFlow()
+    private val _scriptCanRedo = MutableStateFlow(false)
+    val scriptCanRedo: StateFlow<Boolean> = _scriptCanRedo.asStateFlow()
+
+    private fun refreshScriptUndoStates() {
+        _scriptCanUndo.value = scriptHistory.canUndo
+        _scriptCanRedo.value = scriptHistory.canRedo
+    }
+
+    private fun pushScriptHistory() {
+        scriptHistory.push(scriptStore.sections())
+        refreshScriptUndoStates()
+    }
+
+    /** تراجع عن آخر تغيير في السكريبت — الفقرات تعود بمعرفاتها ونصّها كما كانت. */
+    fun undoScript() {
+        val snap = scriptHistory.undo(scriptStore.sections()) ?: return
+        scriptStore.restoreSections(snap)
+        afterScriptRestore()
+    }
+
+    /** إعادة آخر تراجع في السكريبت. */
+    fun redoScript() {
+        val snap = scriptHistory.redo(scriptStore.sections()) ?: return
+        scriptStore.restoreSections(snap)
+        afterScriptRestore()
+    }
+
+    private fun afterScriptRestore() {
+        _script.value = scriptStore.sections()
+        // الفقرة المحددة إن نجت من الاستعادة تبقى محددة، وإلا أول فقرة موجودة
+        val sel = _selectedSectionId.value
+        if (sel == null || _script.value.none { it.id == sel }) {
+            _selectedSectionId.value = _script.value.firstOrNull()?.id
+        }
+        refreshScriptUndoStates()
+        scheduleSessionSave()
+    }
+
     /** نقل مسار داخل القائمة الجارية مع الحفاظ على تشغيل المسار الحالي. */
     fun moveTrack(index: Int, delta: Int) {
         val list = _playlist.value
         val moved = ScheduleMath.moved(list, index, delta)
         if (moved === list) return
+        pushPlaylistHistory()
         val cur = _currentIndex.value
         val curFile = list.getOrNull(cur)?.file
         val newCur = moved.indexOfFirst { it.file == curFile }
@@ -1026,6 +1241,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
             .filter { it.isFile && it.extension.lowercase() in RecordingsScanner.AUDIO_EXTENSIONS && it !in existing }
             .map { trackFor(it) }
         if (newTracks.isEmpty()) return
+        pushPlaylistHistory()
         val wasIdle = _playlist.value.isEmpty() || _currentIndex.value < 0
         _playlist.value = _playlist.value + newTracks
         playlistStore.setPaths(_activePlaylistId.value, _playlist.value.map { it.file.path }, _currentIndex.value)
@@ -1039,6 +1255,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     }
 
     fun clearPlaylist() {
+        if (_playlist.value.isNotEmpty()) pushPlaylistHistory()
         player.stop()
         player.awaitIdle(1500)
         _playlist.value = emptyList()
@@ -1060,6 +1277,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
     fun removeTrackAt(index: Int) {
         val list = _playlist.value
         if (index < 0 || index >= list.size) return
+        pushPlaylistHistory()
         val wasCurrent = index == _currentIndex.value
         val curFile = list.getOrNull(_currentIndex.value)?.file
         val newList = list.filterIndexed { i, _ -> i != index }
@@ -1258,6 +1476,7 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
         if (!f.isFile) return
         val existing = _playlist.value.map { it.file }.toSet()
         if (f in existing) return
+        pushPlaylistHistory()
         val wasIdle = _playlist.value.isEmpty() || _currentIndex.value < 0
         val track = Track(f, entry.title ?: f.nameWithoutExtension, durationOf(f), entry.category)
         _playlist.value = _playlist.value + track
@@ -2953,6 +3172,59 @@ n     * الفقرة الأولى المولّدة لتبدأ لوحة القر�
 
     fun selectTab(t: Tab) {
         _tab.value = t
+        // تذكّر آخر صفحة (v0.39.0): إن فعّله المذيع تُكتب الصفحة الحالية
+        // فإقلاع بلا علم أتمتة يعيد فتح ما كان مفتوحًا
+        if (_workspace.value.rememberLastTab) {
+            patchWorkspace { it.copy(lastTab = t.name) }
+        }
+    }
+
+    // ================= سحب وإفلات الملفات الصوتية (v0.39.0) =================
+
+    /** هل مؤشر السحب من نظام التشغيل فوق التطبيق الآن؟ (لحافة الإبراز الحية) */
+    val dropHover = MutableStateFlow(false)
+
+    /**
+     * معالجة ملفات أُفلات على النافذة (أو مُمرَّرة من علام الأتمتة): تُصفّى
+     * في DropLogic ثم تُوجَّه — المونتاج يضيفها مقاطع تعليق، وغيره يستوردها
+     * إلى المكتبة بالتصنيف المعروض أو الافتراضي — فلا إفلات يضيع بلا أثر.
+     */
+    fun handleDroppedFiles(files: List<File>) {
+        val d = com.saidjte.schoolradio.desktop.data.DropLogic.decide(files)
+        if (!d.hasAudio) {
+            d.message("المكتبة")?.let { _lastLibraryMessage.value = it }
+            return
+        }
+        val dest = com.saidjte.schoolradio.desktop.data.DropLogic.destinationFor(_tab.value.name)
+        when (dest) {
+            com.saidjte.schoolradio.desktop.data.DropLogic.Destination.MONTAGE -> {
+                addMontageFiles(d.audioFiles)
+                _lastLibraryMessage.value = d.message("المونتاج (مقاطع تعليق)")
+            }
+            com.saidjte.schoolradio.desktop.data.DropLogic.Destination.LIBRARY -> {
+                importToLibrary(d.audioFiles, com.saidjte.schoolradio.desktop.data.DropLogic.DEFAULT_IMPORT_CATEGORY)
+            }
+        }
+    }
+
+    /** فتح نافذة جدار الجينغل المنبثقة — يقرؤها Main ويطلبها زر الاستوديو وF1. */
+    val showShortcutsDialog = MutableStateFlow(false)
+
+    // ================= دورة النسخ الاحتياطية المتدحرجة (v0.39.0 حفظ تلقائي محصّن) =================
+    // كل خمس دقائق: المخازن التي تغيّر محتواها عن آخر لقطة تُنسخ مؤرخة في
+    // backups/ مع تدوير — فانقطاع بعد ساعة عمل لا يخسر إلا خمس دقائق كثير.
+
+    init {
+        runScope.launch {
+            while (true) {
+                delay(300_000)
+                runCatching {
+                    com.saidjte.schoolradio.desktop.data.AutoBackup.snapshot(
+                        dataDir(), nowMs = System.currentTimeMillis()
+                    )
+                }
+            }
+        }
     }
 
     companion object {

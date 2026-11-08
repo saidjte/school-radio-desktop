@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -88,6 +89,13 @@ fun StudioScreen(vm: AppViewModel) {
     var midTop by remember { mutableFloatStateOf(saved.midTopFrac) }
     var bcMic by remember { mutableFloatStateOf(saved.bcMicFrac) }
     val dens = LocalDensity.current.density
+    // مساحة العمل (v0.39.0): المذيع يُظهر ويُخفي اللوحات من الإعدادات فتعود
+    // بين الجلسات — السحب بالفواصل يبقى يعمل على ما ظهر منها
+    val ws by vm.workspace.collectAsState()
+    val showRight = ws.showRecordings || ws.showSchedule
+    val showScript = ws.showScript
+    val showBroadcast = ws.showBroadcast
+    val anyPanel = showRight || showScript || showBroadcast
 
     fun persist() {
         vm.saveLayout(StudioLayout(rightW, bcW, rightTop, midTop, bcMic))
@@ -95,11 +103,27 @@ fun StudioScreen(vm: AppViewModel) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         StudioTopBar(vm)
+        // شعار الاستعادة بعد انقطاع مفاجئ (v0.39.0) — رسائل الفحص والاستعادة
+        RecoveryBanner(
+            vm = vm,
+            modifier = Modifier.padding(horizontal = 12.dp)
+        )
         // شريط الموعد الأسبوعي المنطلق — يظهر أعلاه محتوى الاستوديو لحظة الإطلاق
         WeeklyAlertBanner(
             vm = vm,
             modifier = Modifier.padding(horizontal = 12.dp)
         )
+        if (!anyPanel) {
+            // كل اللوحات مخفية — رسالة ودّية بدل شاشة فارغة صامتة
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text(
+                    "كل لوحات الاستوديو مخفية — أظهر ما تشاء من «الإعدادات ← مساحة العمل»",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            return@Column
+        }
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -107,21 +131,25 @@ fun StudioScreen(vm: AppViewModel) {
                 .padding(12.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // العمود الأيمن: حيّزا التسجيلات والجدولة متساويان في الارتفاع (v0.21.0)
-            StudioRightColumn(
-                vm = vm,
-                modifier = Modifier.width(rightW.dp),
-                topFrac = rightTop,
-                onTopFrac = { rightTop = it },
-                onEnd = { persist() }
-            )
-            // فاصل سحب: عرض الجانب الأيمن
-            StudioHSplit(
-                onDragX = { dx ->
-                    rightW = (rightW + dx / dens).coerceIn(StudioLayoutLogic.RIGHT_WIDTH_MIN, StudioLayoutLogic.RIGHT_WIDTH_MAX)
-                },
-                onEnd = { persist() }
-            )
+            // العمود الأيمن: حيّزا التسجيلات والجدولة — يُخفى كله إن أخفى المذيع اللوحتين
+            if (showRight) {
+                StudioRightColumn(
+                    vm = vm,
+                    modifier = Modifier.width(rightW.dp),
+                    topFrac = rightTop,
+                    onTopFrac = { rightTop = it },
+                    onEnd = { persist() },
+                    showRecordings = ws.showRecordings,
+                    showSchedule = ws.showSchedule
+                )
+                // فاصل سحب: عرض الجانب الأيمن
+                StudioHSplit(
+                    onDragX = { dx ->
+                        rightW = (rightW + dx / dens).coerceIn(StudioLayoutLogic.RIGHT_WIDTH_MIN, StudioLayoutLogic.RIGHT_WIDTH_MAX)
+                    },
+                    onEnd = { persist() }
+                )
+            }
             // المنطقة الوسطى: شاشة السكريبت ثم فاصل سحب ثم المشغل المستقل —
             // بنفس عرض الشاشة (طلب المستخدم v0.15.0)
             StudioMiddleColumn(
@@ -129,23 +157,25 @@ fun StudioScreen(vm: AppViewModel) {
                 midTop = midTop,
                 onMidTop = { midTop = it },
                 onEnd = { persist() },
+                showScript = showScript,
                 modifier = Modifier.weight(1f)
             )
-            // فاصل سحب: عرض عمود البث
-            StudioHSplit(
-                onDragX = { dx ->
-                    bcW = (bcW - dx / dens).coerceIn(StudioLayoutLogic.BC_WIDTH_MIN, StudioLayoutLogic.BC_WIDTH_MAX)
-                },
-                onEnd = { persist() }
-            )
-            // عمود البث: الميكروفون + حيّز موسيقى واسع + رابط المزج
-            StudioBroadcastPanel(
-                vm = vm,
-                modifier = Modifier.width(bcW.dp),
-                micFrac = bcMic,
-                onMicFrac = { bcMic = it },
-                onEnd = { persist() }
-            )
+            // عمود البث: الميكروفون + حيّز موسيقى واسع + رابط المزج — يُخفى كاملاً بطلبه
+            if (showBroadcast) {
+                StudioHSplit(
+                    onDragX = { dx ->
+                        bcW = (bcW - dx / dens).coerceIn(StudioLayoutLogic.BC_WIDTH_MIN, StudioLayoutLogic.BC_WIDTH_MAX)
+                    },
+                    onEnd = { persist() }
+                )
+                StudioBroadcastPanel(
+                    vm = vm,
+                    modifier = Modifier.width(bcW.dp),
+                    micFrac = bcMic,
+                    onMicFrac = { bcMic = it },
+                    onEnd = { persist() }
+                )
+            }
         }
     }
 }
@@ -162,7 +192,9 @@ private fun StudioRightColumn(
     modifier: Modifier = Modifier,
     topFrac: Float,
     onTopFrac: (Float) -> Unit,
-    onEnd: () -> Unit
+    onEnd: () -> Unit,
+    showRecordings: Boolean = true,
+    showSchedule: Boolean = true
 ) {
     var heightPx by remember { mutableIntStateOf(1) }
 
@@ -172,19 +204,26 @@ private fun StudioRightColumn(
             .onSizeChanged { heightPx = it.height.coerceAtLeast(1) },
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        StudioRecordingsCard(vm, Modifier.fillMaxWidth().weight(topFrac))
-        StudioVSplit(
-            onDragY = { dy ->
-                onTopFrac(
-                    StudioLayoutLogic.clampFrac(
-                        topFrac + dy / heightPx,
-                        StudioLayoutLogic.RIGHT_TOP_MIN, StudioLayoutLogic.RIGHT_TOP_MAX
+        // مساحة العمل (v0.39.0): كل لوحة قد تُخفى وحدها فتملأ الأخرى الحيّز
+        if (showRecordings) {
+            StudioRecordingsCard(vm, Modifier.fillMaxWidth().weight(if (showSchedule) topFrac else 2f))
+        }
+        if (showRecordings && showSchedule) {
+            StudioVSplit(
+                onDragY = { dy ->
+                    onTopFrac(
+                        StudioLayoutLogic.clampFrac(
+                            topFrac + dy / heightPx,
+                            StudioLayoutLogic.RIGHT_TOP_MIN, StudioLayoutLogic.RIGHT_TOP_MAX
+                        )
                     )
-                )
-            },
-            onEnd = onEnd
-        )
-        StudioSchedulePanel(vm, Modifier.fillMaxWidth().weight(1f - topFrac))
+                },
+                onEnd = onEnd
+            )
+        }
+        if (showSchedule) {
+            StudioSchedulePanel(vm, Modifier.fillMaxWidth().weight(if (showRecordings) 1f - topFrac else 2f))
+        }
     }
 }
 
@@ -198,7 +237,8 @@ private fun StudioMiddleColumn(
     midTop: Float,
     onMidTop: (Float) -> Unit,
     onEnd: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showScript: Boolean = true
 ) {
     var heightPx by remember { mutableIntStateOf(1) }
 
@@ -208,23 +248,25 @@ private fun StudioMiddleColumn(
             .onSizeChanged { heightPx = it.height.coerceAtLeast(1) },
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        StudioScriptPanel(vm, Modifier.weight(midTop))
-        StudioVSplit(
-            onDragY = { dy ->
-                onMidTop(
-                    StudioLayoutLogic.clampFrac(
-                        midTop + dy / heightPx,
-                        StudioLayoutLogic.MID_TOP_MIN, StudioLayoutLogic.MID_TOP_MAX
+        if (showScript) {
+            StudioScriptPanel(vm, Modifier.weight(midTop))
+            StudioVSplit(
+                onDragY = { dy ->
+                    onMidTop(
+                        StudioLayoutLogic.clampFrac(
+                            midTop + dy / heightPx,
+                            StudioLayoutLogic.MID_TOP_MIN, StudioLayoutLogic.MID_TOP_MAX
+                        )
                     )
-                )
-            },
-            onEnd = onEnd
-        )
+                },
+                onEnd = onEnd
+            )
+        }
         // منطقة المشغل المستقل: بتمرير داخلي حين يضيّقها المذيع بلا فقد أي زر
         Box(
             Modifier
                 .fillMaxWidth()
-                .weight(1f - midTop)
+                .weight(if (showScript) 1f - midTop else 1f)
                 .verticalScroll(rememberScrollState())
         ) {
             BroadcastPlayerCard(vm = vm, modifier = Modifier.fillMaxWidth())
@@ -348,8 +390,6 @@ private fun StudioTopBar(vm: AppViewModel) {
         musicPlaying = playing && !paused
     ).onAir
     val sc = LocalStudioColors.current
-    // دليل الاختصارات (v0.29.0): زر في الشريط العلوي يفتح البروتوكول كاملًا
-    var showShortcuts by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -408,8 +448,9 @@ private fun StudioTopBar(vm: AppViewModel) {
                 text = "جدار الجينغل",
                 onClick = { vm.jingleWallOpen.value = true }
             )
-            // الاختصارات (v0.29.0): البروتوكول الإذاعي السريع موثّق في التطبيق نفسه
-            SecondaryAction(text = "الاختصارات", onClick = { showShortcuts = true })
+            // الاختصارات (v0.29.0): البروتوكول موثّق في التطبيق نفسه — F1 (v0.39.0)
+            // يفتح الدليل نفسه من أي صفحة فالحالة واحدة في النموذج لا حواران
+            SecondaryAction(text = "الاختصارات", onClick = { vm.showShortcutsDialog.value = !vm.showShortcutsDialog.value })
             SecondaryAction(text = "الأقسام التفصيلية", onClick = { vm.selectTab(Tab.LIVE) })
             Text(
                 "v$APP_VERSION",
@@ -429,8 +470,55 @@ private fun StudioTopBar(vm: AppViewModel) {
                 )
         )
     }
-    if (showShortcuts) {
-        ShortcutsDialog(onDismiss = { showShortcuts = false })
+}
+
+/**
+ * شعار الاستعادة بعد انقطاع مفاجئ (v0.39.0 «استعادة المشاريع بعد انقطاع
+ * مفاجئ») — بطاقة كهرمانية تعرض ما فعله الفحص عند الإقلاع: انقطاع الجلسة
+ * السابقة، مخازن تالفة عُزلت واستُعيدت من النسخ المتدحرجة — تُختفى بإيماءة
+ * المذيع فلا تعود في الجلسة نفسها.
+ */
+@Composable
+fun RecoveryBanner(vm: AppViewModel, modifier: Modifier = Modifier) {
+    val notices by vm.recoveryNotices.collectAsState()
+    if (notices.isEmpty()) return
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        tonalElevation = 2.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                "استعادة",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                notices.forEach { n ->
+                    Text(
+                        n,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
+            Text(
+                "حسناً",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { vm.dismissRecoveryNotices() }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            )
+        }
     }
 }
 

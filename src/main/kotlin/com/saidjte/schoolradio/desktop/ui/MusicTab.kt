@@ -373,6 +373,9 @@ fun MusicTab(vm: AppViewModel) {
 private fun PlaylistPane(vm: AppViewModel) {
     val playlist by vm.playlist.collectAsState()
     val currentIndex by vm.currentIndex.collectAsState()
+    // تراجع/إعادة القائمة (v0.39.0) — أزرار الشريط تُفعَّل بحسب السجل
+    val canUndo by vm.playlistCanUndo.collectAsState()
+    val canRedo by vm.playlistCanRedo.collectAsState()
     val isPlaying by vm.player.isPlaying.collectAsState()
     val isPaused by vm.player.isPaused.collectAsState()
     val playlists by vm.playlists.collectAsState()
@@ -443,7 +446,11 @@ private fun PlaylistPane(vm: AppViewModel) {
             shortenName(activeName, 16) + " · ${playlist.size} مقطعًا" +
                     if (totalMs > 0) " · ${formatMs(totalMs)}" else "",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // عند تضيّق الحيّز (كحجم خط كبير) يُقتطع بعلامة بدل التفاف حرفًا حرفًا
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
         )
     }
 
@@ -481,6 +488,18 @@ private fun PlaylistPane(vm: AppViewModel) {
             text = "مسح القائمة",
             onClick = { vm.clearPlaylist() },
             enabled = playlist.isNotEmpty()
+        )
+        // تراجع/إعادة القائمة (v0.39.0): سجل لقطات لكل تغيير — الإضافة والحذف
+        // والترتيب والتفريغ كلها ترتد بضغطة أو Ctrl+Z/Ctrl+Y
+        SecondaryAction(
+            text = "تراجع",
+            onClick = { vm.undoPlaylist() },
+            enabled = canUndo
+        )
+        SecondaryAction(
+            text = "إعادة",
+            onClick = { vm.redoPlaylist() },
+            enabled = canRedo
         )
     }
 
