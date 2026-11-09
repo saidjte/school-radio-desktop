@@ -223,6 +223,9 @@ sealed interface MontageShortcutAction {
 
     /** J: دمج المحدد مع التالي في مقطع واحد (v0.38.0). */
     data object MergeWithNext : MontageShortcutAction
+
+    /** E: فتح مكتبة المؤثرات الصوتية للمقطع المحدد (v0.40.0). */
+    data object OpenEffects : MontageShortcutAction
 }
 
 /**
@@ -253,6 +256,7 @@ fun resolveMontageShortcut(
         key == Key.V && !shift -> MontageShortcutAction.PasteClipboard
         key == Key.D && !shift -> MontageShortcutAction.DuplicateSelected
         key == Key.J && !shift -> MontageShortcutAction.MergeWithNext
+        key == Key.E && !ctrl && !shift -> MontageShortcutAction.OpenEffects
         else -> null
     }
 }
@@ -344,6 +348,7 @@ fun ShortcutsDialog(onDismiss: () -> Unit) {
                 "X / C / V" to "قص / نسخ / لصق المقطع المحدد عبر حافظة المونتاج",
                 "D" to "تكرار المقطع المحدد مرة خلفه",
                 "J" to "دمج المحدد مع التالي في مقطع واحد",
+                "E" to "فتح مكتبة المؤثرات الصوتية للمقطع المحدد",
                 "Esc" to "مسح تحديد المسطرة",
                 "← / →" to "تحريك رأس التشغيل 100ms (مع Shift: 10ms بدقة)",
                 "↑ / ↓" to "تحديد المقطع السابق / التالي",

@@ -1,7 +1,10 @@
 package com.saidjte.schoolradio.desktop
 
+import com.saidjte.schoolradio.desktop.audio.AudioFx
 import com.saidjte.schoolradio.desktop.audio.BundledJingles
 import com.saidjte.schoolradio.desktop.audio.ClipTransforms
+import com.saidjte.schoolradio.desktop.audio.FxChainStep
+import com.saidjte.schoolradio.desktop.audio.FxPresets
 import com.saidjte.schoolradio.desktop.audio.DuckBus
 import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.MicLiveEngine
@@ -1717,6 +1720,12 @@ class AppViewModel {
     private val _montageTransformBusy = MutableStateFlow(false)
     val montageTransformBusy: StateFlow<Boolean> = _montageTransformBusy.asStateFlow()
 
+    // ---- v0.40.0: مكتبة المؤثرات الصوتية ----
+
+    /** نبضة طلب فتح مكتبة المؤثرات من الاختصار E — الواجهة تجمعها فتفتح الحوار. */
+    private val _montageEffectsOpenTick = MutableStateFlow(0)
+    val montageEffectsOpenTick: StateFlow<Int> = _montageEffectsOpenTick.asStateFlow()
+
     /** مخزن ملفات الارتداد (عكس/سرعة/نبرة/دمج) — أسماء ببصمة SHA-1 فتُعاد بلا حساب. */
     private val montageBounceDir: File
         get() = File(File(dataDir(), "montage"), "bounce")
@@ -2605,6 +2614,40 @@ class AppViewModel {
     }
 
     /**
+     * تطبيق مؤثر فردي من مكتبة المؤثرات على المحدد (v0.40.0): القيم تُقيَّد
+     * داخل نطاقاتها، والسلسلة تُشفَّر نصًّا محايدًا فيشارك بروتوكول الارتداد
+     * المخزّن نفسه — بصمة SHA-1 (ملف|نافذة|مؤثر|قيم) تعيد الملف بلا حساب،
+     * والذيل الزمني (صدى/تكرار/تأخير) يُضاف لمدة المقطع الجديدة تلقائيًا.
+     */
+    fun applyMontageEffect(effectId: String, values: Map<String, Double>) {
+        val def = AudioFx.byId(effectId) ?: run {
+            _lastLibraryMessage.value = "مؤثر مجهول — اختر من مكتبة المؤثرات"
+            return
+        }
+        val clamped = AudioFx.clampValues(def, values)
+        val spec = AudioFx.encodeChain(listOf(FxChainStep(effectId, clamped)))
+        transformSelectedClip("مؤثر ${def.nameAr}") { src ->
+            ClipTransforms.bounce(src, "fx", spec, { pcm -> AudioFx.applySpec(pcm, spec) }, montageBounceDir)
+        }
+    }
+
+    /** تطبيق جاهزة جاهزة من المكتبة — سلسلة مؤثرات مدروسة بنقرة واحدة. */
+    fun applyMontagePreset(presetId: String) {
+        val preset = FxPresets.byId(presetId) ?: run {
+            _lastLibraryMessage.value = "جاهزة مجهولة — اختر من المكتبة"
+            return
+        }
+        val steps = preset.steps.map { s ->
+            val def = AudioFx.byId(s.defId)
+            FxChainStep(s.defId, def?.let { AudioFx.clampValues(it, s.values) } ?: s.values)
+        }
+        val spec = AudioFx.encodeChain(steps)
+        transformSelectedClip("جاهزة ${preset.nameAr}") { src ->
+            ClipTransforms.bounce(src, "fx", spec, { pcm -> AudioFx.applySpec(pcm, spec) }, montageBounceDir)
+        }
+    }
+
+    /**
      * بوابة التحويلات على المحدد: يفكّ الهدف ويطبّق الارتداد في خيط عمل
      * ثم يوجّه المقطع إلى ملفه الجديد بنافذة كاملة — المدة تُحل من الملف
      * الجديد نفسه، والتراجع يعيد المقطع إلى ملفه الأصلي كما هو.
@@ -2942,6 +2985,9 @@ class AppViewModel {
             com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.PasteClipboard -> montagePasteClipboard()
             com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.DuplicateSelected -> duplicateMontageSelected(1)
             com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.MergeWithNext -> mergeMontageSelectedWithNext()
+            // v0.40.0: الاختصار E يفتح مكتبة المؤثرات — نبضة للواجهة فتفتح الحوار
+            com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.OpenEffects ->
+                _montageEffectsOpenTick.value = _montageEffectsOpenTick.value + 1
         }
     }
     // ================= النسخ الاحتياطي JSON =================

@@ -1859,6 +1859,132 @@ object SelfTest {
                 check(rs39(Key.Spacebar, a = true) == null && rs39(Key.One, c = true, a = true) == null) { "modifier guards" }
             }
 
+            // ================= v0.40.0: مكتبة المؤثرات الصوتية =================
+            run {
+                val fx40 = com.saidjte.schoolradio.desktop.audio.AudioFx
+                val ps40 = com.saidjte.schoolradio.desktop.audio.FxPresets
+
+                fun sine40(hz: Double, ms: Long, amp: Double = 12000.0): ShortArray {
+                    val n = (ms * 44100 / 1000L).toInt()
+                    return ShortArray(n * 2) { i ->
+                        val f = i / 2
+                        (Math.sin(2.0 * Math.PI * hz * f / 44100.0) * amp).toInt().toShort()
+                    }
+                }
+
+                // 1) السجل: 14 مؤثرًا بمعاملات سليمة و12 جاهزة بمؤثرات معروفة
+                check(fx40.all.size == 14 && fx40.all.map { it.id }.toSet().size == 14) { "fx registry" }
+                fx40.all.forEach { def ->
+                    def.params.forEach { p ->
+                        check(p.min <= p.default && p.default <= p.max && p.step > 0) { "fx param ${def.id}.${p.id}" }
+                    }
+                }
+                check(ps40.all.size >= 12) { "presets count" }
+                ps40.all.forEach { p ->
+                    p.steps.forEach { s -> check(fx40.byId(s.defId) != null) { "preset ${p.id} def" } }
+                }
+
+                // 2) السلسلة المشفرة: محايدة ترتيب القيم ودائرية التشفير
+                fun def40(id: String) = fx40.byId(id) ?: error("no def $id")
+                val specA = fx40.encodeChain(listOf(
+                    com.saidjte.schoolradio.desktop.audio.FxChainStep("echo", fx40.clampValues(def40("echo"), mapOf("delay" to 300.0, "wet" to 50.0)))
+                ))
+                val specB = fx40.encodeChain(listOf(
+                    com.saidjte.schoolradio.desktop.audio.FxChainStep("echo", fx40.clampValues(def40("echo"), linkedMapOf("wet" to 50.0, "delay" to 300.0)))
+                ))
+                check(specA == specB) { "fx spec deterministic" }
+                check(fx40.encodeChain(fx40.parseChain(specA)) == specA) { "fx spec round trip" }
+
+                // 3) الحبوس والخطوة: نصف نغمة عائمة تقرب لعدد صحيح
+                val cl40 = fx40.clampValues(def40("pitch"), mapOf("semitones" to 2.9999))
+                check(cl40["semitones"] == 3.0) { "fx snap" }
+                check(fx40.clampValues(def40("pitch"), mapOf("semitones" to 99.0))["semitones"] == 12.0) { "fx clamp" }
+
+                // 4) السلامة: الصمت يبقى صامتًا والنطاق سليم والمدة محفوظة للناقل
+                val silence40 = sine40(440.0, 300, amp = 0.0)
+                fx40.all.forEach { def ->
+                    val spec = fx40.encodeChain(listOf(
+                        com.saidjte.schoolradio.desktop.audio.FxChainStep(def.id, fx40.defaultValues(def))
+                    ))
+                    val out = fx40.applySpec(silence40.copyOf(), spec)
+                    check(out.size >= silence40.size) { "fx ${def.id} tail" }
+                    out.forEach { v ->
+                        check(Math.abs(v / 32768.0) <= 1.001) { "fx ${def.id} bounds" }
+                    }
+                }
+                val pitchSpec40 = fx40.encodeChain(listOf(
+                    com.saidjte.schoolradio.desktop.audio.FxChainStep("pitch", fx40.clampValues(def40("pitch"), mapOf("semitones" to 12.0)))
+                ))
+                val up40 = fx40.applySpec(sine40(440.0, 2000).copyOf(), pitchSpec40)
+                check(Math.abs(up40.size / 2.0 / 44100.0 - 2.0) <= 0.10) { "fx pitch dur" }
+                val upHz40 = com.saidjte.schoolradio.desktop.audio.ClipTransforms.estimateDominantHz(up40)
+                check(Math.abs(upHz40 - 880.0) <= 60.0) { "fx pitch hz=$upHz40" }
+
+                // 5) الذيل الزمني: التأخير يضيف طبقة عند موضعها المطلوب
+                val impulse40 = ShortArray(2000)
+                impulse40[2 * 900] = 30000; impulse40[2 * 900 + 1] = 30000
+                val delaySpec = fx40.encodeChain(listOf(
+                    com.saidjte.schoolradio.desktop.audio.FxChainStep(
+                        "delay",
+                        fx40.clampValues(def40("delay"), mapOf("tap1" to 250.0, "tap1Level" to 45.0, "tap2Level" to 0.0))
+                    )
+                ))
+                val dOut = fx40.applySpec(impulse40.copyOf(), delaySpec)
+                val dTarget = 250 * 44100 / 1000
+                var dPeak = 0
+                val at40 = 900 + dTarget // الطبقة بعد النبضة لا بعد بداية المصفوفة
+                for (i in (at40 - 44100 / 50).coerceAtLeast(0)..(at40 + 44100 / 50).coerceAtMost(dOut.size / 2 - 1)) {
+                    dPeak = Math.max(dPeak, Math.abs(dOut[2 * i].toInt()))
+                }
+                check(dPeak > 8000) { "fx delay tap=$dPeak" }
+
+                // 6) المبدّل: أنثوي يرفع النبرة ورجولي يخفضها فعليًا
+                val src220 = sine40(220.0, 2200)
+                val morphF = fx40.encodeChain(listOf(
+                    com.saidjte.schoolradio.desktop.audio.FxChainStep("morpher", fx40.clampValues(def40("morpher"), mapOf("mode" to 0.0, "intensity" to 75.0)))
+                ))
+                val morphD = fx40.encodeChain(listOf(
+                    com.saidjte.schoolradio.desktop.audio.FxChainStep("morpher", fx40.clampValues(def40("morpher"), mapOf("mode" to 1.0, "intensity" to 75.0)))
+                ))
+                val hzF = com.saidjte.schoolradio.desktop.audio.ClipTransforms.estimateDominantHz(fx40.applySpec(src220.copyOf(), morphF))
+                val hzD = com.saidjte.schoolradio.desktop.audio.ClipTransforms.estimateDominantHz(fx40.applySpec(src220.copyOf(), morphD))
+                check(hzF > 250.0 && hzF < 330.0) { "morph female hz=$hzF" }
+                check(hzD > 150.0 && hzD < 195.0 && hzF > hzD + 40) { "morph deep hz=$hzD" }
+
+                // 7) كل الجاهزات تُطبَّق على صوت حقيقي بلا فجّ ولا تشبع
+                val tone330 = sine40(330.0, 800)
+                ps40.all.forEach { p ->
+                    val out = fx40.applySpec(tone330.copyOf(), ps40.encode(p))
+                    check(out.size >= tone330.size) { "preset ${p.id} length" }
+                    out.forEach { v ->
+                        check(Math.abs(v / 32768.0) <= 1.001) { "preset ${p.id} bounds" }
+                    }
+                }
+
+                // 8) الارتداد المخزّن بمفتاح fx: التكرار يعيد الملف نفسه بلا حساب
+                val m40 = File(tmp, "fx40").apply { mkdirs() }
+                val tone40 = MontageDemo.tone(File(m40, "tone.wav"), 44100, 2, 1200, 440.0)
+                val clip40 = MontageClip(id = "f", path = tone40.path, title = "مقطع", durationMs = 1200, startMs = 0, endMs = 1200)
+                val cache40 = File(m40, "bounce")
+                val echoSpec = fx40.encodeChain(listOf(
+                    com.saidjte.schoolradio.desktop.audio.FxChainStep("echo", fx40.clampValues(def40("echo"), mapOf("delay" to 200.0, "feedback" to 40.0, "wet" to 40.0)))
+                ))
+                val bF1 = com.saidjte.schoolradio.desktop.audio.ClipTransforms.bounce(
+                    clip40, "fx", echoSpec, { pcm -> fx40.applySpec(pcm, echoSpec) }, cache40
+                )
+                val bF2 = com.saidjte.schoolradio.desktop.audio.ClipTransforms.bounce(
+                    clip40, "fx", echoSpec, { pcm -> fx40.applySpec(pcm, echoSpec) }, cache40
+                )
+                check(bF1.file.absolutePath == bF2.file.absolutePath && bF1.file.isFile) { "fx bounce reuse" }
+                check(bF1.durationMs > 1200L) { "fx bounce tail dur=${bF1.durationMs}" }
+
+                // 9) اختصار E يفتح المكتبة والتعديلات تحرسه
+                fun r40(key: Key, c: Boolean = false) =
+                    com.saidjte.schoolradio.desktop.ui.resolveMontageShortcut(key, c, false, false, false)
+                check(r40(Key.E) == com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.OpenEffects) { "fx shortcut E" }
+                check(r40(Key.E, c = true) == null) { "fx shortcut E guarded" }
+            }
+
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
             tmp.listFiles()?.forEach { it.delete() }

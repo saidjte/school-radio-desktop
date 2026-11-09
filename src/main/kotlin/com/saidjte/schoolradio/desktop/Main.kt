@@ -185,6 +185,18 @@ fun main(args: Array<String>) {
                 }
             }
         }
+        // مكتبة المؤثرات للأتمتة (v0.40.0): تحديد أول مقطع ثم فتح الحوار عبر
+        // الاختصار E نفسه (نبضة النموذج) — فتبقى نقرات الفأرة الحقيقية للجاهزات
+        if (args.contains("--montage-v40")) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(4500)
+                val first = vm.montageProject.value.clips.firstOrNull()?.id
+                if (first != null) vm.selectMontageClip(first)
+                vm.applyMontageShortcut(
+                    com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.OpenEffects
+                )
+            }
+        }
         // سحب وإفلات للأتمتة (v0.39.0): ملف WAV حقيقي يُمرّر عبر مسار الإفلات
         // نفسه فتظهر رسالة الاستيراد والمقطع في المكتبة — بلا فأرة نظام
         if (args.contains(com.saidjte.schoolradio.desktop.data.DropLogic.AUTOMATION_FLAG)) {

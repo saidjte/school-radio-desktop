@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,6 +28,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,6 +63,9 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.saidjte.schoolradio.desktop.AppViewModel
+import com.saidjte.schoolradio.desktop.audio.AudioFx
+import com.saidjte.schoolradio.desktop.audio.FxParam
+import com.saidjte.schoolradio.desktop.audio.FxPresets
 import com.saidjte.schoolradio.desktop.audio.MontageExportFormat
 import com.saidjte.schoolradio.desktop.audio.MontageRender
 import com.saidjte.schoolradio.desktop.audio.ClipTransforms
@@ -127,6 +133,12 @@ fun MontagePage(vm: AppViewModel) {
     var showSpeedDialog by remember { mutableStateOf(false) }
     var showPitchDialog by remember { mutableStateOf(false) }
     var showDuplicateDialog by remember { mutableStateOf(false) }
+    // v0.40.0: حوار مكتبة المؤثرات الصوتية — والنبضة من الاختصار E تفتحه
+    var showEffectsDialog by remember { mutableStateOf(false) }
+    val effectsOpenTick by vm.montageEffectsOpenTick.collectAsState()
+    LaunchedEffect(effectsOpenTick) {
+        if (effectsOpenTick > 0) showEffectsDialog = true
+    }
     val rendering = progress != null || transformBusy
     val totalMs = remember(project) { MontageLogic.totalDurationFull(project) }
     // تكبير الخط الزمني: بكسل لكل ثانية — 60 الافتراضي، والحدود تمنع ضياع الاتجاه
@@ -212,7 +224,7 @@ fun MontagePage(vm: AppViewModel) {
             )
         }
         Text(
-            "مسطرة العمليات فوق الخط الزمني: اسحبها لتحديد منطقة زمنية تُحذف من كل المسارات بنقرة، وانقرها لتضع الرأس — عدة خطوط عمل تحت مسار التعليق تسحب مقاطعها أفقياً وبين الخطوط، وأداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر، والنقر المزدوج على أي مقطع يفتح تسميته، والالتقاط يزمّر العلامات والحواف وشبكة نصف الثانية. أدوات المقطع الحديثة: قص/نسخ/لصق بحافظة المونتاج، تكرار ×N، دمج مع التالي، عكس الموجة، وتعديل السرعة دون تغيير النبرة وتغيير النبرة دون تغيير الطول — كل التحويلات مرتدات غير إتلافية والتراجع يعيد الأصل.",
+            "مسطرة العمليات فوق الخط الزمني: اسحبها لتحديد منطقة زمنية تُحذف من كل المسارات بنقرة، وانقرها لتضع الرأس — عدة خطوط عمل تحت مسار التعليق تسحب مقاطعها أفقياً وبين الخطوط، وأداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر، والنقر المزدوج على أي مقطع يفتح تسميته، والالتقاط يزمّر العلامات والحواف وشبكة نصف الثانية. أدوات المقطع الحديثة: قص/نسخ/لصق بحافظة المونتاج، تكرار ×N، دمج مع التالي، عكس الموجة، وتعديل السرعة دون تغيير النبرة وتغيير النبرة دون تغيير الطول — ومكتبة المؤثرات (E) تفتح الصدى والتكرار والتأخير والمضاعفة والحَرْف والطور والتشويش وتوسيع الاستريو ومعزّز المذيع والراديو والهاتف والروبوت ومبدّل الطبيعة الصوتية مع جاهزات مدرسية جاهزة بنقرة. كل التحويلات والمؤثرات مرتدات غير إتلافية والتراجع يعيد الأصل.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -374,6 +386,11 @@ fun MontagePage(vm: AppViewModel) {
                 text = "النبرة…",
                 enabled = !rendering && (selectedId != null || selectedMusicId != null),
                 onClick = { showPitchDialog = true }
+            )
+            SecondaryAction(
+                text = "المؤثرات… (E)",
+                enabled = !rendering && (selectedId != null || selectedMusicId != null),
+                onClick = { showEffectsDialog = true }
             )
             if (clipboard != null) {
                 val label = when (val c = clipboard) {
@@ -941,6 +958,19 @@ fun MontagePage(vm: AppViewModel) {
                 vm.duplicateMontageSelected(n)
             },
             onDismiss = { showDuplicateDialog = false }
+        )
+    }
+    if (showEffectsDialog) {
+        MontageEffectsDialog(
+            onApplyEffect = { id, values ->
+                showEffectsDialog = false
+                vm.applyMontageEffect(id, values)
+            },
+            onApplyPreset = { pid ->
+                showEffectsDialog = false
+                vm.applyMontagePreset(pid)
+            },
+            onDismiss = { showEffectsDialog = false }
         )
     }
 }
@@ -2237,6 +2267,171 @@ private fun MontageDuplicateDialog(
         confirmButton = { TextButton(onClick = { onApply(n) }) { Text("تكرار") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
     )
+}
+
+// ================= مكتبة المؤثرات الصوتية (v0.40.0) =================
+
+/**
+ * حوار مكتبة المؤثرات الصوتية — بنديّ الجاهزات والمؤثرات الفردية في نافذة
+ * واحدة قابلة للتمرير: الجاهزة سلسلة مدروسة تُختار بنقرة ثم «تطبيق الجاهزة»،
+ * والمؤثر الفردي يفتح منزلقاته بتسميات عربية وحدود محفوظة، والمبدّل يُظهر
+ * اسم نمطه (أنثوي/رجولي/كائن فضائي/عملاق) بدل الرقم المجرد.
+ */
+@Composable
+private fun MontageEffectsDialog(
+    onApplyEffect: (String, Map<String, Double>) -> Unit,
+    onApplyPreset: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedEffectId by remember { mutableStateOf<String?>(null) }
+    var selectedPresetId by remember { mutableStateOf<String?>(null) }
+    var values by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
+
+    val selDef = selectedEffectId?.let { AudioFx.byId(it) }
+    val selPreset = selectedPresetId?.let { FxPresets.byId(it) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("مكتبة المؤثرات الصوتية") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "جاهزات المدارس — سلسلة مؤثرات مدروسة بنقرة:",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                FxPresets.all.chunked(2).forEach { row ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        row.forEach { p ->
+                            SecondaryAction(
+                                text = p.nameAr,
+                                onClick = {
+                                    selectedPresetId = p.id
+                                    selectedEffectId = null
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (row.size == 1) Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+                if (selPreset != null) {
+                    Text(
+                        "«${selPreset.nameAr}»: ${selPreset.descAr} — السلسلة: " +
+                                selPreset.steps.joinToString(" ثم ") { s ->
+                                    AudioFx.byId(s.defId)?.nameAr ?: s.defId
+                                },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                Text(
+                    "أو مؤثر فردي — اختر واضبط منزلقاته:",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+                AudioFx.all.forEach { def ->
+                    val selected = selectedEffectId == def.id
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                            )
+                            .clickable {
+                                selectedEffectId = def.id
+                                selectedPresetId = null
+                                values = AudioFx.defaultValues(def)
+                            }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            def.nameAr,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            def.descAr,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (selected) {
+                            def.params.forEach { p ->
+                                val v = values[p.id] ?: p.default
+                                FxParamSlider(p, v) { nv -> values = values + (p.id to nv) }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selDef != null || selPreset != null,
+                onClick = {
+                    val d = selDef
+                    if (d != null) onApplyEffect(d.id, AudioFx.clampValues(d, values))
+                    else selPreset?.let { onApplyPreset(it.id) }
+                }
+            ) { Text(if (selPreset != null) "تطبيق الجاهزة" else "تطبيق المؤثر") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
+}
+
+/** منزلق معامل مؤثر واحد — تسمية عربية وقيمة حية ووحدة عرض، وحبس على النطاق. */
+@Composable
+private fun FxParamSlider(
+    param: FxParam,
+    value: Double,
+    onChange: (Double) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                param.labelAr,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.width(130.dp)
+            )
+            Text(
+                if (param.id == "mode") AudioFx.morpherModeName(value.toInt())
+                else "${if (param.step < 1.0) "%.1f".format(value) else "%.0f".format(value)} ${param.unitAr}".trim(),
+                style = MaterialTheme.typography.labelMedium.numeric(),
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { onChange(it.toDouble()) },
+            valueRange = param.min.toFloat()..param.max.toFloat(),
+            steps = if (param.step > 0.0) {
+                val n = ((param.max - param.min) / param.step).toInt() - 1
+                n.coerceIn(0, 600)
+            } else 0
+        )
+    }
 }
 
 /** حقل رقمي بعنوان صغير — إدخال حر تحرسه حبوس الحفظ. */
