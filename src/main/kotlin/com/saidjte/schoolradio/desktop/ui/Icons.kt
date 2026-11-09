@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.dp
  * أيقونات الواجهة المرسومة متجهيًا داخل التطبيق — بلا اعتماديات خارجية وبثبات كامل
  * على كل الأنظمة. تعمل داخل Canvas فلا تتأثر باتجاه التخطيط RTL.
  */
-enum class AppIconKind { STUDIO, LIVE, SCHEDULE, SCRIPT, MUSIC, MIXER, RECORDINGS, MONTAGE }
+enum class AppIconKind { STUDIO, LIVE, SCHEDULE, SCRIPT, MUSIC, SOUNDS, MIXER, RECORDINGS, MONTAGE }
 
 @Composable
 fun AppIcon(
@@ -39,6 +39,7 @@ fun AppIcon(
             AppIconKind.SCHEDULE -> drawCalendar(tint)
             AppIconKind.SCRIPT -> drawDocument(tint)
             AppIconKind.MUSIC -> drawNote(tint)
+            AppIconKind.SOUNDS -> drawSpeaker(tint)
             AppIconKind.MIXER -> drawMixer(tint)
             AppIconKind.RECORDINGS -> drawDisc(tint)
             AppIconKind.MONTAGE -> drawMontage(tint)
@@ -179,6 +180,34 @@ private fun DrawScope.drawDisc(tint: Color) {
     drawCircle(tint, radius = w * 0.4f, center = c, style = meterStroke(tint, sw))
     drawCircle(tint, radius = w * 0.16f, center = c, style = meterStroke(tint, sw))
     drawCircle(tint, radius = w * 0.05f, center = c)
+}
+
+/** مكبر الصوت (مكتبة الأصوات): مخروط + موجة انطلاق. */
+private fun DrawScope.drawSpeaker(tint: Color) {
+    val w = size.width
+    val h = size.height
+    val sw = w * 0.06f
+    // مخروط السماعة: مستطيل صغير + مثلث مفتوح
+    drawRoundRect(
+        color = tint,
+        topLeft = Offset(w * 0.12f, h * 0.4f),
+        size = Size(w * 0.16f, h * 0.2f),
+        cornerRadius = CornerRadius(w * 0.04f)
+    )
+    drawLine(tint, Offset(w * 0.28f, h * 0.42f), Offset(w * 0.46f, h * 0.24f), strokeWidth = sw, cap = StrokeCap.Round)
+    drawLine(tint, Offset(w * 0.28f, h * 0.58f), Offset(w * 0.46f, h * 0.76f), strokeWidth = sw, cap = StrokeCap.Round)
+    drawLine(tint, Offset(w * 0.46f, h * 0.24f), Offset(w * 0.46f, h * 0.76f), strokeWidth = sw, cap = StrokeCap.Round)
+    // موجتا صوت
+    drawArc(
+        tint, startAngle = -60f, sweepAngle = 120f, useCenter = false,
+        topLeft = Offset(w * 0.5f, h * 0.3f), size = Size(w * 0.3f, h * 0.4f),
+        style = meterStroke(tint, sw)
+    )
+    drawArc(
+        tint.copy(alpha = 0.55f), startAngle = -60f, sweepAngle = 120f, useCenter = false,
+        topLeft = Offset(w * 0.66f, h * 0.22f), size = Size(w * 0.3f, h * 0.56f),
+        style = meterStroke(tint, sw)
+    )
 }
 
 /** المونتاج (v0.33.0): شريط فيلم بخانتين وثقوب جانبية. */

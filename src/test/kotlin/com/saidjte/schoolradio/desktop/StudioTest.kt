@@ -146,10 +146,12 @@ class StudioTest {
         // فلسفة v0.6.0: عودة الاستوديو المدمج شاشةً افتراضية كاملة، مع بقاء صفحات التركيز والإدارة المستقلة
         // v0.10.0: «وحدة المزج» صفحة تركيز سادسة بين الموسيقى والتسجيلات
         // v0.33.0: «المونتاج» صفحة التحرير والتصدير السابعة بعد التسجيلات
+        // v0.42.0: «مكتبة الأصوات» صفحة خامسة بين الموسيقى ووحدة المزج
         assertEquals(
-            listOf("STUDIO", "LIVE", "SCHEDULE", "SCRIPT", "MUSIC", "MIXER", "RECORDINGS", "MONTAGE"),
+            listOf("STUDIO", "LIVE", "SCHEDULE", "SCRIPT", "MUSIC", "SOUNDS", "MIXER", "RECORDINGS", "MONTAGE"),
             Tab.entries.map { it.name }
         )
+        assertEquals("مكتبة الأصوات", Tab.entries.first { it.name == "SOUNDS" }.label)
         assertEquals("الاستوديو المدمج", Tab.entries.first().label)
         assertEquals("البث المباشر", Tab.entries.first { it.name == "LIVE" }.label)
         assertEquals("وحدة المزج", Tab.entries.first { it.name == "MIXER" }.label)

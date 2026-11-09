@@ -1856,7 +1856,8 @@ object SelfTest {
                 check(rs39(Key.F1) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.ShowShortcuts) { "f1" }
                 check(rs39(Key.One, a = true) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.SwitchTab(1)) { "alt1" }
                 check(rs39(Key.Eight, a = true) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.SwitchTab(8)) { "alt8" }
-                check(rs39(Key.Nine, a = true) == null) { "alt9 unused" }
+                // v0.42.0: Alt+9 فتح الصفحة التاسعة «مكتبة الأصوات» — العقد المحدث
+                check(rs39(Key.Nine, a = true) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.SwitchTab(9)) { "alt9 sounds page" }
                 check(rs39(Key.Z, c = true) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.ContextualUndo) { "ctrlz" }
                 check(rs39(Key.Y, c = true) == com.saidjte.schoolradio.desktop.ui.ShortcutAction.ContextualRedo) { "ctrly" }
                 check(com.saidjte.schoolradio.desktop.ui.resolveShortcut(Key.Z, true, false, false, true)
@@ -2115,6 +2116,91 @@ object SelfTest {
                 val lt41 = ml41.effectiveTracks(lp41)
                 check(lt41.size == 1 && ml41.trackType(lt41[0]) == ml41.TYPE_MUSIC && lt41[0].pan == 0) { "v41 legacy json migration" }
                 check(ml41.groupsOf(lp41).isEmpty() && ml41.automationLanesOf(lp41).isEmpty()) { "v41 legacy null lists" }
+            }
+
+            // =================== v0.42.0: مكتبة الأصوات والموسيقى ===================
+            run {
+                val groups42 = com.saidjte.schoolradio.desktop.data.SoundGroups
+                val bs42 = com.saidjte.schoolradio.desktop.audio.BundledSounds
+                val slm42 = com.saidjte.schoolradio.desktop.data.SoundLibraryMath
+
+                // 1) العقد: 36 صوتًا في خمس مجموعات بعددها الصحيح، وسوم كافية ومدد موجبة
+                val counts42 = bs42.ALL.groupingBy { it.group }.eachCount()
+                check(bs42.ALL.size == 36) { "v42 manifest size=${bs42.ALL.size}" }
+                check(counts42[groups42.MUSIC] == 8 && counts42[groups42.SFX] == 8 &&
+                        counts42[groups42.TRANSITIONS] == 6 && counts42[groups42.NATURE] == 8 &&
+                        counts42[groups42.CINEMA] == 6) { "v42 group counts $counts42" }
+                check(bs42.ALL.all { it.tags.size >= 3 && it.durationMs > 0 && it.title.isNotBlank() }) { "v42 identities" }
+                check(bs42.ALL.map { it.id }.toSet().size == 36) { "v42 unique ids" }
+
+                // 2) الموارد موجودة داخل الجرة فعلاً — لا بطاقة وهمية
+                val loader42 = bs42::class.java.classLoader
+                check(bs42.ALL.all { loader42.getResourceAsStream(bs42.resourcePath(it)) != null }) { "v42 resources in jar" }
+
+                // 3) الاستخراج الذري الاستئثاري: 36 ملفًا فعلًا ثم استدعاء ثانٍ مطابق
+                val sd42 = File(tmp, "v42sounds").apply { mkdirs() }
+                val extracted42 = bs42.ensureExtracted(sd42)
+                check(extracted42.size == 36 && extracted42.values.all { it.isFile && it.length() > 0 }) { "v42 extraction" }
+                val sizes42 = extracted42.values.associate { it.name to it.length() }
+                check(extracted42.values.all { (sizes42[it.name] ?: 0L) == it.length() }) { "v42 sizes sane" }
+                check(bs42.ensureExtracted(sd42) == extracted42) { "v42 idempotent" }
+                check(sd42.listFiles()?.none { it.name.endsWith(".tmp") } == true) { "v42 no tmp leftovers" }
+
+                // 4) عينات من كل مجموعة تُفك MP3 فعلاً وتطابق المدة ±400ms
+                listOf("morning_bright", "handbell", "whoosh_up", "birds_chirp", "epic_braam").forEach { id42 ->
+                    val s42 = bs42.ALL.first { it.id == id42 }
+                    val f42 = extracted42[id42] ?: throw AssertionError("v42 missing $id42")
+                    val d42 = Mp3Info.analyze(f42)?.durationMs ?: -1L
+                    check(Math.abs(d42 - s42.durationMs) <= 400L) { "v42 duration $id42 manifest=${s42.durationMs} real=$d42" }
+                }
+
+                // 5) البحث: بالعنوان والوصف والوسوم، والخاوي تطابق الكل
+                check(slm42.matches("مطر خفيف", "وصف", listOf("طبيعة"), "مطر")) { "v42 search title" }
+                check(slm42.matches("مطر", "مطر هادئ دائم", emptyList(), "هادئ")) { "v42 search description" }
+                check(slm42.matches("مطر", "وصف", listOf("طبيعة", "مطر"), "طبيعة")) { "v42 search tag" }
+                check(!slm42.matches("مطر", "وصف", listOf("طبيعة"), "تصفيق")) { "v42 search miss" }
+                check(slm42.matches("أي شيء", "وصف", emptyList(), "")) { "v42 empty query" }
+
+                // 6) التصنيف المقترح دائمًا موجود في الافتراضات — لا حوار إضافة فاشل
+                check(slm42.suggestedCategory(groups42.MUSIC) == "فقرات متنوعة") { "v42 music suggestion" }
+                check(groups42.BUNDLED.all { slm42.suggestedCategory(it) in com.saidjte.schoolradio.desktop.data.LibraryDefaults.CATEGORIES }) { "v42 suggestions exist" }
+
+                // 7) نص المدة العربي
+                check(slm42.durationText(700) == "0.7 ث" && slm42.durationText(122_000) == "2:02 د") { "v42 duration text" }
+
+                // 8) مكتبتي الخاصة: استيراد بتجاوز معلن وتكرار مكبوح ودورة حفظ/قراءة حقيقية
+                val cd42 = File(tmp, "v42custom").apply { mkdirs() }
+                val w42a = File(cd42, "mine_a.wav").apply { writeBytes(ByteArray(96)) }
+                val w42b = File(cd42, "mine_b.mp3").apply { writeBytes(ByteArray(96)) }
+                val junk42 = File(cd42, "skip.txt").apply { writeBytes(ByteArray(8)) }
+                val st42 = com.saidjte.schoolradio.desktop.data.SoundLibraryStore(File(cd42, "soundlib.json"))
+                val imp42 = st42.addFiles(listOf(w42a, junk42, w42b))
+                check(imp42.added.size == 2 && imp42.skippedUnsupported == 1) { "v42 import ${imp42.added.size}/${imp42.skippedUnsupported}" }
+                check(st42.addFiles(listOf(w42a)).added.isEmpty()) { "v42 dedupe" }
+                check(com.saidjte.schoolradio.desktop.data.SoundLibraryStore(File(cd42, "soundlib.json")).custom().size == 2) { "v42 persisted" }
+                val corrupt42 = File(cd42, "corrupt.json").apply { writeText("{ تالف ") }
+                check(com.saidjte.schoolradio.desktop.data.SoundLibraryStore(corrupt42).custom().isEmpty()) { "v42 corrupt tolerated" }
+
+                // 9) التراخيص: صف المولد + صفوف الجينلات السبعة متطابقة العناوين، والتجاري قاطع
+                val lic42 = com.saidjte.schoolradio.desktop.data.SoundLicense
+                check(lic42.rows().size == 8) { "v42 license rows=${lic42.rows().size}" }
+                check(lic42.rows().drop(1).map { it.item } == com.saidjte.schoolradio.desktop.audio.BundledJingles.ALL.map { it.title }) { "v42 jingle license parity" }
+                check(lic42.BUNDLED_ROW.commercial.contains("مسموح") && lic42.commercialSummary().contains("CC0")) { "v42 commercial explicit" }
+                check(lic42.BUNDLED_ROW.source.contains("داخل المشروع")) { "v42 local generation declared" }
+
+                // 10) محرك المعاينة: صوت واحد، النقر الثاني يوقف، والتبديل يوقف السابق
+                val pe42 = com.saidjte.schoolradio.desktop.audio.SoundPreviewEngine()
+                pe42.voiceFactoryOverride = { com.saidjte.schoolradio.desktop.audio.FakePreviewVoice() }
+                val pf42a = File("/tmp/v42-a.mp3")
+                val pf42b = File("/tmp/v42-b.mp3")
+                pe42.toggle(pf42a)
+                check(pe42.playingFile.value == pf42a.absolutePath) { "v42 preview starts" }
+                pe42.toggle(pf42a)
+                check(pe42.playingFile.value == null) { "v42 preview stops" }
+                pe42.toggle(pf42b)
+                check(pe42.playingFile.value == pf42b.absolutePath) { "v42 preview switches" }
+                pe42.shutdown()
+                check(pe42.playingFile.value == null) { "v42 preview shutdown" }
             }
 
             println("SELFTEST OK — version $APP_VERSION")

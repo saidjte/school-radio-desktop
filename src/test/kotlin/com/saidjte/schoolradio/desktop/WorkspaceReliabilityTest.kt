@@ -252,10 +252,11 @@ class WorkspaceReliabilityTest {
     // ================= الاختصارات الجديدة (v0.39.0) =================
 
     @Test
-    fun `alt plus digits switches pages one to eight`() {
+    fun `alt plus digits switches pages one to nine`() {
         assertEquals(ShortcutAction.SwitchTab(1), resolveShortcut(Key.One, ctrl = false, alt = true, meta = false))
         assertEquals(ShortcutAction.SwitchTab(8), resolveShortcut(Key.Eight, ctrl = false, alt = true, meta = false))
-        assertNull(resolveShortcut(Key.Nine, ctrl = false, alt = true, meta = false))
+        // v0.42.0: الصفحة التاسعة «مكتبة الأصوات» تُفتح بـAlt+9
+        assertEquals(ShortcutAction.SwitchTab(9), resolveShortcut(Key.Nine, ctrl = false, alt = true, meta = false))
         assertNull(resolveShortcut(Key.One, ctrl = true, alt = true, meta = false))
     }
 

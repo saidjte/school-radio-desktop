@@ -281,6 +281,22 @@ object FilePickers {
         return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
     }
 
+    /**
+     * اختيار ملفات مكتبة الأصوات الخاصة (v0.42.0) — كل الصيغ التي يفكها
+     * المحرك لا WAV/MP3 وحدهما، فلا يُرفض OGG/FLAC لا سبب له.
+     */
+    fun pickSoundLibraryFiles(): List<File>? {
+        val chooser = JFileChooser()
+        chooser.dialogTitle = "اختر ملفات مكتبتك الصوتية"
+        chooser.isMultiSelectionEnabled = true
+        chooser.fileFilter = FileNameExtensionFilter(
+            "ملفات صوتية (MP3 / WAV / OGG / FLAC)",
+            "mp3", "wav", "ogg", "oga", "flac", "aif", "aiff", "au"
+        )
+        val result = chooser.showOpenDialog(null)
+        return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFiles.toList() else null
+    }
+
     fun pickAudioFolder(): File? {
         val chooser = JFileChooser()
         chooser.dialogTitle = "اختر مجلدًا"

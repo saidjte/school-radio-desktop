@@ -2,6 +2,7 @@ package com.saidjte.schoolradio.desktop
 
 import com.saidjte.schoolradio.desktop.audio.AudioFx
 import com.saidjte.schoolradio.desktop.audio.BundledJingles
+import com.saidjte.schoolradio.desktop.audio.BundledSounds
 import com.saidjte.schoolradio.desktop.audio.ClipTransforms
 import com.saidjte.schoolradio.desktop.audio.FxChainStep
 import com.saidjte.schoolradio.desktop.audio.FxPresets
@@ -17,6 +18,7 @@ import com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS
 import com.saidjte.schoolradio.desktop.audio.RecordingItem
 import com.saidjte.schoolradio.desktop.audio.RecordingMeta
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
+import com.saidjte.schoolradio.desktop.audio.SoundPreviewEngine
 import com.saidjte.schoolradio.desktop.audio.StreamProbe
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
@@ -61,6 +63,10 @@ import com.saidjte.schoolradio.desktop.data.RepeatMode
 import com.saidjte.schoolradio.desktop.data.Role
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
+import com.saidjte.schoolradio.desktop.data.CustomSound
+import com.saidjte.schoolradio.desktop.data.SoundGroups
+import com.saidjte.schoolradio.desktop.data.SoundLibraryMath
+import com.saidjte.schoolradio.desktop.data.SoundLibraryStore
 import com.saidjte.schoolradio.desktop.data.StudioLayout
 import com.saidjte.schoolradio.desktop.data.StudioLayoutLogic
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
@@ -110,6 +116,7 @@ enum class Tab(val label: String) {
     SCHEDULE("جدولة الفقرات"),
     SCRIPT("سكريبت المذيع"),
     MUSIC("الموسيقى"),
+    SOUNDS("مكتبة الأصوات"),
     MIXER("وحدة المزج"),
     RECORDINGS("التسجيلات"),
     MONTAGE("المونتاج")
@@ -1498,6 +1505,127 @@ class AppViewModel {
             .filter { it.path != null && !File(it.path).isFile }
             .mapNotNull { it.id }
             .toSet()
+    }
+
+    // ================= مكتبة الأصوات والموسيقى (v0.42.0) =================
+    // خمس مجموعات مدمجة مولدة برمجيًا (CC0) + «مكتبتي الخاصة» المستوردة،
+    // مع معاينة قبل الإضافة وبحث وتصفية بالتصنيف، والإضافة تمر بالمخزن
+    // الرئيسي نفسه فتصل القوائم والمونتاج وجدار الجينل كلها.
+
+    /** محرك المعاينة — صوت واحد في كل لحظة يشارك سماعات الموسيقى. */
+    val soundPreview = SoundPreviewEngine(outputs = { player.outputsSnapshot() })
+
+    /** ملفات المدمجة المستخرجة بمعرّفاتها — البطاقات تشغل منها. */
+    private val _bundledSoundFiles = MutableStateFlow<Map<String, File>>(emptyMap())
+    val bundledSoundFiles: StateFlow<Map<String, File>> = _bundledSoundFiles.asStateFlow()
+
+    private var soundStore = SoundLibraryStore(File(dataDir(), "soundlib.json"))
+
+    private val _customSounds = MutableStateFlow(soundStore.custom())
+    val customSounds: StateFlow<List<CustomSound>> = _customSounds.asStateFlow()
+
+    /** استعلام البحث في مكتبة الأصوات (العنوان والوصف والوسوم). */
+    private val _soundQuery = MutableStateFlow("")
+    val soundQuery: StateFlow<String> = _soundQuery.asStateFlow()
+
+    /** المجموعة المرشحة (null = الكل). */
+    private val _soundGroup = MutableStateFlow<String?>(null)
+    val soundGroup: StateFlow<String?> = _soundGroup.asStateFlow()
+
+    /** حوار التراخيص والاستخدام التجاري. */
+    private val _licenseOpen = MutableStateFlow(false)
+    val licenseOpen: StateFlow<Boolean> = _licenseOpen.asStateFlow()
+
+    /** إضافة معلّقة: صوت اختاره المذيع وينتِ اختيار التصنيف — مدمج أو خاص. */
+    data class PendingSoundAdd(val title: String, val file: File, val group: String, val fromCustom: Boolean)
+
+    private val _pendingAdd = MutableStateFlow<PendingSoundAdd?>(null)
+    val pendingAdd: StateFlow<PendingSoundAdd?> = _pendingAdd.asStateFlow()
+
+    /** استخراج المدمجة وقراءة المخزن الخاص — بلا استثناءات كعاد الجدران. */
+    private fun loadSounds() {
+        try {
+            _bundledSoundFiles.value = BundledSounds.ensureExtracted(File(dataDir(), "sounds"))
+        } catch (_: Exception) {
+            _bundledSoundFiles.value = emptyMap()
+        }
+        _customSounds.value = soundStore.custom()
+    }
+
+    fun setSoundQuery(q: String) { _soundQuery.value = q }
+    fun setSoundGroupFilter(g: String?) { _soundGroup.value = g }
+
+    fun openLicenseDialog() { _licenseOpen.value = true }
+    fun closeLicenseDialog() { _licenseOpen.value = false }
+
+    /** معاينة صوت مدمج بمعرّفه — إن غاب ملفه فالخطأ يظهر على البطاقة. */
+    fun togglePreviewBundled(soundId: String) {
+        val f = _bundledSoundFiles.value[soundId]
+        if (f == null) {
+            soundPreview.stop()
+            return
+        }
+        soundPreview.toggle(f)
+    }
+
+    /** معاينة صوت من مكتبتي الخاصة. */
+    fun togglePreviewCustom(id: Long) {
+        val c = _customSounds.value.firstOrNull { it.id == id } ?: return
+        val f = File(c.path)
+        if (!f.isFile) {
+            soundPreview.stop()
+            return
+        }
+        soundPreview.toggle(f)
+    }
+
+    /** فتح حوار الإضافة لصوت مدمج. */
+    fun openBundledAddDialog(soundId: String) {
+        val s = BundledSounds.ALL.firstOrNull { it.id == soundId } ?: return
+        val f = _bundledSoundFiles.value[soundId] ?: return
+        _pendingAdd.value = PendingSoundAdd(s.title, f, s.group, fromCustom = false)
+    }
+
+    /** فتح حوار الإضافة لصوت خاص. */
+    fun openCustomAddDialog(id: Long) {
+        val c = _customSounds.value.firstOrNull { it.id == id } ?: return
+        val f = File(c.path)
+        if (!f.isFile) return
+        _pendingAdd.value = PendingSoundAdd(c.title, f, SoundGroups.CUSTOM, fromCustom = true)
+    }
+
+    fun dismissAddDialog() { _pendingAdd.value = null }
+
+    /**
+     * تأكيد الإضافة إلى المكتبة الرئيسية — بالمخزن نفسه فالصوت يصل
+     * القوائم والمونتاج والجدولة وجدار الجينل كلها، ولا يدخل ملف فاشل الفك أبدًا.
+     */
+    fun confirmAddSound(category: String) {
+        val p = _pendingAdd.value ?: return
+        _pendingAdd.value = null
+        importToLibrary(listOf(p.file), category)
+    }
+
+    /** استيراد مكتبة خاصة: ملفات مفردة أو مجلد ممسوح — يفهرس ويُبقي الأصل كما هو. */
+    fun importCustomLibrary(files: List<File>) {
+        val r = soundStore.addFiles(files)
+        _customSounds.value = soundStore.custom()
+        _lastLibraryMessage.value = when {
+            r.added.isEmpty() && r.skippedUnsupported > 0 ->
+                "لا ملفات صوتية قابلة للاستيراد — تجاوز ${r.skippedUnsupported} بصيغة غير مدعومة"
+            r.added.isEmpty() -> "لا ملفات جديدة للاستيراد — الموجودة مسبقًا مُتجاهَلة"
+            r.skippedUnsupported > 0 ->
+                "استُوردت ${r.added.size} إلى «مكتبتي الخاصة» · تجاوز ${r.skippedUnsupported} بصيغة غير مدعومة"
+            else -> "استُوردت ${r.added.size} إلى «مكتبتي الخاصة»"
+        }
+    }
+
+    /** إزالة صوت من مكتبتي الخاصة (الملف الأصلي لا يُمسّ). */
+    fun removeCustomSound(id: Long) {
+        if (soundStore.remove(id)) {
+            _customSounds.value = soundStore.custom()
+            _lastLibraryMessage.value = "أُزيل من «مكتبتي الخاصة» — الملف الأصلي كما هو على قرصك"
+        }
     }
 
     // ================= استيراد من اليوتيوب (v0.25.0) =================
@@ -3218,6 +3346,9 @@ class AppViewModel {
         _montageProject.value = montageStore.project()
         // جدار الجينغل: بيانات المجلد المستعاد قد تحمل مواضع ومستوى مختلفين
         loadJingleWall()
+        // مكتبة الأصوات: المخزن المستعاد قد يحمل مكتبتي الخاصة بملفات أخرى
+        soundStore = SoundLibraryStore(File(dataDir(), "soundlib.json"))
+        loadSounds()
 
         _users.value = usersStore.users()
         _currentUser.value = usersStore.currentUser()
@@ -3351,6 +3482,8 @@ class AppViewModel {
         wireCrossfade()
         // جدار الجينغل: استخراج المدمجة واسترجاع المواضع والمستوى المحفوظ
         loadJingleWall()
+        // مكتبة الأصوات والموسيقى: استخراج المدمجة الـ36 وقراءة مكتبتي الخاصة
+        loadSounds()
         // وحدة المزج: الحالة المحفوظة تُدفع إلى القنوات عند الإقلاع
         pushMixerToEngines()
         _recordingsDir.value.mkdirs()
