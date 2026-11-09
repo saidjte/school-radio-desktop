@@ -28,6 +28,17 @@ import kotlin.math.sin
  * (حذف متموّج Ripple: كل ما بعد المنطقة يُسحب يسارًا فلا فجوة يتيمة)،
  * وتقسيم مقاطع المسارات بالنقر، والتقاط على العلامات وحواف المقاطع.
  *
+ * v0.41.0 «نظام المونتاج متعدد المسارات الاحترافي»: المسارات الحرة تصير
+ * نظامًا كاملًا — أنواع (موسيقى خلفية/مؤثرات صوتية/حوار) بعدد كبير حتى 16
+ * مسارًا تُرتبّ ويُحذف منها ويُضاف إليها، وكتم/منفرد حيّان في رؤوسها (الطلب
+ * الجديد يعيدهما بعقد المزج الإذاعي — ومسار التعليق وحده بلا كتم ولا
+ * منفرد كما في v0.37.0)، وتوازن استريو Pan لكل مسار، وتجميع المسارات
+ * في مجموعات بمستوى وكتم/منفرد خاص بها تتراكب قيمها مع قيم المسار،
+ * وأتمتة مستوى الصوت بنقاط مفتاحية خطية على الخط الزمني تُطبّق في المزج
+ * والمعاينة والتصدير معًا، والخفض التلقائي يتحدد بحسب النوع: الموسيقى
+ * الخلفية تنخفض تحت التعليق والمؤثرات والحوار لا (هي ليست سريرًا)،
+ * ومزج كل المسارات في ملف واحد يبقى تصدير WAV/MP3 القائم.
+ *
  * v0.37.0 «تسمية المقاطع بالنقر المزدوج وبلا كتم وتصدير MP3»: إعادة تسمية
  * أي مقطع بنقرة مزدوجة على الخط الزمني، وإزالة الكتم/المنفرد من رؤوس
  * المسارات كلها — مسار التعليق هو البرنامج لا يُكتم أبدًا، والمسارات الحرة
@@ -91,9 +102,13 @@ data class MontageMusicClip(
 /**
  * مسار عمل حر (v0.36.0 «عدة خطوط عمل»): خط أفقي على الخط الزمني يسكنه
  * مقاطع بمواضع مطلقة — موسيقى، مؤثرات، تعليق ثانٍ، أجواء — بمستوى موحّد.
- * منذ v0.37.0 بلا كتم/منفرد (نفس عقد مسار التعليق: هو خط عمل لا يُصمَّت
- * بمفتاح واحد — الكتم الخاطئ أثناء البث مكلف) — الحقلان محفوظان للملفات
- * القديمة وتُهرَج قيمهما في المسارات الفعّالة دومًا.
+ *
+ * v0.41.0 «المونتاج متعدد المسارات الاحترافي»: المسار يكتمل خصائصه —
+ * [type] نوعه (null/مجهول = موسيقى خلفية هجرةً للمشاريع القديمة)، و[pan]
+ * توازنه الاستريو −100..+100 (0 = وسط)، و[groupId] مجموعته، والكتم/المنفرد
+ * عادا حيّين في رؤوس المسارات بطلب v0.41.0 (مسار التعليق وحده بلا كتم ولا
+ * منفرد كما قرّر v0.37.0). الحقول الجديدة محايدة عند الغياب في ملفات JSON
+ * القديمة: Gson يتركها null/0 فتعود قيمها الافتراضية الآمنة دون مساس.
  */
 data class MontageTrack(
     val id: String,
@@ -102,7 +117,45 @@ data class MontageTrack(
     val colorIndex: Int = 0,
     val volumePercent: Int = MontageLogic.VOLUME_DEFAULT,
     val muted: Boolean = false,
+    val solo: Boolean = false,
+    /** نوع المسار (v0.41.0): music/sfx/dialogue — الفارغ والمجهول = موسيقى خلفية. */
+    val type: String? = null,
+    /** التوازن الاستريو (v0.41.0): −100 يسار كامل، 0 وسط، +100 يمين كامل. */
+    val pan: Int = 0,
+    /** معرّف المجموعة المالكة (v0.41.0) — null/الفارغ = بلا مجموعة. */
+    val groupId: String? = null
+)
+
+/**
+ * مجموعة مسارات (v0.41.0 «تجميع المسارات»): وعاء يضم مسارات متعددة بمستوى
+ * وكتم/منفرد خاص بها — كسب المجموعة يتراكب مع كسب المسار، وكتمها يصمّت
+ * أعضاءها، ومنفردها يبقيهم حيّين وسط منفردَين غيرهم. قيمها قابلة للحبس
+ * مثل المسارات تمامًا.
+ */
+data class MontageGroup(
+    val id: String,
+    val name: String,
+    val colorIndex: Int = 0,
+    val volumePercent: Int = MontageLogic.VOLUME_DEFAULT,
+    val muted: Boolean = false,
     val solo: Boolean = false
+)
+
+/**
+ * نقطة أتمتة مستوى (v0.41.0 «أتمتة مستوى الصوت»): عند زمن معين على المسار
+ * يأخذ المستوى قيمة بالمئة — النقاط ترتب بالزمن وتُقرأ خطيًا بينها.
+ * [id] ثابت للسحب في الواجهة بلا التباس فهرس.
+ */
+data class MontageAutoPoint(
+    val id: String,
+    val tMs: Long = 0L,
+    val percent: Int = MontageLogic.VOLUME_DEFAULT
+)
+
+/** خط أتمتة مسار واحد: نقاطه المفتاحية مرتبة بالزمن عند الحفظ. */
+data class MontageAutomationLane(
+    val trackId: String,
+    val points: List<MontageAutoPoint> = emptyList()
 )
 
 /**
@@ -143,6 +196,11 @@ data class MontageProject(
     // ==== v0.36.0: عدة خطوط عمل ومسطرة العمليات ====
     /** المسارات الحرة (عدا مسار التعليق الثابت) — قائمة فارغة تعني مشروعًا قديمًا يُهاجر منطقيًا إلى «موسيقى». */
     val tracks: List<MontageTrack> = emptyList(),
+    // ==== v0.41.0: المونتاج متعدد المسارات الاحترافي ====
+    /** مجموعات المسارات — null في الملفات القديمة تعود قائمة فارغة. */
+    val groups: List<MontageGroup>? = null,
+    /** خطوط الأتمتة لكل مسار — null في الملفات القديمة تعود قائمة فارغة. */
+    val automation: List<MontageAutomationLane>? = null,
     /** المنطقة المحددة على المسطرة [selectionStartMs, selectionEndMs) — null = لا تحديد. */
     val selectionStartMs: Long = -1L,
     val selectionEndMs: Long = -1L
@@ -178,8 +236,8 @@ object MontageLogic {
 
     // ==== v0.35.0: ثوابت المسار المزدوج والعلامات ====
 
-    /** حد مقاطع الموسيقى المرافقة — سرير صوتي لا مختانٍ متعدد. */
-    const val MAX_MUSIC_CLIPS = 12
+    /** حد مقاطع الموسيقى المرافقة — منذ v0.41.0 سقف مقاطع كل المسارات الحرة معًا (نظام متعدد المسارات لا سرير واحد). */
+    const val MAX_MUSIC_CLIPS = 120
     /** حد العلامات المسمّاة. */
     const val MAX_MARKERS = 40
 
@@ -201,16 +259,36 @@ object MontageLogic {
     /** معرّف المسار الحر الافتراضي «موسيقى» — مقاطع بلا trackId تعيش عليه. */
     const val DEFAULT_TRACK_ID = "music"
 
-    /** سقف المسارات الحرة — عدة خطوط عمل حقيقية بلا فوضى عمودية. */
-    const val MAX_TRACKS = 5
+    /** سقف المسارات الحرة — منذ v0.41.0 عدد كبير من المسارات حتى 16 خط عمل. */
+    const val MAX_TRACKS = 16
 
-    /** سقف مقاطع المسارات الحرة مجتمعة. */
-    const val MAX_TRACK_CLIPS = 60
+    /** سقف مقاطع المسارات الحرة مجتمعة — رُفع مع توسّع النظام متعدد المسارات. */
+    const val MAX_TRACK_CLIPS = 120
 
-    /** لوحة ألوان المسارات — تمايز بصري بين خطوط العمل. */
+    // ==== v0.41.0: ثوابت نظام المونتاج متعدد المسارات الاحترافي ====
+
+    /** نوع المسار: موسيقى خلفية — ينخفض تحت التعليق حين يفعّل المذيع الخفض. */
+    const val TYPE_MUSIC = "music"
+    /** نوع المسار: مؤثرات صوتية — لا تنخفض تحت التعليق (نبضة قصيرة لا سرير). */
+    const val TYPE_SFX = "sfx"
+    /** نوع المسار: حوار — كلام بحد ذاته فلا ينخفض تحت التعليق. */
+    const val TYPE_DIALOGUE = "dialogue"
+
+    /** سقف المجموعات في المشروع الواحد. */
+    const val MAX_GROUPS = 8
+    /** سقف نقاط الأتمتة على المسار الواحد — منحنى قابل للقراءة لا شجرة أرقام. */
+    const val MAX_AUTO_POINTS = 64
+
+    /** أدنى وأعلى توازن استريو لمسار — 0 وسط. */
+    const val PAN_MIN = -100
+    const val PAN_MAX = 100
+
+    /** لوحة ألوان المسارات — منذ v0.41.0 عشرة ألوان لمسارات أكثر. */
     val TRACK_COLORS = intArrayOf(
         0xFF7E57C2.toInt(), 0xFF26A69A.toInt(), 0xFFEF6C00.toInt(),
-        0xFF5C6BC0.toInt(), 0xFFD81B60.toInt()
+        0xFF5C6BC0.toInt(), 0xFFD81B60.toInt(), 0xFF00897B.toInt(),
+        0xFFF4511E.toInt(), 0xFF3949AB.toInt(), 0xFFC0CA33.toInt(),
+        0xFF6D4C41.toInt()
     )
 
     /** الحد الأدنى لعرض المنطقة المحددة على المسطرة (مللي ثانية) — أصغر منها يُهمَل. */
@@ -225,16 +303,34 @@ object MontageLogic {
     /** اسم المسار الحر الافتراضي. */
     const val DEFAULT_TRACK_NAME = "موسيقى"
 
+    // ==== v0.41.0: أسماء وأنواع المسارات الافتراضية ====
+
+    /** معرّفات المسارات الافتراضية الثلاثة للمشاريع الجديدة والقديمة الخاوية. */
+    const val DEFAULT_MUSIC_NAME = "موسيقى خلفية"
+    const val DEFAULT_SFX_ID = "sfx"
+    const val DEFAULT_SFX_NAME = "مؤثرات"
+    const val DEFAULT_DIALOGUE_ID = "dialogue"
+    const val DEFAULT_DIALOGUE_NAME = "حوار"
+
     /** معرّف مسار حر جديد فريد. */
     fun newTrackId(): String = "tr${System.nanoTime()}"
 
+    /** معرّف مجموعة جديد فريد. */
+    fun newGroupId(): String = "gr${System.nanoTime()}"
+
+    /** معرّف نقطة أتمتة جديد فريد. */
+    fun newAutoPointId(): String = "ap${System.nanoTime()}"
+
     /**
-     * المسارات الفعّالة للمشروع: القائمة المحفوظة إن وُجدت، وإلا مسار «موسيقى»
-     * افتراضي واحد — هجرة منطقية صامتة لمشاريع v0.35.0 دون مساس ملفها.
+     * المسارات الفعّالة للمشروع: القائمة المحفوظة إن وُجدت، وإلا الثلاثي
+     * الافتراضي (موسيقى خلفية + مؤثرات + حوار) — هجرة منطقية صامتة
+     * لمشاريع v0.35.0 الخاوية دون مساس ملفها.
      *
-     * v0.37.0: الكتم/المنفرد خارج عقد المونتاج كله (رؤوس بلا M/S، ومسار
-     * التعليق هو البرنامج لا يُكتم أبدًا) — أعلام الملفات القديمة من v0.36.0
-     * تُهرَج هنا صامتة إلى false فلا مسار يتيم مكتموم بلا زر يعيده.
+     * v0.41.0: الكتم/المنفرد عادا حيّين في رؤوس المسارات الحرة (طلب نظام
+     * المونتاج متعدد المسارات) فلا تُهرَج أعلامهما إلى false بعد الآن —
+     * والأزرار موجودة فلا مسار يتيم مكتموم، ومسار التعليق وحده (خارج هذه
+     * القائمة) بلا كتم ولا منفرد كما قرّر v0.37.0. النوع المجهول يُفسَّر
+     * موسيقى خلفية، والتوازن محبوس، والقيم محبوسة كما هي.
      */
     fun effectiveTracks(p: MontageProject): List<MontageTrack> {
         val t = p.tracks.map {
@@ -242,12 +338,22 @@ object MontageLogic {
                 name = it.name.trim().ifEmpty { DEFAULT_TRACK_NAME }.take(24),
                 colorIndex = Math.floorMod(it.colorIndex, TRACK_COLORS.size),
                 volumePercent = clampVolume(it.volumePercent),
-                muted = false,
-                solo = false
+                pan = clampPan(it.pan)
             )
         }
-        return if (t.isEmpty()) listOf(MontageTrack(id = DEFAULT_TRACK_ID, name = DEFAULT_TRACK_NAME)) else t
+        return if (t.isEmpty()) defaultTrackTrio() else t
     }
+
+    /**
+     * الثلاثي الافتراضي للمسارات الحرة (v0.41.0): موسيقى خلفية + مؤثرات
+     * + حوار — يشغّل المشاريع الجديدة والمشاريع القديمة الخاوية بأرضية
+     * نظام متعدد المسارات جاهز، بمعرّفات ثابتة تُعرف بالمقارنة النصية.
+     */
+    fun defaultTrackTrio(): List<MontageTrack> = listOf(
+        MontageTrack(id = DEFAULT_TRACK_ID, name = DEFAULT_MUSIC_NAME, colorIndex = 1, type = TYPE_MUSIC),
+        MontageTrack(id = DEFAULT_SFX_ID, name = DEFAULT_SFX_NAME, colorIndex = 2, type = TYPE_SFX),
+        MontageTrack(id = DEFAULT_DIALOGUE_ID, name = DEFAULT_DIALOGUE_NAME, colorIndex = 3, type = TYPE_DIALOGUE)
+    )
 
     /**
      * تعقيم اسم مقطع للإعادة التسمية بالنقر المزدوج (v0.37.0): بلا أطراف
@@ -284,6 +390,189 @@ object MontageLogic {
 
     /** هل من مسار حر منفرد؟ */
     fun anyTrackSolo(tracks: List<MontageTrack>): Boolean = tracks.any { it.solo }
+
+    // ==== v0.41.0: نظام المونتاج متعدد المسارات الاحترافي — رياضيات نقية ====
+
+    /**
+     * نوع المسار الفعّال: القيمة المعروفة تعود كما هي، والفارغ/المجهول
+     * (ملفات JSON القديمة عبر Gson تترك الحقل null) يعود موسيقى خلفية —
+     * هجرة صامتة تحفظ سلوك المشاريع القديمة (كل المسارات كانت تنخفض).
+     */
+    fun trackType(t: MontageTrack): String = when (t.type?.trim()) {
+        TYPE_MUSIC, TYPE_SFX, TYPE_DIALOGUE -> t.type!!.trim()
+        else -> TYPE_MUSIC
+    }
+
+    /** الاسم العربي لعرض نوع المسار على الرأس والشارات. */
+    fun trackTypeLabelAr(type: String): String = when (type) {
+        TYPE_SFX -> "مؤثرات"
+        TYPE_DIALOGUE -> "حوار"
+        else -> "موسيقى"
+    }
+
+    /**
+     * هل ينخفض هذا المسار تحت التعليق عند تفعيل الخفض التلقائي؟ التحكم في
+     * تداخل الأصوات بحسب النوع: الموسيقى الخلفية سرير ينخفض، والمؤثرات
+     * نبضة قصيرة لا يُلحق بها الخفض، والحوار كلام بحد ذاته لا يُقابَل
+     * كالموسيقى. مشاريع ما قبل v0.41.0 تُفسَّر موسيقى فسلوكها بلا مساس.
+     */
+    fun ducksUnderVoice(t: MontageTrack): Boolean = trackType(t) == TYPE_MUSIC
+
+    /** حبس قيمة التوازن الاستريو إلى نطاقها القانوني. */
+    fun clampPan(p: Int): Int = p.coerceIn(PAN_MIN, PAN_MAX)
+
+    /** كسب القناة اليسرى عند التوازن المعطى — خطي بلا انكسار عند الوسط. */
+    fun panGainLeft(pan: Int): Float =
+        1f - (clampPan(pan).toFloat() / PAN_MAX).coerceAtLeast(0f)
+
+    /** كسب القناة اليمنى عند التوازن المعطى — خطي بلا انكسار عند الوسط. */
+    fun panGainRight(pan: Int): Float =
+        1f + (clampPan(pan).toFloat() / PAN_MAX).coerceAtMost(0f)
+
+    /** مجموعات المشروع الفعّالة — null في الملفات القديمة تعود قائمة فارغة. */
+    fun groupsOf(p: MontageProject): List<MontageGroup> = p.groups ?: emptyList()
+
+    /** تعقيم قائمة المجموعات: أسماء غير خاوية محبوسة وقيم محبوسة وسقف العدد. */
+    fun sanitizeGroups(groups: List<MontageGroup>?): List<MontageGroup> =
+        (groups ?: emptyList()).take(MAX_GROUPS).map {
+            it.copy(
+                name = it.name.trim().ifEmpty { "مجموعة" }.take(24),
+                colorIndex = Math.floorMod(it.colorIndex, TRACK_COLORS.size),
+                volumePercent = clampVolume(it.volumePercent)
+            )
+        }
+
+    /** المجموعة بمعرّفها — المجهول/الفارغ يعود null فالمسار يعيش بلا مجموعة. */
+    fun groupById(groups: List<MontageGroup>, groupId: String?): MontageGroup? {
+        val id = groupId?.trim().orEmpty()
+        if (id.isEmpty()) return null
+        return groups.firstOrNull { it.id == id }
+    }
+
+    /** هل من مجموعة منفردة؟ */
+    fun anyGroupSolo(groups: List<MontageGroup>): Boolean = groups.any { it.solo }
+
+    /**
+     * هل يُسمع هذا المسار في المزج؟ عقد وحدة المزج الإذاعي الكامل (v0.41.0):
+     * كتم المسار أو كتم مجموعته يصمّمه، ومنفرد المسار أو منفرد مجموعته
+     * يبقيه حيًّا وسط أي منفردَين آخرين — ولا منفرد على الإطلاق يعني الجميع
+     * حيّ (عدا المكتوم). مسار التعليق خارج هذا العقد: هو البرنامج دائمًا.
+     */
+    fun trackAudible(
+        track: MontageTrack,
+        group: MontageGroup?,
+        anyTrackSolo: Boolean,
+        anyGroupSolo: Boolean
+    ): Boolean {
+        if (track.muted) return false
+        if (group?.muted == true) return false
+        val anySolo = anyTrackSolo || anyGroupSolo
+        if (!anySolo) return true
+        return track.solo || group?.solo == true
+    }
+
+    /**
+     * كسب المسار النهائي عند المزج (v0.41.0): مستوى المسار × مستوى مجموعته
+     * (مجموعة بلا وجود تعني 100٪)، والمسامع (كتم/منفرد) تصفّره كليًا —
+     * يُستدعى من المُصيّر لكل مقطع مسار بدل كسب المسار الأحادي القديم.
+     */
+    fun trackAmp(
+        track: MontageTrack,
+        group: MontageGroup?,
+        anyTrackSolo: Boolean,
+        anyGroupSolo: Boolean
+    ): Float {
+        if (!trackAudible(track, group, anyTrackSolo, anyGroupSolo)) return 0f
+        val gAmp = (group?.volumePercent ?: VOLUME_DEFAULT) / 100f
+        return track.volumePercent / 100f * gAmp
+    }
+
+    /** اسم مسار جديد غير مكرر لنوع معين — «مؤثرات» ف«مؤثرات 2» ف«مؤثرات 3»… */
+    fun nextTrackName(tracks: List<MontageTrack>, type: String): String {
+        val base = trackTypeLabelAr(type)
+        val sameType = tracks.filter { trackType(it) == type }.size
+        if (tracks.none { it.name.trim() == base }) return base
+        var n = sameType + 1
+        while (tracks.any { it.name.trim() == "$base $n" }) n++
+        return "$base $n"
+    }
+
+    /** مسار جديد بنوع معين بلون غير مستخدم من اللوحة — قرارات الإضافة النقية. */
+    fun newTrackOfType(tracks: List<MontageTrack>, type: String): MontageTrack {
+        val used = tracks.map { it.colorIndex }.toSet()
+        var ci = 0
+        while (ci < TRACK_COLORS.size && ci in used) ci++
+        return MontageTrack(
+            id = newTrackId(),
+            name = nextTrackName(tracks, type),
+            colorIndex = ci % TRACK_COLORS.size,
+            type = type
+        )
+    }
+
+    /**
+     * ترتيب المسارات بتحريك مسار واحد خطوة لأعلى (−1) أو لأسفل (+1) —
+     * «تحريك المسارات بشكل مستقل»: العائد null إن كان المسار مجهولًا أو
+     * الخطوة تخرجه من القائمة، وإلا القائمة الجديدة بلا مساس البقية.
+     */
+    fun moveTrack(tracks: List<MontageTrack>, trackId: String, delta: Int): List<MontageTrack>? {
+        val i = tracks.indexOfFirst { it.id == trackId }
+        if (i < 0) return null
+        val j = i + delta
+        if (j < 0 || j >= tracks.size) return null
+        val out = tracks.toMutableList()
+        val t = out.removeAt(i)
+        out.add(j, t)
+        return out
+    }
+
+    /** خطوط الأتمتة الفعّالة — null في الملفات القديمة تعود قائمة فارغة. */
+    fun automationLanesOf(p: MontageProject): List<MontageAutomationLane> =
+        p.automation ?: emptyList()
+
+    /** خط أتمتة مسار معين — الغائب يعود null فالمسار بلا أتمتة بعد. */
+    fun automationLaneOf(p: MontageProject, trackId: String): MontageAutomationLane? =
+        automationLanesOf(p).firstOrNull { it.trackId == trackId }
+
+    /**
+     * تعقيم نقاط أتمتة: زمن غير سالب ومستوى محبوس وترتيب زمني وسقف العدد
+     * — فلا ملف مُحرَّر يدويًا يكسر المنحنى ولا نقطة خارجة عن النطاق.
+     */
+    fun sanitizeAutoPoints(points: List<MontageAutoPoint>): List<MontageAutoPoint> =
+        points.map { it.copy(tMs = it.tMs.coerceAtLeast(0L), percent = clampVolume(it.percent)) }
+            .sortedBy { it.tMs }
+            .take(MAX_AUTO_POINTS)
+
+    /**
+     * قراءة المنحنى عند لحظة: قبل أول نقطة تعود قيمتها، وبعد آخر نقطة
+     * تعود قيمتها، وبين نقطتين استقراء خطي — والقائمة الخاوية تعود 100٪
+     * فالأتمتة الغائبة محايدة تمامًا على المزج.
+     */
+    fun autoGainPercentAt(points: List<MontageAutoPoint>, tMs: Long): Int {
+        if (points.isEmpty()) return VOLUME_DEFAULT
+        val t = tMs.coerceAtLeast(0L)
+        if (t <= points.first().tMs) return points.first().percent
+        if (t >= points.last().tMs) return points.last().percent
+        for (i in 0 until points.size - 1) {
+            val a = points[i]
+            val b = points[i + 1]
+            if (t >= a.tMs && t <= b.tMs) {
+                if (b.tMs <= a.tMs) return b.percent
+                val f = (t - a.tMs).toFloat() / (b.tMs - a.tMs).toFloat()
+                return (a.percent + (b.percent - a.percent) * f).toInt()
+            }
+        }
+        return points.last().percent
+    }
+
+    /**
+     * نقاط أتمتة افتراضية لمسار يفعّل الأتمتة أول مرة: نقطة واحدة عند
+     * الصفر بمستوى المسار الحيّ — المنحنى يبدأ مساويًا للوضع بلا أتمتة
+     * فالتشغيل لا يتغير بلمسة التفعيل، والنقاط تضاف فوقه بعدها.
+     */
+    fun defaultAutoPoints(track: MontageTrack): List<MontageAutoPoint> = listOf(
+        MontageAutoPoint(id = newAutoPointId(), tMs = 0L, percent = clampVolume(track.volumePercent))
+    )
 
     /**
      * التقاط موضع زمني (v0.36.0): أقرب مرشح ضمن العتبة يفوز — العلامات

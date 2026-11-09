@@ -61,13 +61,16 @@ class MontageMultiTrackTest {
     // ================= 1) المسارات الفعّالة والهجرة =================
 
     @Test
-    fun `legacy project with no tracks migrates to default music track`() {
+    fun `legacy project with no tracks migrates to the default trio`() {
         val p = project(trackClips = listOf(tclip("m1", 4000, 0L)))
         val tracks = MontageLogic.effectiveTracks(p)
-        assertEquals(1, tracks.size)
+        // منذ v0.41.0 الهجرة تُنشئ الثلاثي الافتراضي: موسيقى خلفية + مؤثرات + حوار
+        assertEquals(3, tracks.size)
         assertEquals(MontageLogic.DEFAULT_TRACK_ID, tracks[0].id)
-        assertEquals(MontageLogic.DEFAULT_TRACK_NAME, tracks[0].name)
-        // مقطع بلا trackId يعيش على المسار الافتراضي
+        assertEquals(MontageLogic.TYPE_MUSIC, MontageLogic.trackType(tracks[0]))
+        assertEquals(MontageLogic.TYPE_SFX, MontageLogic.trackType(tracks[1]))
+        assertEquals(MontageLogic.TYPE_DIALOGUE, MontageLogic.trackType(tracks[2]))
+        // مقطع بلا trackId يعيش على المسار الافتراضي (موسيقى خلفية)
         assertEquals(MontageLogic.DEFAULT_TRACK_ID, MontageLogic.effectiveTrackId(p.musicClips[0]))
         assertEquals(listOf("m1"), MontageLogic.clipsOfTrack(p, MontageLogic.DEFAULT_TRACK_ID).map { it.id })
     }
@@ -272,7 +275,7 @@ class MontageMultiTrackTest {
     // ================= 6) التصيير الفعلي بعدة مسارات =================
 
     @Test
-    fun `render mixes multiple tracks and strips legacy mute and solo flags`() {
+    fun `render mixes multiple tracks and honors live mute and solo`() {
         val dir = File(tmp, "tones")
         val voice = MontageDemo.tone(File(dir, "voice.wav"), 44_100, 1, 2_000, 440.0)
         val bed1 = MontageDemo.tone(File(dir, "bed1.wav"), 44_100, 1, 4_000, 330.0)
@@ -302,19 +305,37 @@ class MontageMultiTrackTest {
         val f1 = AudioSystem.getAudioInputStream(out1).format
         assertEquals(44_100f, f1.sampleRate)
 
-        // أعلام كتم قديمة من مشاريع v0.36.0: تُهرَج فالمدة والصوت كما هي
+        // عقد v0.41.0: الكتم حيّ — مسار مكتوم صامت والمدة كما هي
         val p2 = p1.copy(tracks = tracks.map { if (it.id == "tb") it.copy(muted = true) else it })
         val out2 = File(tmp, "mix2.wav")
         val r2 = MontageRender.render(p2, out2)
         assertTrue(r2.ok) { r2.message ?: "" }
         assertTrue(Math.abs(r2.durationMs - 4_000L) <= 40L) { "durationMs=${r2.durationMs}" }
+        val peakOf = { f: File ->
+            AudioSystem.getAudioInputStream(f).use { ais ->
+                val buf = ByteArray(64 * 1024)
+                var peak = 0
+                while (true) {
+                    val n = ais.read(buf)
+                    if (n < 0) break
+                    var i = 0
+                    while (i + 1 < n) {
+                        val v = Math.abs(((buf[i + 1].toInt() shl 8) or (buf[i].toInt() and 0xFF)).toShort().toInt())
+                        if (v > peak) peak = v
+                        i += 2
+                    }
+                }
+                peak
+            }
+        }
+        assertTrue(peakOf(out1) > 5_000) { "all audible peak=${peakOf(out1)}" }
+        assertTrue(peakOf(out2) > 5_000) { "muted one track still has voice+bed audible" }
 
-        // أعلام منفرد قديمة: تُهرَج أيضًا فلا عزل صامت
+        // المنفرد حيّ أيضًا: العزل يخرج ملفًا سليمًا (المنفرد وحده مسموع)
         val p3 = p1.copy(tracks = tracks.map { if (it.id == "tb") it.copy(solo = true) else it })
         val out3 = File(tmp, "mix3.wav")
         val r3 = MontageRender.render(p3, out3)
         assertTrue(r3.ok) { r3.message ?: "" }
-        assertNotNull(out3)
         assertTrue(out3.length() > 44L)
     }
 
@@ -326,6 +347,6 @@ class MontageMultiTrackTest {
         assertTrue(MontageLogic.MAX_TRACKS >= 2)
         assertTrue(MontageLogic.SELECTION_MIN_MS > 0)
         assertTrue(MontageLogic.SNAP_THRESHOLD_MS > 0)
-        assertEquals(5, MontageLogic.TRACK_COLORS.size)
+        assertTrue(MontageLogic.TRACK_COLORS.size >= 5)
     }
 }

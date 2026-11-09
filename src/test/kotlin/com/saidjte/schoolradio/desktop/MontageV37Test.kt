@@ -44,10 +44,10 @@ class MontageV37Test {
         assertEquals(40, MontageLogic.sanitizeClipTitle(long).count { it == 'ا' })
     }
 
-    // ================= 2) بلا كتم ولا منفرد: هجرة الأعلام القديمة =================
+    // ================= 2) الكتم والمنفرد حيّان في المسارات (عقد v0.41.0 المعاد) =================
 
     @Test
-    fun `legacy mute and solo flags are stripped from effective tracks`() {
+    fun `mute and solo flags are live controls on effective tracks again`() {
         val p = MontageProject(
             tracks = listOf(
                 MontageTrack(id = "t1", name = "موسيقى", volumePercent = 130, muted = true, solo = false),
@@ -56,21 +56,22 @@ class MontageV37Test {
         )
         val tracks = MontageLogic.effectiveTracks(p)
         assertEquals(2, tracks.size)
-        // كل الأعلام تُهرَج: لا مسار مكتموم ولا منفرد — عقد مسار التعليق للجميع
-        assertTrue(tracks.none { it.muted }) { "mute flag survived migration" }
-        assertTrue(tracks.none { it.solo }) { "solo flag survived migration" }
+        // منذ v0.41.0 الأعلام حيّة لا تُهرَج — الأزرار عادت فلا مسار يتيم مكتموم
+        assertTrue(tracks[0].muted) { "mute flag lost" }
+        assertTrue(tracks[1].solo) { "solo flag lost" }
         // باقي القيم محفوظة كما هي
         assertEquals(130, tracks[0].volumePercent)
         assertEquals("موسيقى", tracks[0].name)
         assertEquals(80, tracks[1].volumePercent)
-        // الكسب المرجعي يعود المستوى دائمًا بعد الهجرة
-        assertEquals(130, MontageLogic.trackGainPercent(tracks[0], anySolo = false))
-        assertEquals(false, MontageLogic.anyTrackSolo(tracks))
+        // الكسب المرجعي يحترم المسامع: المكتوم صفر والمنفرد حيّ وسط منفرد
+        assertEquals(0, MontageLogic.trackGainPercent(tracks[0], anySolo = false))
+        assertEquals(80, MontageLogic.trackGainPercent(tracks[1], anySolo = true))
+        assertEquals(true, MontageLogic.anyTrackSolo(tracks))
     }
 
     @Test
-    fun `render is audible even when legacy project carries a muted track`() {
-        // عقد قديم من v0.36.0: مساره الوحيد مكتموم — بعد v0.37.0 لا يصمت أبدًا
+    fun `render silences a muted track`() {
+        // عقد v0.41.0: الكتم يصمت فعلا في المزج — ووحدة المزج تقرر البقية
         val tone = MontageDemo.tone(File(tmp, "bed.wav"), 44_100, 1, 3_000, 330.0)
         val p = MontageProject(
             musicClips = listOf(
@@ -81,11 +82,11 @@ class MontageV37Test {
             ),
             tracks = listOf(MontageTrack(id = "t1", name = "موسيقى", muted = true))
         )
-        val out = File(tmp, "audible.wav")
+        val out = File(tmp, "muted.wav")
         val r = MontageRender.render(p, out)
         assertTrue(r.ok) { r.message ?: "" }
         assertTrue(Math.abs(r.durationMs - 3_000L) <= 40L) { "durationMs=${r.durationMs}" }
-        // ذروة حقيقية داخل الملف: الصوت يخرج فعلًا لا صمت مكتموم
+        // الملف صامت كليا: الكتم يصفّر الكسب قبل أي حساب
         AudioSystem.getAudioInputStream(out).use { ais ->
             val buf = ByteArray(64 * 1024)
             var peak = 0
@@ -99,7 +100,7 @@ class MontageV37Test {
                     i += 2
                 }
             }
-            assertTrue(peak > 5_000) { "expected audible bed, peak=$peak" }
+            assertTrue(peak <= 4) { "expected silent muted track, peak=$peak" }
         }
     }
 

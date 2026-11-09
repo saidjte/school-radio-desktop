@@ -2798,31 +2798,28 @@ class AppViewModel {
     /** قائمة المسارات الفعّالة للمشروع الحالي. */
     fun montageTracksEffective(): List<MontageTrack> = MontageLogic.effectiveTracks(_montageProject.value)
 
-    /** إضافة مسار عمل حر جديد — المسار الافتراضي يُرسّخ في القائمة أول إضافة. */
-    fun addMontageTrack() {
+    /**
+     * إضافة مسار عمل حر جديد بنوع معين (v0.41.0): موسيقى خلفية/مؤثرات/حوار —
+     * الاسم يُشتق من النوع بلا تكرار واللون يُنتقى من غير المستخدم، والسقف
+     * 16 مسارًا يحمي الواجهة. المشروع الخاوي يُرسّخ الثلاثي الافتراضي أولًا.
+     */
+    fun addMontageTrack(type: String = MontageLogic.TYPE_MUSIC) {
         val p = _montageProject.value
-        val base = if (p.tracks.isEmpty()) {
-            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
-        } else p.tracks
+        val base = MontageLogic.effectiveTracks(p)
         if (base.size >= MontageLogic.MAX_TRACKS) {
             _lastLibraryMessage.value = "بلغت سقف المسارات (${MontageLogic.MAX_TRACKS}) — احذف مسارًا فارغًا أولًا"
             return
         }
-        val t = MontageTrack(
-            id = MontageLogic.newTrackId(),
-            name = "مسار ${base.size + 1}",
-            colorIndex = base.size % MontageLogic.TRACK_COLORS.size
-        )
+        val t = MontageLogic.newTrackOfType(base, type)
         applyMontage(p.copy(tracks = base + t))
-        _lastLibraryMessage.value = "أُضيف «${t.name}» — اسحب مقاطع إليه أو أضف ملفات وهو محدد"
+        _lastLibraryMessage.value =
+            "أُضيف مسار «${t.name}» (${MontageLogic.trackTypeLabelAr(type)}) — اسحب مقاطع إليه أو أضف ملفات وهو محدد"
     }
 
-    /** حذف مسار حر مع مقاطعه — آخر مسار لا يُحذف، والتراجع يستعيد الكل. */
+    /** حذف مسار حر مع مقاطعه وخط أتمتته — آخر مسار لا يُحذف، والتراجع يستعيد الكل. */
     fun removeMontageTrack(trackId: String) {
         val p = _montageProject.value
-        val base = if (p.tracks.isEmpty()) {
-            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
-        } else p.tracks
+        val base = MontageLogic.effectiveTracks(p)
         if (base.size <= 1) {
             _lastLibraryMessage.value = "آخر مسار لا يُحذف — قلب المشروع بلا خطوط عمل"
             return
@@ -2831,7 +2828,8 @@ class AppViewModel {
         applyMontage(
             p.copy(
                 tracks = base.filterNot { it.id == trackId },
-                musicClips = p.musicClips.filter { MontageLogic.effectiveTrackId(it) != trackId }
+                musicClips = p.musicClips.filter { MontageLogic.effectiveTrackId(it) != trackId },
+                automation = MontageLogic.automationLanesOf(p).filterNot { it.trackId == trackId }
             )
         )
         _lastLibraryMessage.value = "حُذف مسار «${target.name}» مع مقاطعه — تراجع يعيده"
@@ -2840,21 +2838,220 @@ class AppViewModel {
     /** إعادة تسمية مسار. */
     fun renameMontageTrack(trackId: String, name: String) {
         val p = _montageProject.value
-        val base = if (p.tracks.isEmpty()) {
-            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
-        } else p.tracks
+        val base = MontageLogic.effectiveTracks(p)
         applyMontage(p.copy(tracks = base.map { if (it.id == trackId) it.copy(name = name.trim().take(24)) else it }))
     }
 
     /** مستوى مسار بالبئة — كسب المزج لكله مقاطعه. */
     fun setMontageTrackVolume(trackId: String, percent: Int) {
         val p = _montageProject.value
-        val base = if (p.tracks.isEmpty()) {
-            listOf(MontageTrack(id = MontageLogic.DEFAULT_TRACK_ID, name = MontageLogic.DEFAULT_TRACK_NAME))
-        } else p.tracks
+        val base = MontageLogic.effectiveTracks(p)
         applyMontage(
             p.copy(tracks = base.map { if (it.id == trackId) it.copy(volumePercent = MontageLogic.clampVolume(percent)) else it }),
             record = false
+        )
+    }
+
+    /**
+     * كتم مسار حر (v0.41.0 — طلب نظام المونتاج متعدد المسارات): صفر كسب
+     * في المزج والمعاينة والتصدير معًا — ومسار التعليق وحده خارج العقد.
+     */
+    fun setMontageTrackMute(trackId: String, muted: Boolean) {
+        val p = _montageProject.value
+        val base = MontageLogic.effectiveTracks(p)
+        applyMontage(p.copy(tracks = base.map { if (it.id == trackId) it.copy(muted = muted) else it }))
+    }
+
+    /** عزل مسار حر — يبقى حيًّا وحده وسط أي منفردَين، ووحدة المزج تقرر البقية. */
+    fun setMontageTrackSolo(trackId: String, solo: Boolean) {
+        val p = _montageProject.value
+        val base = MontageLogic.effectiveTracks(p)
+        applyMontage(p.copy(tracks = base.map { if (it.id == trackId) it.copy(solo = solo) else it }))
+    }
+
+    /** توازن استريو لمسار −100..+100 — توزيع قناة إلى قناة في المزج. */
+    fun setMontageTrackPan(trackId: String, pan: Int) {
+        val p = _montageProject.value
+        val base = MontageLogic.effectiveTracks(p)
+        applyMontage(
+            p.copy(tracks = base.map { if (it.id == trackId) it.copy(pan = MontageLogic.clampPan(pan)) else it }),
+            record = false
+        )
+    }
+
+    /** تغيير نوع مسار — الاسم يبقى ما سمّاه المذيع فلا مفاجأة تسمية. */
+    fun setMontageTrackType(trackId: String, type: String) {
+        val p = _montageProject.value
+        val base = MontageLogic.effectiveTracks(p)
+        applyMontage(p.copy(tracks = base.map { if (it.id == trackId) it.copy(type = type) else it }))
+    }
+
+    /** تحريك مسار خطوة لأعلى أو لأسفل — ترتيب خطوط العمل بلا مساس مقاطعها. */
+    fun moveMontageTrack(trackId: String, delta: Int) {
+        val p = _montageProject.value
+        val base = MontageLogic.effectiveTracks(p)
+        val moved = MontageLogic.moveTrack(base, trackId, delta) ?: return
+        applyMontage(p.copy(tracks = moved))
+    }
+
+    // ---- المجموعات (v0.41.0: تجميع المسارات) ----
+
+    /**
+     * إضافة مجموعة باسم — تُحفظ في المشروع وتظهر في شريط المجموعات، والمسار
+     * ينتسب إليها من رأسه. الاسم الفارغ يولّد أول «مجموعة N» غير مستخدم
+     * والسقف 8 مجموعات.
+     */
+    fun addMontageGroup(name: String) {
+        val p = _montageProject.value
+        val groups = MontageLogic.groupsOf(p)
+        if (groups.size >= MontageLogic.MAX_GROUPS) {
+            _lastLibraryMessage.value = "بلغت سقف المجموعات (${MontageLogic.MAX_GROUPS}) — احذف مجموعة أولًا"
+            return
+        }
+        val trimmed = name.trim().take(24)
+        val n = if (trimmed.isNotEmpty()) {
+            trimmed
+        } else {
+            // الاسم الفارغ يولّد أول «مجموعة N» غير مستخدم فلا أسماء متكررة
+            var i = 1
+            while (groups.any { it.name == "مجموعة $i" }) i++
+            "مجموعة $i"
+        }
+        val g = com.saidjte.schoolradio.desktop.data.MontageGroup(
+            id = MontageLogic.newGroupId(),
+            name = n,
+            colorIndex = groups.size % MontageLogic.TRACK_COLORS.size
+        )
+        applyMontage(p.copy(groups = groups + g))
+        _lastLibraryMessage.value = "أُنشئت مجموعة «${g.name}» — انتسب إليها المسارات من رؤوسها"
+    }
+
+    /** حذف مجموعة — أعضاؤها يعودون بلا مجموعة بقيمهم الخاصة كما هي. */
+    fun removeMontageGroup(groupId: String) {
+        val p = _montageProject.value
+        val groups = MontageLogic.groupsOf(p)
+        applyMontage(
+            p.copy(
+                groups = groups.filterNot { it.id == groupId },
+                tracks = MontageLogic.effectiveTracks(p).map {
+                    if (it.groupId == groupId) it.copy(groupId = null) else it
+                }
+            )
+        )
+    }
+
+    /** إعادة تسمية مجموعة. */
+    fun renameMontageGroup(groupId: String, name: String) {
+        val p = _montageProject.value
+        val groups = MontageLogic.groupsOf(p)
+        applyMontage(p.copy(groups = groups.map { if (it.id == groupId) it.copy(name = name.trim().take(24)) else it }))
+    }
+
+    /** مستوى مجموعة — يتراكب مع مستوى كل عضو في المزج. */
+    fun setMontageGroupVolume(groupId: String, percent: Int) {
+        val p = _montageProject.value
+        val groups = MontageLogic.groupsOf(p)
+        applyMontage(
+            p.copy(groups = groups.map { if (it.id == groupId) it.copy(volumePercent = MontageLogic.clampVolume(percent)) else it }),
+            record = false
+        )
+    }
+
+    /** كتم مجموعة — يصمّم كل أعضائها بصرف النظر عن أزرارهم. */
+    fun setMontageGroupMute(groupId: String, muted: Boolean) {
+        val p = _montageProject.value
+        val groups = MontageLogic.groupsOf(p)
+        applyMontage(p.copy(groups = groups.map { if (it.id == groupId) it.copy(muted = muted) else it }))
+    }
+
+    /** عزل مجموعة — أعضاؤها يبقون حيّين وسط أي منفردَين آخرين. */
+    fun setMontageGroupSolo(groupId: String, solo: Boolean) {
+        val p = _montageProject.value
+        val groups = MontageLogic.groupsOf(p)
+        applyMontage(p.copy(groups = groups.map { if (it.id == groupId) it.copy(solo = solo) else it }))
+    }
+
+    /** انتساب مسار إلى مجموعة — أو خروجه منها حين تُمرَّر null. */
+    fun setMontageTrackGroup(trackId: String, groupId: String?) {
+        val p = _montageProject.value
+        val base = MontageLogic.effectiveTracks(p)
+        applyMontage(p.copy(tracks = base.map { if (it.id == trackId) it.copy(groupId = groupId) else it }))
+    }
+
+    // ---- الأتمتة (v0.41.0: أتمتة مستوى الصوت) ----
+
+    /**
+     * تفعيل/تعطيل أتمتة مسار: التفعيل ينشئ خطًا بنقطة واحدة عند الصفر
+     * بمستوى المسار الحيّ (سلوك بلا تغيير صوتي فورًا)، والتعطيل يمحو الخط
+     * فيرجع المستوى قيمة رأس المسار الثابتة — وكلاهما داخل سجل التراجع.
+     */
+    fun toggleMontageAutomation(trackId: String) {
+        val p = _montageProject.value
+        val lanes = MontageLogic.automationLanesOf(p)
+        val existing = lanes.firstOrNull { it.trackId == trackId }
+        if (existing != null) {
+            applyMontage(p.copy(automation = lanes.filterNot { it.trackId == trackId }))
+            _lastLibraryMessage.value = "أُوقفت أتمتة المسار — عاد مستواه ثابتًا"
+        } else {
+            val tr = MontageLogic.effectiveTracks(p).firstOrNull { it.id == trackId } ?: return
+            val lane = com.saidjte.schoolradio.desktop.data.MontageAutomationLane(
+                trackId = trackId,
+                points = MontageLogic.sanitizeAutoPoints(MontageLogic.defaultAutoPoints(tr))
+            )
+            applyMontage(p.copy(automation = lanes + lane))
+            _lastLibraryMessage.value = "أتمتة المسار تعمل — انقر على شريطها لإضافة نقطة وسحب النقطة يحرّكها"
+        }
+    }
+
+    /** إضافة نقطة أتمتة عند زمن ومستوى — محبوسة بالسقف والنطاق. */
+    fun addMontageAutoPoint(trackId: String, tMs: Long, percent: Int) {
+        val p = _montageProject.value
+        val lanes = MontageLogic.automationLanesOf(p)
+        val lane = lanes.firstOrNull { it.trackId == trackId } ?: return
+        if (lane.points.size >= MontageLogic.MAX_AUTO_POINTS) {
+            _lastLibraryMessage.value = "بلغت سقف النقاط (${MontageLogic.MAX_AUTO_POINTS}) — امسح نقطة أولًا"
+            return
+        }
+        val pt = com.saidjte.schoolradio.desktop.data.MontageAutoPoint(
+            id = MontageLogic.newAutoPointId(),
+            tMs = tMs.coerceAtLeast(0L),
+            percent = MontageLogic.clampVolume(percent)
+        )
+        val updated = lane.copy(points = MontageLogic.sanitizeAutoPoints(lane.points + pt))
+        applyMontage(p.copy(automation = lanes.map { if (it.trackId == trackId) updated else it }))
+    }
+
+    /** تحريك نقطة أتمتة (سحب في الواجهة) — زمن جديد ومستوى جديد بمعرّفها الثابت. */
+    fun moveMontageAutoPoint(trackId: String, pointId: String, tMs: Long, percent: Int) {
+        val p = _montageProject.value
+        val lanes = MontageLogic.automationLanesOf(p)
+        val lane = lanes.firstOrNull { it.trackId == trackId } ?: return
+        val updated = lane.copy(
+            points = MontageLogic.sanitizeAutoPoints(
+                lane.points.map {
+                    if (it.id == pointId)
+                        it.copy(tMs = tMs.coerceAtLeast(0L), percent = MontageLogic.clampVolume(percent))
+                    else it
+                }
+            )
+        )
+        applyMontage(p.copy(automation = lanes.map { if (it.trackId == trackId) updated else it }), record = false)
+    }
+
+    /** إزالة نقطة أتمتة بمعرّفها — النقطة الوحيدة لا تُحذف فلا يتبع خط بلا مرساة. */
+    fun removeMontageAutoPoint(trackId: String, pointId: String) {
+        val p = _montageProject.value
+        val lanes = MontageLogic.automationLanesOf(p)
+        val lane = lanes.firstOrNull { it.trackId == trackId } ?: return
+        if (lane.points.size <= 1) return
+        applyMontage(
+            p.copy(
+                automation = lanes.map {
+                    if (it.trackId == trackId)
+                        it.copy(points = MontageLogic.sanitizeAutoPoints(it.points.filterNot { pt -> pt.id == pointId }))
+                    else it
+                }
+            )
         )
     }
 

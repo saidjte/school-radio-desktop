@@ -89,10 +89,12 @@ import kotlin.math.max
  * قصّ بالسحب وسحب لإعادة الترتيب وكروس فيد بين المتجاورة — مع أدوات احترافية
  * (تراجع/إعادة، تقسيم عند الرأس، حذف ممتد، تطبيع، حلقة A/B، مؤشر VU وتحذير
  * تشبع) ومعاينة من أي نقطة وتصدير ملف واحد جاهز للبث (WAV أو MP3 منذ
- * v0.37.0 بجودة قابلة للاختيار)، وحفظ/فتح ملف مشروع. منذ v0.37.0 أيضًا:
- * النقر المزدوج على أي مقطع يفتح تسميته، ورؤوس المسارات بلا كتم ولا منفرد
- * — مسار التعليق هو البرنامج لا يُكتم أبدًا والمسارات الحرة بعقد نفسه.
- * كل ذلك دون اتصال: التصيير فكّ محلي وكتابة محلية بلا جهاز صوت ولا شبكة.
+ * v0.37.0 بجودة قابلة للاختيار)، وحفظ/فتح ملف مشروع. منذ v0.41.0: نظام
+ * المونتاج متعدد المسارات الاحترافي — رؤوس مسارات بأسماء وأنواع (موسيقى
+ * خلفية/مؤثرات/حوار) وكتم ومنفرد وتوازن وترتيب وأتمتة لكل مسار، ومجموعات
+ * بمستواها ومسامعها، وأزرار إضافة مسارات بلا سقف عملي (16 مسارًا)، وشريط
+ * أتمتة أسفل كل مسار مفعّل أتمتته: نقرة تضيف نقطة وسحب يحرّكها ونقر مزدوج
+ * يمحوها. كل ذلك دون اتصال: التصيير فكّ محلي وكتابة محلية بلا جهاز صوت ولا شبكة.
  */
 @Composable
 fun MontagePage(vm: AppViewModel) {
@@ -999,11 +1001,11 @@ internal fun envAndBucketAt(
 
 // ================= بطاقة الخط الزمني =================
 
-/** ارتفاعات هندسة الخط الزمني الجديد (v0.36.0): مسطرة + مسار تعليق + مسارات حرة. */
+/** ارتفاعات هندسة الخط الزمني (v0.36.0) — رُفع المسار الحر في v0.41.0 لحمل رأس أغنى وشريط الأتمتة. */
 private val RULER_LANE_DP = 34.dp
 private val VOICE_LANE_DP = 150.dp
-private val FREE_LANE_DP = 56.dp
-private val TRACK_HEADERS_W_DP = 168.dp
+private val FREE_LANE_DP = 68.dp
+private val TRACK_HEADERS_W_DP = 216.dp
 
 /**
  * بطاقة الخط الزمني (v0.36.0 «مسطرة العمليات وعدة خطوط عمل»): عمود رؤوس
@@ -1043,6 +1045,11 @@ private fun MontageTimelineCard(
     val scroll = rememberScrollState()
     val contentWidthPx = totalMs.toFloat() * pxPerSec / 1000f + 80f
     val tracks = remember(project.tracks) { MontageLogic.effectiveTracks(project) }
+    // v0.41.0: المجموعات وخطوط الأتمتة — تُحسب من المشروع فيُعاد بناؤها مع كل تعديل
+    val groups = remember(project) { MontageLogic.sanitizeGroups(project.groups) }
+    val autoLanes = remember(project) {
+        MontageLogic.automationLanesOf(project).associate { it.trackId to it.points }
+    }
 
     // مرشحات التقاط: علامات وحواف المقاطع + شبكة نصف الثانية حتى نهاية الخط
     val snapCandidates = remember(project) {
@@ -1113,10 +1120,54 @@ private fun MontageTimelineCard(
             )
         }
         Text(
-            "المسطرة فوق: اسحب عليها لتحديد منطقة زمنية ثم احذفها من كل المسارات، وانقر لتضع الرأس — أداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر، والنقر المزدوج يفتح تسمية أي مقطع — اسحب جسم مقطع المسارات لتحريكه بين الخطوط، وحوافه لتقليمه، والالتقاط يزمّر العلامات والحواف والشبكة.",
+            "المسطرة فوق: اسحب عليها لتحديد منطقة زمنية ثم احذفها من كل المسارات، وانقر لتضع الرأس — أداة التقسيم ✂ تشطر أي مقطع عند نقطة النقر، والنقر المزدوج يفتح تسمية أي مقطع — اسحب جسم مقطع المسارات لتحريكه بين الخطوط، وحوافه لتقليمه، والالتقاط يزمّر العلامات والحواف والشبكة. المسارات الحرة أنواعها (موسيقى خلفية تنخفض تحت التعليق، ومؤثرات وحوار لا) ولكل منها كتم M ومنفرد S وتوازن P وترتيب ▲▼ وأتمتة A — شريط الأتمتة أسفل المسار: انقر لتضيف نقطة وسحب النقطة يحرّكها والنقر المزدوج عليها يمحوها، والمجموعات في الشريط فوق بمستواها وكتمها ومنفردها.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        // شريط المجموعات (v0.41.0): تجميع المسارات — مستوى المجموعة يتراكب
+        // مع مستوى أعضائها، وكتمها يصمّمهم، ومنفردها يبقيهم حيّين وسط المنفردين
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("المجموعات:", style = MaterialTheme.typography.labelMedium)
+            if (groups.isEmpty()) {
+                Text(
+                    "لا مجموعات بعد — «+ مجموعة» تُنشئ واحدة ثم انتسب إليها المسارات من رؤوسها",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            groups.forEach { g ->
+                val gColor = Color(MontageLogic.TRACK_COLORS[Math.floorMod(g.colorIndex, MontageLogic.TRACK_COLORS.size)])
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (g.solo) gColor.copy(alpha = 0.18f) else gColor.copy(alpha = 0.08f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Box(modifier = Modifier.size(8.dp).clip(RoundedCornerShape(2.dp)).background(gColor))
+                    Text(
+                        "${g.name} ${g.volumePercent}٪",
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1
+                    )
+                    MiniToolButton("−", false, !rendering && g.volumePercent > MontageLogic.VOLUME_MIN, MaterialTheme.colorScheme.primary) { vm.setMontageGroupVolume(g.id, g.volumePercent - 10) }
+                    MiniToolButton("+", false, !rendering && g.volumePercent < MontageLogic.VOLUME_MAX, MaterialTheme.colorScheme.primary) { vm.setMontageGroupVolume(g.id, g.volumePercent + 10) }
+                    MiniToolButton("M", g.muted, !rendering, Color(0xFFE53935)) { vm.setMontageGroupMute(g.id, !g.muted) }
+                    MiniToolButton("S", g.solo, !rendering, Color(0xFFFDD835)) { vm.setMontageGroupSolo(g.id, !g.solo) }
+                    MiniToolButton("×", false, !rendering, MaterialTheme.colorScheme.onSurfaceVariant) { vm.removeMontageGroup(g.id) }
+                }
+            }
+            SecondaryAction(
+                "+ مجموعة",
+                enabled = !rendering && groups.size < MontageLogic.MAX_GROUPS,
+                onClick = { vm.addMontageGroup("") }
+            )
+        }
 
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
             // الخريطة المصغرة: نظرة عامة على المشروع كله + مستطيل العرض الحالي
@@ -1157,7 +1208,11 @@ private fun MontageTimelineCard(
                     MontageVoiceHeaderCell(VOICE_LANE_DP)
                     tracks.forEach { t ->
                         MontageTrackHeaderCell(
+                            vm = vm,
                             track = t,
+                            tracksCount = tracks.size,
+                            groups = groups,
+                            hasAutomation = autoLanes[t.id].orEmpty().isNotEmpty(),
                             height = FREE_LANE_DP,
                             clipCount = MontageLogic.clipsOfTrack(project, t.id).size,
                             enabled = !rendering,
@@ -1166,11 +1221,23 @@ private fun MontageTimelineCard(
                             onDelete = { vm.removeMontageTrack(t.id) }
                         )
                     }
-                    SecondaryAction(
-                        text = "+ مسار عمل جديد",
-                        enabled = !rendering && tracks.size < MontageLogic.MAX_TRACKS,
-                        onClick = { vm.addMontageTrack() }
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        SecondaryAction(
+                            text = "+ موسيقى",
+                            enabled = !rendering && tracks.size < MontageLogic.MAX_TRACKS,
+                            onClick = { vm.addMontageTrack(MontageLogic.TYPE_MUSIC) }
+                        )
+                        SecondaryAction(
+                            text = "+ مؤثرات",
+                            enabled = !rendering && tracks.size < MontageLogic.MAX_TRACKS,
+                            onClick = { vm.addMontageTrack(MontageLogic.TYPE_SFX) }
+                        )
+                        SecondaryAction(
+                            text = "+ حوار",
+                            enabled = !rendering && tracks.size < MontageLogic.MAX_TRACKS,
+                            onClick = { vm.addMontageTrack(MontageLogic.TYPE_DIALOGUE) }
+                        )
+                    }
                 }
                 Column(
                     modifier = Modifier.weight(1f).horizontalScroll(scroll),
@@ -1204,11 +1271,12 @@ private fun MontageTimelineCard(
                         onTrim = onTrim,
                         onRename = onRenameVoice
                     )
-                    // المسارات الحرة — عدة خطوط عمل بالسحب بينها
+                    // المسارات الحرة — عدة خطوط عمل بالسحب بينها + أتمتة كل مسار
                     MontageFreeTracksCanvas(
                         vm = vm,
                         project = project,
                         tracks = tracks,
+                        autoLanes = autoLanes,
                         envelopes = envelopes,
                         selectedId = selectedMusicId,
                         selection = selection,
@@ -1284,10 +1352,20 @@ private fun MontageVoiceHeaderCell(height: androidx.compose.ui.unit.Dp) {
     }
 }
 
-/** رأس مسار حر: لون واسم ومستوى وحذف — بلا كتم ولا منفرد منذ v0.37.0 (نفس عقد مسار التعليق). */
+/**
+ * رأس مسار حر كامل (v0.41.0 «نظام المونتاج متعدد المسارات الاحترافي»):
+ * صف النوع والاسم: شارة النوع الملونة + الاسم + عدّاد المقاطع + الأتمتة A
+ * + الكتم M + المنفرد S + الحذف × — وصف التحكم: الترتيب ▲▼ + مستوى −/+ +
+ * التوازن P−/+ بقيمه + شارة المجموعة التي تتنقل دائريًا بالنقر بين المجموعات
+ * وبلا مجموعة. مسار التعليق وحده خارج هذه الرؤوس فهو البرنامج بلا كتم.
+ */
 @Composable
 private fun MontageTrackHeaderCell(
+    vm: AppViewModel,
     track: com.saidjte.schoolradio.desktop.data.MontageTrack,
+    tracksCount: Int,
+    groups: List<com.saidjte.schoolradio.desktop.data.MontageGroup>,
+    hasAutomation: Boolean,
     height: androidx.compose.ui.unit.Dp,
     clipCount: Int,
     enabled: Boolean,
@@ -1296,43 +1374,117 @@ private fun MontageTrackHeaderCell(
     onDelete: () -> Unit
 ) {
     val color = Color(MontageLogic.TRACK_COLORS[Math.floorMod(track.colorIndex, MontageLogic.TRACK_COLORS.size)])
-    Row(
+    val group = MontageLogic.groupById(groups, track.groupId)
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .height(height)
             .clip(RoundedCornerShape(8.dp))
             .background(if (track.solo) color.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
-            .padding(horizontal = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+            .padding(horizontal = 5.dp, vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(1.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(10.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(color)
-        )
-        Column(modifier = Modifier.weight(1f)) {
+        // صف النوع والاسم والمسامع
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(color)
+            )
+            Text(
+                MontageLogic.trackTypeLabelAr(MontageLogic.trackType(track)),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(color.copy(alpha = 0.20f))
+                    .padding(horizontal = 4.dp, vertical = 1.dp)
+            )
             Text(
                 track.name,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
             )
+            MiniToolButton(text = "A", active = hasAutomation, enabled = enabled, tint = MaterialTheme.colorScheme.primary, onClick = { vm.toggleMontageAutomation(track.id) })
+            MiniToolButton(text = "M", active = track.muted, enabled = enabled, tint = Color(0xFFE53935), onClick = { vm.setMontageTrackMute(track.id, !track.muted) })
+            MiniToolButton(text = "S", active = track.solo, enabled = enabled, tint = Color(0xFFFDD835), onClick = { vm.setMontageTrackSolo(track.id, !track.solo) })
+            MiniToolButton(text = "×", active = false, enabled = enabled && tracksCount > 1, tint = MaterialTheme.colorScheme.onSurfaceVariant, onClick = onDelete)
+        }
+        // صف التحكم: الترتيب والمستوى والتوازن
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            MiniToolButton(text = "▲", active = false, enabled = enabled, tint = MaterialTheme.colorScheme.primary, onClick = { vm.moveMontageTrack(track.id, -1) })
+            MiniToolButton(text = "▼", active = false, enabled = enabled, tint = MaterialTheme.colorScheme.primary, onClick = { vm.moveMontageTrack(track.id, +1) })
+            MiniToolButton(text = "−", active = false, enabled = enabled && track.volumePercent > MontageLogic.VOLUME_MIN, tint = MaterialTheme.colorScheme.primary, onClick = onVolumeDown)
             Text(
-                "${track.volumePercent}٪ · $clipCount مقاطع",
+                "${track.volumePercent}٪",
+                style = MaterialTheme.typography.labelSmall.numeric(),
+                maxLines = 1
+            )
+            MiniToolButton(text = "+", active = false, enabled = enabled && track.volumePercent < MontageLogic.VOLUME_MAX, tint = MaterialTheme.colorScheme.primary, onClick = onVolumeUp)
+            MiniToolButton(text = "P−", active = false, enabled = enabled && track.pan > MontageLogic.PAN_MIN, tint = MaterialTheme.colorScheme.tertiary, onClick = { vm.setMontageTrackPan(track.id, track.pan - 25) })
+            Text(
+                panLabel(track.pan),
+                style = MaterialTheme.typography.labelSmall.numeric(),
+                maxLines = 1
+            )
+            MiniToolButton(text = "P+", active = false, enabled = enabled && track.pan < MontageLogic.PAN_MAX, tint = MaterialTheme.colorScheme.tertiary, onClick = { vm.setMontageTrackPan(track.id, track.pan + 25) })
+        }
+        // صف المجموعة والعدّاد: عدد المقاطع + شارة تتنقل دائريًا بالنقر
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Text(
+                "$clipCount مقاطع",
                 style = MaterialTheme.typography.labelSmall.numeric(),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
             )
+            Text(
+                text = "مجموعة: " + (group?.name ?: "بلا"),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = if (group != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = if (group != null) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(
+                        if (group != null) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                    )
+                    .clickable(enabled = enabled && groups.isNotEmpty()) {
+                        val ids = groups.map { it.id }
+                        val next = when {
+                            ids.isEmpty() -> null
+                            track.groupId == null -> ids.first()
+                            else -> ids.getOrNull(ids.indexOf(track.groupId) + 1)
+                        }
+                        vm.setMontageTrackGroup(track.id, next)
+                    }
+                    .padding(horizontal = 4.dp, vertical = 1.dp)
+            )
         }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            MiniToolButton(text = "−", active = false, enabled = enabled && track.volumePercent > MontageLogic.VOLUME_MIN, tint = MaterialTheme.colorScheme.primary, onClick = onVolumeDown)
-            MiniToolButton(text = "+", active = false, enabled = enabled && track.volumePercent < MontageLogic.VOLUME_MAX, tint = MaterialTheme.colorScheme.primary, onClick = onVolumeUp)
-        }
-        MiniToolButton(text = "×", active = false, enabled = enabled, tint = MaterialTheme.colorScheme.onSurfaceVariant, onClick = onDelete)
     }
+}
+
+/** تسمية التوازن العربية: وسط، أو يسار/يمين مع مقدار الانزياح. */
+private fun panLabel(pan: Int): String = when {
+    pan == 0 -> "وسط"
+    pan < 0 -> "يسار ${-pan}"
+    else -> "يمين $pan"
 }
 
 /** زر أداة مصغّر لرؤوس المسارات — حالة نشطة بلون قوي. */
@@ -2461,6 +2613,8 @@ private sealed interface TrackDrag {
     data class TrimLeft(val clipId: String) : TrackDrag
     data class TrimRight(val clipId: String) : TrackDrag
     data class Move(val clipId: String, var lane: Int) : TrackDrag
+    /** سحب نقطة أتمتة (v0.41.0): المعرّفان ثابتان فالتحريك يصيب النقطة عينها. */
+    data class AutoPoint(val trackId: String, val pointId: String) : TrackDrag
 }
 
 /**
@@ -2474,6 +2628,7 @@ private fun MontageFreeTracksCanvas(
     vm: AppViewModel,
     project: MontageProject,
     tracks: List<com.saidjte.schoolradio.desktop.data.MontageTrack>,
+    autoLanes: Map<String, List<com.saidjte.schoolradio.desktop.data.MontageAutoPoint>>,
     envelopes: Map<String, MontageEnvelope>,
     selectedId: String?,
     selection: Pair<Long, Long>?,
@@ -2493,6 +2648,8 @@ private fun MontageFreeTracksCanvas(
     val pxPerMs = pxPerSec / 1000f
     val pad = 10f
     val laneH = with(density) { FREE_LANE_DP.toPx() }
+    /** ارتفاع شريط الأتمتة أسفل كل مسار مفعّلة أتمتته (v0.41.0). */
+    val autoH = with(density) { 16.dp.toPx() }
     val textMeasurer = rememberTextMeasurer()
 
     val projState = rememberUpdatedState(project)
@@ -2503,6 +2660,7 @@ private fun MontageFreeTracksCanvas(
     val snapState = rememberUpdatedState(snap)
     val toolState = rememberUpdatedState(tool)
     val renameState = rememberUpdatedState(onRename)
+    val autoState = rememberUpdatedState(autoLanes)
 
     var drag by remember { mutableStateOf<TrackDrag>(TrackDrag.None) }
     var dragClipId by remember { mutableStateOf<String?>(null) }
@@ -2513,6 +2671,51 @@ private fun MontageFreeTracksCanvas(
 
     fun clipsOf(t: com.saidjte.schoolradio.desktop.data.MontageTrack, p: MontageProject) =
         p.musicClips.filter { MontageLogic.effectiveTrackId(it) == t.id }
+
+    // ==== الأتمتة (v0.41.0): قراءة موضع الشريط ونقاطه — كل القرارات عبر
+    // الحالات المحدثة كي تبقى إيماءات pointerInput حية بعد كل تعديل ====
+
+    /** نقاط أتمتة مسار حية — القائمة الخاوية تعني لا شريط. */
+    fun autoPtsOf(trackId: String): List<com.saidjte.schoolradio.desktop.data.MontageAutoPoint> =
+        autoState.value[trackId] ?: emptyList()
+
+    /** فهرس المسار الذي يقع تحته موضع اليد عموديًا. */
+    fun laneIndexOf(y: Float): Int = (y / laneH).toInt().coerceIn(0, tracksState.value.size - 1)
+
+    /** أعلى شريط الأتمتة لمسار معين بالبكسل. */
+    fun stripTopOf(lane: Int): Float = lane * laneH + laneH - autoH
+
+    /** مستوى الأتمتة (0..200٪) المقابل لموضع اليد داخل الشريط — الأسفل صمت والأعلى الضعف. */
+    fun percentAtY(y: Float, lane: Int): Int {
+        val bottom = lane * laneH + laneH
+        val f = (bottom - y) / autoH
+        return (f * 200f).toInt().coerceIn(0, 200)
+    }
+
+    /** نقطة أتمتة قرب موضع اليد — العائد (مسار، نقطة) أو null. */
+    fun autoPointAt(x: Float, y: Float): Pair<String, String>? {
+        val lane = laneIndexOf(y)
+        val t = tracksState.value.getOrNull(lane) ?: return null
+        val pts = autoPtsOf(t.id)
+        if (pts.isEmpty()) return null
+        val top = stripTopOf(lane)
+        if (y < top - 6f || y > top + autoH + 6f) return null
+        val ppm = ppmState.value
+        for (pt in pts) {
+            val px = pad + pt.tMs * ppm
+            val py = top + autoH - (pt.percent.coerceIn(0, 200) / 200f) * autoH
+            if (Math.abs(x - px) <= 10f && Math.abs(y - py) <= autoH / 2f + 6f) return t.id to pt.id
+        }
+        return null
+    }
+
+    /** هل اليد فوق شريط أتمتة مسار (وليس فوق نقطة قائمة) — لإضافة نقطة بالنقر؟ */
+    fun autoStripTrackAt(x: Float, y: Float): String? {
+        val lane = laneIndexOf(y)
+        val t = tracksState.value.getOrNull(lane) ?: return null
+        if (autoPtsOf(t.id).isEmpty()) return null
+        return if (y >= stripTopOf(lane) - 6f) t.id else null
+    }
 
     fun hitAt(x: Float, y: Float): Pair<MontageMusicClip, Int>? {
         val p = projState.value
@@ -2538,24 +2741,44 @@ private fun MontageFreeTracksCanvas(
                 detectTapGestures(
                     onTap = { off ->
                         val ms = ((off.x - pad) / ppmState.value).toLong().coerceAtLeast(0L)
-                        val hit = hitAt(off.x, off.y)
-                        if (toolState.value == MontageTool.SPLIT && hit != null) {
-                            vm.splitMontageTrackClipAtMs(hit.first.id, snapState.value(ms))
-                        } else {
-                            vm.setMontagePlayhead(snapState.value(ms))
-                            if (hit != null) vm.selectMontageMusic(hit.first.id)
+                        val autoTrack = autoStripTrackAt(off.x, off.y)
+                        if (autoTrack != null && autoPointAt(off.x, off.y) == null) {
+                            // شريط الأتمتة (v0.41.0): النقر يضيف نقطة بمستوى موضع اليد
+                            val lane = laneIndexOf(off.y)
+                            vm.addMontageAutoPoint(autoTrack, snapState.value(ms), percentAtY(off.y, lane))
+                        } else if (autoTrack == null) {
+                            val hit = hitAt(off.x, off.y)
+                            if (toolState.value == MontageTool.SPLIT && hit != null) {
+                                vm.splitMontageTrackClipAtMs(hit.first.id, snapState.value(ms))
+                            } else {
+                                vm.setMontagePlayhead(snapState.value(ms))
+                                if (hit != null) vm.selectMontageMusic(hit.first.id)
+                            }
                         }
                     },
                     onDoubleTap = { off ->
-                        // النقر المزدوج على مقطع مسار يفتح تسميته (v0.37.0)
-                        val hit = hitAt(off.x, off.y)
-                        if (hit != null) renameState.value(hit.first)
+                        val autoPt = autoPointAt(off.x, off.y)
+                        if (autoPt != null) {
+                            // النقر المزدوج على نقطة أتمتة يمحوها (v0.41.0)
+                            vm.removeMontageAutoPoint(autoPt.first, autoPt.second)
+                        } else {
+                            // النقر المزدوج على مقطع مسار يفتح تسميته (v0.37.0)
+                            val hit = hitAt(off.x, off.y)
+                            if (hit != null) renameState.value(hit.first)
+                        }
                     }
                 )
             }
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { off ->
+                        val apt = autoPointAt(off.x, off.y)
+                        if (apt != null) {
+                            // السحب فوق نقطة أتمتة يحركها — قبل منطق المقاطع كليًا
+                            drag = TrackDrag.AutoPoint(apt.first, apt.second)
+                            dragClipId = null
+                            return@detectDragGestures
+                        }
                         val hit = hitAt(off.x, off.y)
                         if (hit == null) {
                             drag = TrackDrag.None
@@ -2580,12 +2803,20 @@ private fun MontageFreeTracksCanvas(
                     },
                     onDrag = { change, amt ->
                         change.consume()
-                        val id = dragClipId ?: return@detectDragGestures
                         val ppm = ppmState.value
                         when (val d = drag) {
-                            is TrackDrag.TrimLeft -> vm.trimMontageTrackClipLeft(id, (amt.x / ppm).toLong())
-                            is TrackDrag.TrimRight -> vm.trimMontageTrackClipRight(id, (amt.x / ppm).toLong())
+                            is TrackDrag.AutoPoint -> {
+                                // تحريك نقطة أتمتة: الزمن من اليد والمستوى من الارتفاع
+                                val ms = ((change.position.x - pad) / ppm).toLong().coerceAtLeast(0L)
+                                val lane = laneIndexOf(change.position.y)
+                                vm.moveMontageAutoPoint(d.trackId, d.pointId, ms, percentAtY(change.position.y, lane))
+                            }
+                            is TrackDrag.TrimLeft ->
+                                vm.trimMontageTrackClipLeft(dragClipId ?: return@detectDragGestures, (amt.x / ppm).toLong())
+                            is TrackDrag.TrimRight ->
+                                vm.trimMontageTrackClipRight(dragClipId ?: return@detectDragGestures, (amt.x / ppm).toLong())
                             is TrackDrag.Move -> {
+                                val id = dragClipId ?: return@detectDragGestures
                                 moveState.value(id, (amt.x / ppm).toLong())
                                 // سحب عمودي عابر للمسارات — تغيير الخط أثناء السحبة نفسها
                                 val laneCount = tracksState.value.size.coerceAtLeast(1)
@@ -2609,6 +2840,15 @@ private fun MontageFreeTracksCanvas(
                             if (c != null) {
                                 val target = snapState.value(c.startMs)
                                 if (target != c.startMs) moveState.value(id, target - c.startMs)
+                            }
+                        }
+                        val dEnd = drag
+                        if (dEnd is TrackDrag.AutoPoint) {
+                            val pt = autoPtsOf(dEnd.trackId).firstOrNull { it.id == dEnd.pointId }
+                            if (pt != null) {
+                                val target = snapState.value(pt.tMs)
+                                if (target != pt.tMs)
+                                    vm.moveMontageAutoPoint(dEnd.trackId, dEnd.pointId, target, pt.percent)
                             }
                         }
                         drag = TrackDrag.None
@@ -2650,16 +2890,21 @@ private fun MontageFreeTracksCanvas(
                     )
                 }
             }
-            // ظل النطق عبر كل الخطوط — هناك يعمل الخفض التلقائي
-            for ((s, e) in duckIntervals) {
-                val x0 = pad + s * pxPerMs
-                val x1 = pad + e * pxPerMs
-                if (x1 < 0f || x0 > w) continue
-                drawRect(
-                    color = cPrimary.copy(alpha = 0.08f),
-                    topLeft = Offset(x0.coerceAtLeast(0f), 0f),
-                    size = Size(x1 - x0.coerceAtLeast(0f), h)
-                )
+            // ظل النطق على مسارات الموسيقى الخلفية وحدها (v0.41.0) — هناك
+            // يعمل الخفض التلقائي، والمؤثرات والحوار لا ينخفضان فلا ظل عليهما
+            for (ti in ts.indices) {
+                if (!MontageLogic.ducksUnderVoice(ts[ti])) continue
+                val bandTop = ti * laneHpx
+                for ((s, e) in duckIntervals) {
+                    val x0 = pad + s * pxPerMs
+                    val x1 = pad + e * pxPerMs
+                    if (x1 < 0f || x0 > w) continue
+                    drawRect(
+                        color = cPrimary.copy(alpha = 0.08f),
+                        topLeft = Offset(x0.coerceAtLeast(0f), bandTop),
+                        size = Size(x1 - x0.coerceAtLeast(0f), laneHpx)
+                    )
+                }
             }
             // المنطقة المحددة على المسطرة تمر عبر كل الخطوط
             if (selection != null) {
@@ -2677,12 +2922,15 @@ private fun MontageFreeTracksCanvas(
             for ((ti, t) in ts.withIndex()) {
                 val bandTop = ti * laneHpx
                 val color = Color(MontageLogic.TRACK_COLORS[Math.floorMod(t.colorIndex, MontageLogic.TRACK_COLORS.size)])
+                val laneAuto = autoLanes[t.id].orEmpty()
+                val hasAuto = laneAuto.isNotEmpty()
+                // المسار ذو الأتمتة يخفض مقاطعه قليلًا ليكشف شريط المنحنى أسفله
+                val clipH = laneHpx - 10f - if (hasAuto) autoH else 0f
                 for (m in clipsOf(t, project)) {
                     val cx = pad + m.startMs * pxPerMs
                     val cw = max(6f, MontageLogic.musicDurationMs(m) * pxPerMs)
                     val missing = !File(m.path).isFile
                     val sel = m.id == selectedId
-                    val clipH = laneHpx - 10f
                     drawRoundRect(
                         color = if (missing) cOutline.copy(alpha = 0.25f) else cSurface.copy(alpha = 0.94f),
                         topLeft = Offset(cx, bandTop + 5f),
@@ -2727,6 +2975,44 @@ private fun MontageFreeTracksCanvas(
                             style = TextStyle(fontSize = 9.sp, color = cOnSurf)
                         )
                     }
+                }
+                // شريط الأتمتة (v0.41.0): خلفية وخطّ منحنى ونقاط كهرمانية
+                // واسم «أتمتة» — النقر يضيف وسحب يحرك والنقر المزدوج يمحو
+                if (hasAuto) {
+                    val stripTop = bandTop + laneHpx - autoH
+                    drawRect(
+                        color = color.copy(alpha = 0.10f),
+                        topLeft = Offset(0f, stripTop),
+                        size = Size(w, autoH)
+                    )
+                    drawLine(
+                        color = color.copy(alpha = 0.45f),
+                        start = Offset(0f, stripTop + 0.5f),
+                        end = Offset(w, stripTop + 0.5f),
+                        strokeWidth = 1f
+                    )
+                    fun pyOf(pct: Int): Float =
+                        stripTop + autoH - (pct.coerceIn(0, 200) / 200f) * autoH
+                    val autoCol = color.copy(alpha = 0.9f)
+                    val first = laneAuto.first()
+                    val last = laneAuto.last()
+                    drawLine(autoCol, Offset(0f, pyOf(first.percent)), Offset(pad + first.tMs * pxPerMs, pyOf(first.percent)), 2f)
+                    var prevPt = first
+                    for (pt in laneAuto.drop(1)) {
+                        drawLine(autoCol, Offset(pad + prevPt.tMs * pxPerMs, pyOf(prevPt.percent)), Offset(pad + pt.tMs * pxPerMs, pyOf(pt.percent)), 2f)
+                        prevPt = pt
+                    }
+                    drawLine(autoCol, Offset(pad + last.tMs * pxPerMs, pyOf(last.percent)), Offset(w, pyOf(last.percent)), 2f)
+                    for (pt in laneAuto) {
+                        drawCircle(color = amber, radius = 4.5f, center = Offset(pad + pt.tMs * pxPerMs, pyOf(pt.percent)))
+                        drawCircle(color = cSurface, radius = 2f, center = Offset(pad + pt.tMs * pxPerMs, pyOf(pt.percent)))
+                    }
+                    drawText(
+                        textMeasurer = textMeasurer,
+                        text = "أتمتة",
+                        topLeft = Offset(4f, stripTop + 1f),
+                        style = TextStyle(fontSize = 8.sp, color = autoCol)
+                    )
                 }
             }
             // الرأس يمر عبر كل الخطوط كي يقرأ المذيع التزامن

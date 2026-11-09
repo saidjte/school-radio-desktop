@@ -154,8 +154,8 @@ class MontageDualTrackTest {
         assertEquals(0L, m.startMs) // السالب يُقص
         assertEquals(100L to 10_000L, m.startInFileMs to m.endInFileMs)
         assertEquals(200, m.volumePercent)
-        // سقف المسار الثاني
-        val many = (1..20).map { music("m$it", 1000, start = 0).copy(path = ok.path) }
+        // سقف مقاطع المسارات الحرة (رُفع في v0.41.0 إلى 120 مع النظام متعدد المسارات)
+        val many = (1..(MontageLogic.MAX_MUSIC_CLIPS + 10)).map { music("m$it", 1000, start = 0).copy(path = ok.path) }
         assertEquals(MontageLogic.MAX_MUSIC_CLIPS, MontageLogic.sanitizeMusic(many).size)
     }
 

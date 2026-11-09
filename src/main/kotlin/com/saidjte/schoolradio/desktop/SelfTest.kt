@@ -32,6 +32,7 @@ import com.saidjte.schoolradio.desktop.data.MontageTrack
 import com.saidjte.schoolradio.desktop.data.LiveAnnounceLogic
 import com.saidjte.schoolradio.desktop.audio.BundledJingles
 import com.saidjte.schoolradio.desktop.data.ReadingJson
+import com.saidjte.schoolradio.desktop.data.Json
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.ScheduleStore
 import com.saidjte.schoolradio.desktop.data.SeekLogic
@@ -64,6 +65,7 @@ import com.saidjte.schoolradio.desktop.youtube.AudioTranscoder
 import com.saidjte.schoolradio.desktop.youtube.YtDlpLocator
 import java.io.File
 import javax.sound.sampled.AudioFormat
+import javax.sound.sampled.AudioSystem
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -1983,6 +1985,131 @@ object SelfTest {
                     com.saidjte.schoolradio.desktop.ui.resolveMontageShortcut(key, c, false, false, false)
                 check(r40(Key.E) == com.saidjte.schoolradio.desktop.ui.MontageShortcutAction.OpenEffects) { "fx shortcut E" }
                 check(r40(Key.E, c = true) == null) { "fx shortcut E guarded" }
+            }
+
+            // ================= v0.41.0: نظام المونتاج متعدد المسارات الاحترافي =================
+            run {
+                val ml41 = com.saidjte.schoolradio.desktop.data.MontageLogic
+
+                // 1) الأنواع والهجرة الصامتة والتحكم في التداخل بحسب النوع
+                check(ml41.trackType(com.saidjte.schoolradio.desktop.data.MontageTrack(id = "a", name = "x")) == ml41.TYPE_MUSIC) { "v41 type null->music" }
+                check(ml41.trackType(com.saidjte.schoolradio.desktop.data.MontageTrack(id = "a", name = "x", type = "sfx")) == ml41.TYPE_SFX) { "v41 type sfx" }
+                check(ml41.trackType(com.saidjte.schoolradio.desktop.data.MontageTrack(id = "a", name = "x", type = "dialogue")) == ml41.TYPE_DIALOGUE) { "v41 type dialogue" }
+                check(ml41.trackType(com.saidjte.schoolradio.desktop.data.MontageTrack(id = "a", name = "x", type = "bad")) == ml41.TYPE_MUSIC) { "v41 type unknown->music" }
+                check(ml41.ducksUnderVoice(com.saidjte.schoolradio.desktop.data.MontageTrack(id = "a", name = "x"))) { "v41 music ducks" }
+                check(!ml41.ducksUnderVoice(com.saidjte.schoolradio.desktop.data.MontageTrack(id = "a", name = "x", type = ml41.TYPE_SFX))) { "v41 sfx no duck" }
+                check(!ml41.ducksUnderVoice(com.saidjte.schoolradio.desktop.data.MontageTrack(id = "a", name = "x", type = ml41.TYPE_DIALOGUE))) { "v41 dialogue no duck" }
+                val trio = ml41.effectiveTracks(com.saidjte.schoolradio.desktop.data.MontageProject())
+                check(trio.size == 3 && trio[0].id == ml41.DEFAULT_TRACK_ID && trio[1].id == ml41.DEFAULT_SFX_ID && trio[2].id == ml41.DEFAULT_DIALOGUE_ID) { "v41 default trio" }
+                check(ml41.MAX_TRACKS == 16 && ml41.MAX_GROUPS == 8 && ml41.MAX_AUTO_POINTS == 64) { "v41 caps" }
+
+                // 2) عدد كبير من المسارات والترتيب المستقل
+                var tracks41 = ml41.defaultTrackTrio()
+                repeat(13) { tracks41 = tracks41 + ml41.newTrackOfType(tracks41, ml41.TYPE_SFX) }
+                check(tracks41.size == 16) { "v41 sixteen tracks" }
+                check(tracks41.filter { ml41.trackType(it) == ml41.TYPE_SFX }.size == 13) { "v41 sfx count" }
+                check(tracks41.map { it.name }.distinct().size == tracks41.size) { "v41 unique names" }
+                check(tracks41.map { it.colorIndex }.distinct().size == tracks41.size) { "v41 unique colors" }
+                val moved41 = ml41.moveTrack(tracks41, tracks41[0].id, +1)!!
+                check(moved41[0].id == tracks41[1].id && moved41[1].id == tracks41[0].id) { "v41 reorder" }
+                check(ml41.moveTrack(tracks41, tracks41[0].id, -1) == null) { "v41 reorder bounds" }
+
+                // 3) الكتم/المنفرد والمجموعات: عقد وحدة المزج الكامل
+                val t41 = com.saidjte.schoolradio.desktop.data.MontageTrack(id = "t", name = "t", volumePercent = 80, groupId = "g")
+                val g41 = com.saidjte.schoolradio.desktop.data.MontageGroup(id = "g", name = "أجواء", volumePercent = 50)
+                check(Math.abs(ml41.trackAmp(t41, g41, false, false) - 0.4f) < 1e-6f) { "v41 group amp" }
+                check(ml41.trackAmp(t41, g41.copy(muted = true), false, false) == 0f) { "v41 group mute" }
+                check(ml41.trackAmp(t41, g41, false, true) == 0f) { "v41 other group solo silences" }
+                check(ml41.trackAmp(t41, g41.copy(solo = true), false, true) == 0.4f) { "v41 member group solo audible" }
+                check(ml41.trackAmp(t41.copy(muted = true), g41, false, false) == 0f) { "v41 track mute wins" }
+                check(ml41.trackAmp(t41.copy(solo = true), g41, true, false) == 0.4f) { "v41 track solo audible" }
+
+                // 4) التوازن خطي
+                check(ml41.panGainLeft(0) == 1f && ml41.panGainRight(0) == 1f) { "v41 pan center" }
+                check(ml41.panGainLeft(-100) == 1f && ml41.panGainRight(-100) == 0f) { "v41 pan left" }
+                check(ml41.panGainLeft(100) == 0f && ml41.panGainRight(100) == 1f) { "v41 pan right" }
+                check(ml41.clampPan(999) == 100 && ml41.clampPan(-999) == -100) { "v41 pan clamp" }
+
+                // 5) الأتمتة: قبل وبين وبعد والحبوس والسقف
+                val ap = listOf(
+                    com.saidjte.schoolradio.desktop.data.MontageAutoPoint(id = "1", tMs = 0, percent = 100),
+                    com.saidjte.schoolradio.desktop.data.MontageAutoPoint(id = "2", tMs = 1000, percent = 200),
+                    com.saidjte.schoolradio.desktop.data.MontageAutoPoint(id = "3", tMs = 2000, percent = 50)
+                )
+                check(ml41.autoGainPercentAt(ap, 500) == 150) { "v41 auto mid" }
+                check(ml41.autoGainPercentAt(ap, 1500) == 125) { "v41 auto mid2" }
+                check(ml41.autoGainPercentAt(ap, 9999) == 50) { "v41 auto after last" }
+                check(ml41.autoGainPercentAt(emptyList(), 5) == 100) { "v41 auto empty neutral" }
+                val sane41 = ml41.sanitizeAutoPoints(listOf(
+                    com.saidjte.schoolradio.desktop.data.MontageAutoPoint(id = "b", tMs = -5, percent = 500),
+                    com.saidjte.schoolradio.desktop.data.MontageAutoPoint(id = "a", tMs = 10, percent = 80)
+                ))
+                check(sane41.map { it.id } == listOf("a", "b") && sane41[0].tMs == 0L && sane41[1].percent == 200) { "v41 auto sanitize" }
+
+                // 6) المزج الفعلي: مؤثرات Pan يسار بأتمتة تنتهي صفرًا + حوار Pan يمين
+                val dir41 = File(tmp, "v41mix").apply { mkdirs() }
+                val sfx41 = com.saidjte.schoolradio.desktop.audio.MontageDemo.tone(File(dir41, "s.wav"), 44_100, 2, 1_000, 880.0)
+                val p41 = com.saidjte.schoolradio.desktop.data.MontageProject(
+                    musicClips = listOf(
+                        com.saidjte.schoolradio.desktop.data.MontageMusicClip(id = "s1", path = sfx41.path, title = "مؤثر", durationMs = 1_000, startMs = 0, trackId = "tf"),
+                        com.saidjte.schoolradio.desktop.data.MontageMusicClip(id = "s2", path = sfx41.path, title = "حوار", durationMs = 1_000, startMs = 1_000, trackId = "td")
+                    ),
+                    tracks = listOf(
+                        com.saidjte.schoolradio.desktop.data.MontageTrack(id = "tf", name = "مؤثرات", type = ml41.TYPE_SFX, pan = -100),
+                        com.saidjte.schoolradio.desktop.data.MontageTrack(id = "td", name = "حوار", type = ml41.TYPE_DIALOGUE, pan = 100)
+                    ),
+                    automation = listOf(
+                        com.saidjte.schoolradio.desktop.data.MontageAutomationLane(
+                            trackId = "tf",
+                            points = listOf(
+                                com.saidjte.schoolradio.desktop.data.MontageAutoPoint(id = "1", tMs = 0, percent = 100),
+                                com.saidjte.schoolradio.desktop.data.MontageAutoPoint(id = "2", tMs = 1000, percent = 0)
+                            )
+                        )
+                    )
+                )
+                val out41 = File(dir41, "mix.wav")
+                val r41 = com.saidjte.schoolradio.desktop.audio.MontageRender.render(p41, out41)
+                check(r41.ok) { "v41 mix render: ${r41.message}" }
+                check(Math.abs(r41.durationMs - 2_000L) <= 40L) { "v41 mix duration=${r41.durationMs}" }
+                AudioSystem.getAudioInputStream(out41).use { ais41 ->
+                    // بداية المؤثرات: Pan يسار فاليسرى تسود واليمنى صمت تقريبًا
+                    val buf1 = ByteArray(400 * 4)
+                    ais41.skip(100 * 4L)
+                    var rd = 0
+                    while (rd < buf1.size) { val n = ais41.read(buf1, rd, buf1.size - rd); if (n < 0) break; rd += n }
+                    var lPeak = 0; var rPeak = 0
+                    var i = 0
+                    while (i + 1 < rd / 2) {
+                        val v = Math.abs(((buf1[2 * i + 1].toInt() shl 8) or (buf1[2 * i].toInt() and 0xFF)).toShort().toInt())
+                        if (i % 2 == 0) { if (v > lPeak) lPeak = v } else { if (v > rPeak) rPeak = v }
+                        i++
+                    }
+                    check(lPeak > 6_000) { "v41 sfx left peak=$lPeak" }
+                    check(rPeak < lPeak / 8) { "v41 sfx right muted by pan r=$rPeak l=$lPeak" }
+                    // بعد 1600ms: الأتمتة بلغت 0٪ فالمؤثرات صامتة، والحوار Pan يمين مسموع
+                    val buf2 = ByteArray(400 * 4)
+                    ais41.skip(1400L * 44_100L / 1000L * 4L) // من 200ms إلى 1600ms
+                    rd = 0
+                    while (rd < buf2.size) { val n = ais41.read(buf2, rd, buf2.size - rd); if (n < 0) break; rd += n }
+                    lPeak = 0; rPeak = 0
+                    i = 0
+                    while (i + 1 < rd / 2) {
+                        val v = Math.abs(((buf2[2 * i + 1].toInt() shl 8) or (buf2[2 * i].toInt() and 0xFF)).toShort().toInt())
+                        if (i % 2 == 0) { if (v > lPeak) lPeak = v } else { if (v > rPeak) rPeak = v }
+                        i++
+                    }
+                    check(rPeak > 6_000 && lPeak < rPeak / 8) { "v41 dialogue right and automation killed sfx r=$rPeak l=$lPeak" }
+                }
+
+                // 7) هجرة JSON قديمة بلا الحقول الجديدة عبر Gson الحقيقي
+                val legacy41 = """
+                {"tracks":[{"id":"t1","name":"موسيقى","volumePercent":110}]}
+                """.trimIndent()
+                val lp41 = Json.gson.fromJson(legacy41, com.saidjte.schoolradio.desktop.data.MontageProject::class.java)
+                val lt41 = ml41.effectiveTracks(lp41)
+                check(lt41.size == 1 && ml41.trackType(lt41[0]) == ml41.TYPE_MUSIC && lt41[0].pan == 0) { "v41 legacy json migration" }
+                check(ml41.groupsOf(lp41).isEmpty() && ml41.automationLanesOf(lp41).isEmpty()) { "v41 legacy null lists" }
             }
 
             println("SELFTEST OK — version $APP_VERSION")

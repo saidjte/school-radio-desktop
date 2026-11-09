@@ -197,6 +197,29 @@ fun main(args: Array<String>) {
                 )
             }
         }
+        // نظام المونتاج متعدد المسارات للأتمتة (v0.41.0): مسار مؤثرات ومسار
+        // حوار بنوعيهما + مجموعة وانتساب مسار إليها + كتم مسار + توازن + أتمتة
+        // مسار موسيقى بنقاط ثلاث — فتظهر الرؤوس الجديدة وشريط المجموعات وشريط
+        // الأتمتة وظل الخفض على الموسيقى وحدها في لقطات الفحص
+        if (args.contains("--montage-v41")) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(4500)
+                vm.addMontageTrack(com.saidjte.schoolradio.desktop.data.MontageLogic.TYPE_SFX)
+                vm.addMontageTrack(com.saidjte.schoolradio.desktop.data.MontageLogic.TYPE_DIALOGUE)
+                vm.addMontageGroup("أجواء الفاصل")
+                val tracks = vm.montageTracksEffective()
+                val groupId = vm.montageProject.value.groups?.firstOrNull()?.id
+                vm.setMontageTrackGroup(tracks[0].id, groupId)
+                vm.setMontageTrackMute(tracks[1].id, true)
+                vm.setMontageTrackPan(tracks[3].id, -50)
+                vm.toggleMontageAutomation(tracks[0].id)
+                vm.addMontageAutoPoint(tracks[0].id, 12_000L, 40)
+                vm.addMontageAutoPoint(tracks[0].id, 24_000L, 160)
+                val firstMusic = vm.montageProject.value.musicClips.firstOrNull()
+                if (firstMusic != null) vm.moveMontageTrackClipToTrack(firstMusic.id, tracks[3].id)
+                vm.setMontageSelection(2_000L, 6_500L)
+            }
+        }
         // سحب وإفلات للأتمتة (v0.39.0): ملف WAV حقيقي يُمرّر عبر مسار الإفلات
         // نفسه فتظهر رسالة الاستيراد والمقطع في المكتبة — بلا فأرة نظام
         if (args.contains(com.saidjte.schoolradio.desktop.data.DropLogic.AUTOMATION_FLAG)) {

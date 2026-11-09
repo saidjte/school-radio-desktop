@@ -223,20 +223,36 @@ object MontageRender {
         }
         try {
             val plan = plan(project, clips)
-            // المسارات الحرة (v0.36.0): كسب كل مقطع من مستوى مساره — والأعلام
-            // القديمة للكتم/المنفرد تُهرَج في effectiveTracks منذ v0.37.0
+            // المسارات الحرة (v0.36.0): كسب كل مقطع من مستوى مساره —
+            // v0.41.0: الكتم/المنفرد حيّان في المسارات الحرة، ومستوى المجموعة
+            // يتراكب مع مستوى المسار، والتوازن والأتمتة تُحسب لكل مسار،
+            // والخفض يعمّ مسارات الموسيقى الخلفية وحدها (التحكم في تداخل
+            // الأصوات بحسب النوع).
             val tracks = MontageLogic.effectiveTracks(project)
-            val anySolo = MontageLogic.anyTrackSolo(tracks)
+            val groups = MontageLogic.sanitizeGroups(project.groups)
+            val anyTrackSolo = MontageLogic.anyTrackSolo(tracks)
+            val anyGroupSolo = MontageLogic.anyGroupSolo(groups)
             val musicStarts = LongArray(music.size)
             val musicDurFrames = LongArray(music.size)
             val musicTrackAmp = FloatArray(music.size)
+            val musicPanL = FloatArray(music.size)
+            val musicPanR = FloatArray(music.size)
+            val musicDucks = BooleanArray(music.size)
+            val musicAuto = arrayOfNulls<List<com.saidjte.schoolradio.desktop.data.MontageAutoPoint>>(music.size)
             val musicSources = arrayOfNulls<MontageClip>(music.size)
             for (mi in music.indices) {
                 musicSources[mi] = musicAsSourceClip(music[mi])
                 musicStarts[mi] = framesFor(music[mi].startMs.coerceAtLeast(0L))
                 musicDurFrames[mi] = framesFor(MontageLogic.musicDurationMs(music[mi]))
                 val tr = MontageLogic.trackById(tracks, MontageLogic.effectiveTrackId(music[mi]))
-                musicTrackAmp[mi] = MontageLogic.trackGainPercent(tr, anySolo) / 100f
+                val gr = MontageLogic.groupById(groups, tr.groupId)
+                musicTrackAmp[mi] = MontageLogic.trackAmp(tr, gr, anyTrackSolo, anyGroupSolo)
+                musicPanL[mi] = MontageLogic.panGainLeft(tr.pan)
+                musicPanR[mi] = MontageLogic.panGainRight(tr.pan)
+                musicDucks[mi] = MontageLogic.ducksUnderVoice(tr)
+                musicAuto[mi] = MontageLogic.sanitizeAutoPoints(
+                    MontageLogic.automationLaneOf(project, tr.id)?.points ?: emptyList()
+                )
             }
             val musicEnd = music.indices.maxOfOrNull { musicStarts[it] + musicDurFrames[it] } ?: 0L
             val totalFrames = maxOf(plan.totalFrames, musicEnd)
@@ -307,8 +323,11 @@ object MontageRender {
                             if (got > 0) {
                                 mixMusic(
                                     segBuf, got, from, ms, musicDurFrames[mi], music[mi],
-                                    musicTrackAmp[mi],
-                                    duckIntervals, project, duckEnabled,
+                                    musicTrackAmp[mi], musicPanL[mi], musicPanR[mi],
+                                    musicAuto[mi] ?: emptyList(),
+                                    if (musicDucks[mi]) duckIntervals else emptyList(),
+                                    duckEnabled,
+                                    project.duckDb, project.duckAttackMs, project.duckReleaseMs,
                                     mix, (from - f).toInt(), blockFrames
                                 )
                                 any = true
@@ -389,35 +408,42 @@ object MontageRender {
     }
 
     /**
-     * مزج إطارات مقطع مسار حر (v0.35.0 البند 16 — معمّم v0.36.0 لعدة خطوط):
-     * كسب المسار (مستواه المئوي) × كسب المقطع × تلاشيه × التلاشي الدقيق ×
-     * كسب الخفض التلقائي عند اللحظة العالمية — كل المسارات الحرة تنخفض تحت
-     * التعليق حين يفعّل المذيع الخفض، والمكتوم أو المعزول يصمت كليًا.
+     * مزج إطارات مقطع مسار حر (v0.35.0 البند 16 — معمّم v0.36.0 لعدة خطوط،
+     * واكتمل في v0.41.0 بنظام المونتاج متعدد المسارات الاحترافي): كسب المسار
+     * × كسب مجموعته × كسب المقطع × تلاشيه × التلاشي الدقيق × أتمتة المستوى
+     * عند اللحظة العالمية × الخفض التلقائي (مسارات الموسيقى الخلفية وحدها)،
+     * والتوازن Pan يوزّع كل إطار بين القناتين خطيًا — الكتم أو المنفرد
+     * (للمسار أو لمجموعته) يصمت كليًا بصفر الكسب قبل أي حساب.
      */
     private fun mixMusic(
         segBuf: ShortArray, got: Int, globalFrom: Long, musicStart: Long, musicDurFrames: Long,
         clip: MontageMusicClip,
         trackAmp: Float,
+        panL: Float, panR: Float,
+        autoPoints: List<com.saidjte.schoolradio.desktop.data.MontageAutoPoint>,
         duckIntervals: List<Pair<Long, Long>>,
-        project: MontageProject,
         duckEnabled: Boolean,
+        duckDb: Int, duckAttackMs: Long, duckReleaseMs: Long,
         mix: IntArray, mixOffsetFrames: Int, blockFrames: Int
     ) {
         val durMs = musicDurFrames * 1000L / RATE
         val vol = clip.volumePercent / 100f * trackAmp
-        val db = project.duckDb
-        val atk = project.duckAttackMs
-        val rel = project.duckReleaseMs
+        val db = duckDb
+        val atk = duckAttackMs
+        val rel = duckReleaseMs
         for (k in 0 until got) {
             val g = globalFrom + k
             val offMs = (g - musicStart) * 1000L / RATE
             var gain = vol * MontageLogic.fadeGainAt(offMs, durMs, clip.fadeInMs, clip.fadeOutMs)
             gain *= MontageLogic.microFadeGainAt(offMs, durMs)
+            if (autoPoints.isNotEmpty()) {
+                gain *= MontageLogic.autoGainPercentAt(autoPoints, g * 1000L / RATE) / 100f
+            }
             gain *= MontageLogic.duckGainAt(g * 1000L / RATE, duckIntervals, db, atk, rel, duckEnabled)
             val mBase = (mixOffsetFrames + k) * 2
             if (mBase + 1 >= blockFrames * 2) break
-            mix[mBase] += (segBuf[2 * k] * gain).toInt()
-            mix[mBase + 1] += (segBuf[2 * k + 1] * gain).toInt()
+            mix[mBase] += (segBuf[2 * k] * gain * panL).toInt()
+            mix[mBase + 1] += (segBuf[2 * k + 1] * gain * panR).toInt()
         }
     }
 
