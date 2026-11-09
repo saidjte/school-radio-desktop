@@ -1635,15 +1635,18 @@ object SelfTest {
                 check(MontageLogic.sanitizeClipTitle("   ") == "مقطع") { "rename empty" }
                 check(MontageLogic.sanitizeClipTitle("ا".repeat(80)).length == 40) { "rename clamp" }
 
-                // 2) الكتم/المنفرد خارج عقد المونتاج — أعلام الملفات القديمة تُهرَج
+                // 2) الكتم/المنفرد حيّان في المسارات منذ v0.41.0 — الأعلام القديمة تُحفظ
+                // وتحترم في المزج (الأزرار عادت فلا مسار يتيم مكتموم بلا زر يعيده)
                 val legacy = listOf(
                     MontageTrack(id = "t1", name = "موسيقى", volumePercent = 130, muted = true),
                     MontageTrack(id = "t2", name = "مؤثرات", volumePercent = 80, solo = true)
                 )
                 val eff = MontageLogic.effectiveTracks(MontageProject(tracks = legacy))
-                check(eff.size == 2 && eff.none { it.muted } && eff.none { it.solo }) { "legacy flags stripped" }
+                check(eff.size == 2 && eff[0].muted && eff[1].solo) { "legacy flags live" }
                 check(eff[0].volumePercent == 130 && eff[1].volumePercent == 80) { "legacy volumes kept" }
-                check(!MontageLogic.anyTrackSolo(eff)) { "no solo after strip" }
+                check(MontageLogic.anyTrackSolo(eff)) { "solo honored" }
+                check(MontageLogic.trackGainPercent(eff[0], anySolo = false) == 0) { "muted gain zero" }
+                check(MontageLogic.trackGainPercent(eff[1], anySolo = true) == 80) { "solo gain kept" }
 
                 // 3) تصدير MP3 إلى جانب WAV — LAME نقي بنفس خطة التصيير
                 val m37 = File(tmp, "m37").apply { mkdirs() }
@@ -2007,9 +2010,10 @@ object SelfTest {
                 var tracks41 = ml41.defaultTrackTrio()
                 repeat(13) { tracks41 = tracks41 + ml41.newTrackOfType(tracks41, ml41.TYPE_SFX) }
                 check(tracks41.size == 16) { "v41 sixteen tracks" }
-                check(tracks41.filter { ml41.trackType(it) == ml41.TYPE_SFX }.size == 13) { "v41 sfx count" }
+                check(tracks41.filter { ml41.trackType(it) == ml41.TYPE_SFX }.size == 14) { "v41 sfx count" } // الثلاثي فيه مؤثر + 13
                 check(tracks41.map { it.name }.distinct().size == tracks41.size) { "v41 unique names" }
-                check(tracks41.map { it.colorIndex }.distinct().size == tracks41.size) { "v41 unique colors" }
+                // عشرة ألوان فقط في اللوحة فالتكرار مشروع عند 16 مسارًا — المطلوب استنفادها كلها
+                check(tracks41.map { it.colorIndex }.distinct().size == ml41.TRACK_COLORS.size) { "v41 colors used" }
                 val moved41 = ml41.moveTrack(tracks41, tracks41[0].id, +1)!!
                 check(moved41[0].id == tracks41[1].id && moved41[1].id == tracks41[0].id) { "v41 reorder" }
                 check(ml41.moveTrack(tracks41, tracks41[0].id, -1) == null) { "v41 reorder bounds" }
@@ -2044,7 +2048,8 @@ object SelfTest {
                     com.saidjte.schoolradio.desktop.data.MontageAutoPoint(id = "b", tMs = -5, percent = 500),
                     com.saidjte.schoolradio.desktop.data.MontageAutoPoint(id = "a", tMs = 10, percent = 80)
                 ))
-                check(sane41.map { it.id } == listOf("a", "b") && sane41[0].tMs == 0L && sane41[1].percent == 200) { "v41 auto sanitize" }
+                // b حُبس زمنها إلى 0 فتصدر القائمة، وpercent الحدسى 200، وa تبقى 10/80
+                check(sane41.map { it.id } == listOf("b", "a") && sane41[0].tMs == 0L && sane41[0].percent == 200 && sane41[1].percent == 80) { "v41 auto sanitize" }
 
                 // 6) المزج الفعلي: مؤثرات Pan يسار بأتمتة تنتهي صفرًا + حوار Pan يمين
                 val dir41 = File(tmp, "v41mix").apply { mkdirs() }
