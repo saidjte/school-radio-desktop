@@ -12,6 +12,7 @@ import com.saidjte.schoolradio.desktop.audio.FakeToneVoice
 import com.saidjte.schoolradio.desktop.audio.FakeTrackVoice
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
+import com.saidjte.schoolradio.desktop.audio.RecordingStudio
 import com.saidjte.schoolradio.desktop.audio.TrackReader
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
@@ -2201,6 +2202,127 @@ object SelfTest {
                 check(pe42.playingFile.value == pf42b.absolutePath) { "v42 preview switches" }
                 pe42.shutdown()
                 check(pe42.playingFile.value == null) { "v42 preview shutdown" }
+            }
+
+            // ================= v0.43.0: استوديو التسجيل الاحترافي =================
+            run {
+
+                // 1) الجودة: 16/24/32 بت × 44.1/48/96/192 — حبس بلا استثناء
+                check(RecordingStudio.ALLOWED_BITS == listOf(16, 24, 32)) { "v43 bits" }
+                check(RecordingStudio.ALLOWED_RATES == listOf(44_100, 48_000, 96_000, 192_000)) { "v43 rates" }
+                val q43 = RecordingStudio.Quality(24, 96_000).clamp()
+                check(q43.bits == 24 && q43.rateHz == 96_000 && q43.bytesPerSample == 3) { "v43 quality id" }
+                val cq = RecordingStudio.Quality(18, 50_000).clamp()
+                check(cq.bits == 16 && cq.rateHz == 48_000) { "v43 clamp ${cq.bits}/${cq.rateHz}" }
+                check(RecordingStudio.Quality(24, 44_100).labelAr().contains("44.1")) { "v43 label" }
+
+                // 2) تفاوض الالتقاط: مطابقة تامة ثم أقرب بت ثم أقرب معدل أدنى
+                val target43 = RecordingStudio.Quality(24, 96_000)
+                val capExact = RecordingStudio.pickCapture(target43, listOf(RecordingStudio.CaptureFormat(44_100, 16, 1), RecordingStudio.CaptureFormat(96_000, 24, 1)))
+                check(capExact.rateHz == 96_000 && capExact.bits == 24) { "v43 capture exact" }
+                val capSame = RecordingStudio.pickCapture(target43, listOf(RecordingStudio.CaptureFormat(96_000, 16, 1), RecordingStudio.CaptureFormat(96_000, 32, 1)))
+                check(capSame.bits == 32) { "v43 capture same-rate tie prefers higher" }
+                val capNear = RecordingStudio.pickCapture(target43, listOf(RecordingStudio.CaptureFormat(192_000, 16, 1), RecordingStudio.CaptureFormat(48_000, 16, 1)))
+                check(capNear.rateHz == 48_000) { "v43 capture nearest below" }
+                val capEmpty = RecordingStudio.pickCapture(target43, emptyList())
+                check(capEmpty.rateHz == 96_000 && capEmpty.bits == 16) { "v43 capture empty fallback" }
+                check(RecordingStudio.conversionLabel(RecordingStudio.CaptureFormat(44_100, 16, 1), target43) != null) { "v43 conversion label" }
+                check(RecordingStudio.conversionLabel(RecordingStudio.CaptureFormat(96_000, 24, 1), target43) == null) { "v43 conversion none" }
+
+                // 3) ترميز 24 بت: دورة كاملة وقصّ قبل الالتفاف
+                val src24 = floatArrayOf(0f, 0.25f, -0.5f, 1f, -1f)
+                val b24 = ByteArray(src24.size * 3)
+                RecordingStudio.PcmWide.floatsToBytes24(src24, src24.size, b24)
+                val out24 = FloatArray(src24.size)
+                check(RecordingStudio.PcmWide.bytes24ToFloats(b24, b24.size, out24) == src24.size) { "v43 pcm24 count" }
+                check(kotlin.math.abs(out24[4] - (-1f)) < 0.0001f && kotlin.math.abs(out24[1] - 0.25f) < 0.0001f) { "v43 pcm24 values" }
+
+                // 4) المقياس والتشبع: ذروة كاملة تشبع، والقفل يعدّ الأحداث لا الإطارات
+                val full43 = FloatArray(100) { if (it % 2 == 0) 1f else -1f }
+                check(RecordingStudio.analyzeFrame(full43, 100).clipped) { "v43 clip flag" }
+                val latch43 = RecordingStudio.ClipLatch(holdMs = 800)
+                latch43.onFrame(true, 100)
+                latch43.onFrame(true, 300)
+                check(latch43.count == 1 && latch43.active(700)) { "v43 latch hold" }
+                check(!latch43.active(1500)) { "v43 latch release" }
+                latch43.onFrame(true, 1600)
+                check(latch43.count == 2) { "v43 latch new event" }
+
+                // 5) آلة الحالات: الدورة الكاملة والانتقالات المخالفة تُردّ
+                val sm43 = RecordingStudio.StateMachine()
+                check(sm43.start() && !sm43.start() && !sm43.resume()) { "v43 sm start phase" }
+                check(sm43.pause() && sm43.resume() && sm43.pause() && sm43.stop()) { "v43 sm lifecycle" }
+                check(sm43.state == RecordingStudio.RecState.IDLE && !sm43.stop()) { "v43 sm idle" }
+
+                // 6) ملف WAV بعمق 24 بت قانوني ومقروء بالترويسته
+                val wav24 = File(tmp, "v43-rec.wav")
+                val frames43 = 9600
+                val data24 = ByteArray(frames43 * 3)
+                val s24 = FloatArray(frames43) { (0.3 * kotlin.math.sin(2 * Math.PI * it * 880.0 / 48000.0)).toFloat() }
+                com.saidjte.schoolradio.desktop.audio.WavFileWriter(wav24, 48_000, 1, 24).use {
+                    RecordingStudio.PcmWide.floatsToBytes24(s24, frames43, data24)
+                    it.write(data24)
+                }
+                val h24 = com.saidjte.schoolradio.desktop.audio.WavHeader.read(wav24)
+                check(h24 != null && h24.bitsPerSample == 24 && h24.sampleRate == 48_000 && h24.channels == 1) { "v43 wav24 header" }
+                check(com.saidjte.schoolradio.desktop.audio.WavFileWriter.durationMsOf(h24!!.dataBytes, h24.sampleRate, h24.channels, h24.bitsPerSample) == 200L) { "v43 wav24 duration" }
+
+                // 7) الجدولة: مستحق/بانتظار/فائت/منفّذ/معطّل مع نافذة اليدوي دقيقتين
+                val zone = java.time.ZoneId.systemDefault()
+                fun at43(h: Int, m: Int = 0): Long =
+                    java.time.LocalDate.now().atTime(h, m).atZone(zone).toInstant().toEpochMilli()
+                val sched = RecordingStudio.ScheduledItem(id = "a", title = "فاصل", startMinutes = 8 * 60 + 30, durationMinutes = 5, repeat = RecordingStudio.REPEAT_DAILY)
+                check(RecordingStudio.decide(sched, at43(8, 0)).status == RecordingStudio.SchedStatus.WAITING) { "v43 sched waiting" }
+                check(RecordingStudio.decide(sched, at43(8, 34)).status == RecordingStudio.SchedStatus.DUE) { "v43 sched due" }
+                check(RecordingStudio.decide(sched, at43(8, 40)).status == RecordingStudio.SchedStatus.MISSED) { "v43 sched missed" }
+                check(RecordingStudio.decide(sched.copy(lastFiredDateKey = RecordingStudio.dateKeyOf(at43(9)) ), at43(9)).status == RecordingStudio.SchedStatus.FIRED_TODAY) { "v43 sched fired" }
+                check(RecordingStudio.decide(sched.copy(enabled = false), at43(8, 31)).status == RecordingStudio.SchedStatus.DISABLED) { "v43 sched disabled" }
+                val manual43 = sched.copy(durationMinutes = null)
+                check(RecordingStudio.decide(manual43, at43(8, 31)).status == RecordingStudio.SchedStatus.DUE && RecordingStudio.decide(manual43, at43(8, 34)).status == RecordingStudio.SchedStatus.MISSED) { "v43 manual window" }
+                val weekly43 = sched.copy(repeat = RecordingStudio.REPEAT_WEEKLY, weeklyDays = listOf(java.time.LocalDate.now().atStartOfDay(zone).dayOfWeek.value), startMinutes = 9 * 60 + 55)
+                check(RecordingStudio.decide(weekly43, at43(9, 57)).status == RecordingStudio.SchedStatus.DUE) { "v43 weekly iso day" }
+                check(RecordingStudio.decide(weekly43.copy(weeklyDays = listOf((weekly43.weeklyDays.first() % 7) + 1)), at43(9, 57)).status == RecordingStudio.SchedStatus.WAITING) { "v43 weekly other day" }
+                val onceDone = sched.copy(repeat = RecordingStudio.REPEAT_ONCE, lastFiredDateKey = "2026-01-01")
+                check(RecordingStudio.decide(onceDone, at43(8, 31)).status == RecordingStudio.SchedStatus.FIRED_TODAY) { "v43 once never again" }
+                val san43 = RecordingStudio.sanitize(sched.copy(startMinutes = 2000, durationMinutes = 9999, repeat = "bogus", weeklyDays = listOf(9, 1, 1, 3)))
+                check(san43.startMinutes == 1439 && san43.durationMinutes == 600 && san43.repeat == RecordingStudio.REPEAT_ONCE && san43.weeklyDays.isEmpty()) { "v43 sanitize" }
+
+                // 8) الإعدادات: دورة حفظ/قراءة كاملة + مفتاح آخر تنفيذ
+                val st43 = com.saidjte.schoolradio.desktop.data.SettingsStore(File(tmp, "v43-settings.json"))
+                st43.setRecordingStudio(
+                    com.saidjte.schoolradio.desktop.data.RecordingJson(
+                        bits = 32, rateHz = 96_000, monitor = true,
+                        deviceNames = listOf("ميكروفون خارجي"),
+                        schedules = listOf(com.saidjte.schoolradio.desktop.data.SchedRecJson(id = "s1", title = "صباحي", startMinutes = 500, durationMinutes = 10, repeat = "daily"))
+                    )
+                )
+                val rt43 = com.saidjte.schoolradio.desktop.data.SettingsStore(File(tmp, "v43-settings.json"))
+                val cfg43 = rt43.recordingStudio()
+                check(cfg43.bits == 32 && cfg43.rateHz == 96_000 && cfg43.monitor == true) { "v43 settings quality" }
+                check(rt43.recordingSchedules().size == 1 && rt43.recordingSchedules()[0].durationMinutes == 10) { "v43 settings schedules" }
+                rt43.setScheduleFired("s1", "2026-11-11")
+                check(com.saidjte.schoolradio.desktop.data.SettingsStore(File(tmp, "v43-settings.json")).recordingSchedules()[0].lastFiredDateKey == "2026-11-11") { "v43 fired mark" }
+
+                // 9) الفوقية: ضمان المسار (حوار أولًا) والمقطع بنافذته الكاملة
+                val (p43, tid43) = com.saidjte.schoolradio.desktop.data.MontageLogic.ensureOverdubTrack(com.saidjte.schoolradio.desktop.data.MontageProject())
+                check(p43.tracks.size == 1 && tid43 == p43.tracks.first().id &&
+                        p43.tracks.first().type == com.saidjte.schoolradio.desktop.data.MontageLogic.TYPE_DIALOGUE &&
+                        p43.tracks.first().name == com.saidjte.schoolradio.desktop.data.MontageLogic.OVERDUB_TRACK_NAME) { "v43 overdub track empty" }
+                val pWith = com.saidjte.schoolradio.desktop.data.MontageProject(
+                    tracks = listOf(
+                        com.saidjte.schoolradio.desktop.data.MontageTrack(id = "music", name = "م", type = com.saidjte.schoolradio.desktop.data.MontageLogic.TYPE_MUSIC),
+                        com.saidjte.schoolradio.desktop.data.MontageTrack(id = "dlg", name = "ح", type = com.saidjte.schoolradio.desktop.data.MontageLogic.TYPE_DIALOGUE)
+                    )
+                )
+                val (p43b, tid43b) = com.saidjte.schoolradio.desktop.data.MontageLogic.ensureOverdubTrack(pWith)
+                check(tid43b == "dlg" && p43b.tracks.size == 2) { "v43 overdub dialogue preferred" }
+                val clip43 = com.saidjte.schoolradio.desktop.data.MontageLogic.overdubClip("/tmp/r.wav", " تعليق ", 7_500L, 12_000L, tid43)
+                check(clip43.startMs == 12_000L && clip43.durationMs == 7_500L && clip43.startInFileMs == 0L && clip43.endInFileMs == 7_500L) { "v43 overdub clip window" }
+
+                // 10) بوابة الجلسة الخاوية على المحرك: لا بدء بلا أجهزة والإنهاء آمن
+                val eng43 = com.saidjte.schoolradio.desktop.audio.RecordingEngine()
+                check(!eng43.start(emptyList(), RecordingStudio.Quality(16, 48_000), tmp, false)) { "v43 engine no devices" }
+                check(eng43.state.value == RecordingStudio.RecState.IDLE && eng43.stop().isEmpty() && !eng43.pause() && !eng43.resume()) { "v43 engine guards" }
             }
 
             println("SELFTEST OK — version $APP_VERSION")

@@ -391,6 +391,53 @@ object MontageLogic {
     /** هل من مسار حر منفرد؟ */
     fun anyTrackSolo(tracks: List<MontageTrack>): Boolean = tracks.any { it.solo }
 
+    // ==== v0.43.0: التسجيل الفوقي على المونتاج — مساعدو الإدراج ====
+
+    /** اسم المسار المخصّص للتسجيل الفوقي — يُنشأ حين المشروع خاوي من المسارات. */
+    const val OVERDUB_TRACK_NAME = "مسار التسجيل"
+
+    /** معرّف مقطع تسجيل فوقي جديد فريد. */
+    fun newOverdubClipId(): String = "od${System.nanoTime()}"
+
+    /**
+     * ضمان مسار الوجهة للتسجيل الفوقي: أول مسار حوار فعّال إن وُجد —
+     * صوت المذيع لا يخفض تحت التعليق — وإلا أول مسار حر، وإلا أُنشئ
+     * مسار «مسار التسجيل» بنوع حوار للمشاريع الخاوية. يعيد المشروع
+     * المعدَّل ومعرّف المسار الوجهة — قرار موحّد يختبره العقد.
+     */
+    fun ensureOverdubTrack(p: MontageProject): Pair<MontageProject, String> {
+        val eff = effectiveTracks(p)
+        if (p.tracks.isNotEmpty() && eff.isNotEmpty()) {
+            val dest = eff.firstOrNull { it.type == TYPE_DIALOGUE } ?: eff.first()
+            return p to dest.id
+        }
+        val track = MontageTrack(
+            id = newTrackId(), name = OVERDUB_TRACK_NAME,
+            colorIndex = 4, type = TYPE_DIALOGUE
+        )
+        return p.copy(tracks = listOf(track)) to track.id
+    }
+
+    /**
+     * مقطع التسجيل الفوقي الجاهز للإدراج: موضع مطلق عند رأس التشغيل لحظة
+     * بدء التسجيل، ونافذة الملف المسجَّل كاملةً، وعلى المسار الوجهة —
+     * والمدة الصفرية (فشل الالتقاط) تعطي نافذة مغلقة آمنة لا تكسر المزج.
+     */
+    fun overdubClip(path: String, title: String, durationMs: Long, startMs: Long, trackId: String): MontageMusicClip {
+        val d = durationMs.coerceAtLeast(0L)
+        val (s, e) = clampWindow(0L, 0L, d)
+        return MontageMusicClip(
+            id = newOverdubClipId(),
+            path = path,
+            title = sanitizeClipTitle(title),
+            durationMs = d,
+            startMs = startMs.coerceAtLeast(0L),
+            startInFileMs = s,
+            endInFileMs = e,
+            trackId = trackId
+        )
+    }
+
     // ==== v0.41.0: نظام المونتاج متعدد المسارات الاحترافي — رياضيات نقية ====
 
     /**

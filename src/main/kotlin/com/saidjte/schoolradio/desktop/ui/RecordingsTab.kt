@@ -10,11 +10,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,7 +38,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** قسم التسجيلات: مكتبة المجلد الحالي مع تشغيل/إعادة تسمية/حذف. */
+/**
+ * صفحة التسجيلات (v0.43.0): استوديو التسجيل الاحترافي في الأعلى
+ * (لوحة RecordingStudioPanel بالبنود الأحد عشر) ثم مكتبة المجلد الحالي
+ * بتشغيلها وإرسال كل تسجيل إلى مسار مونتاج عند رأس التشغيل —
+ * والصفحة كلها تمرّ عموديًا (درس v0.35: الصفحة الجديدة لا تدفع
+ * الأزرار خارج النافذة).
+ */
 @Composable
 fun RecordingsTab(vm: AppViewModel) {
     val recordings by vm.recordings.collectAsState()
@@ -49,6 +56,7 @@ fun RecordingsTab(vm: AppViewModel) {
     var renameTarget by remember { mutableStateOf<RecordingItem?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<RecordingItem?>(null) }
+    var sendTarget by remember { mutableStateOf<RecordingItem?>(null) }
 
     // بوابة الأدوار: إدارة التسجيلات (تسمية/حذف) لمعلم فأعلى — التشغيل والاستماع للجميع
     val me by vm.currentUser.collectAsState()
@@ -57,22 +65,23 @@ fun RecordingsTab(vm: AppViewModel) {
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.horizontalScroll(rememberScrollState())
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
         ) {
             Text(
                 "التسجيلات",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+                softWrap = false
             )
             SecondaryAction(text = "تسجيل جديد", onClick = { vm.selectTab(Tab.LIVE) })
             SecondaryAction(text = "تحديث", onClick = { vm.refreshRecordings() })
@@ -90,19 +99,25 @@ fun RecordingsTab(vm: AppViewModel) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
+        // ================= استوديو التسجيل الاحترافي (v0.43.0) =================
+        RecordingStudioPanel(vm)
+
+        // ================= مكتبة التسجيلات =================
+        Text(
+            "مكتبة التسجيلات (${recordings.size})",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
         if (recordings.isEmpty()) {
             EmptyState(
                 icon = AppIconKind.RECORDINGS,
                 title = "لا توجد تسجيلات بعد",
-                hint = "ابدأ تسجيلًا من تبويب «البث المباشر» وستظهر تسجيلاتك هنا مع تشغيلها وإعادة تسميتها."
+                hint = "ابدأ تسجيلًا من استوديو التسجيل أعلاه أو من «البث المباشر» وستظهر تسجيلاتك هنا مع تشغيلها وإرسالها إلى المونتاج."
             )
         } else {
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                items(recordings.size) { index ->
-                    val item = recordings[index]
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                recordings.forEach { item ->
                     val playingThis = currentFile == item.file && isPlaying && !isPaused
                     Row(
                         modifier = Modifier
@@ -146,6 +161,7 @@ fun RecordingsTab(vm: AppViewModel) {
                         } else {
                             SecondaryAction(text = "تشغيل", onClick = { vm.player.play(item.file) })
                         }
+                        SecondaryAction(text = "إلى المونتاج", onClick = { sendTarget = item })
                         if (canManage) {
                             SecondaryAction(
                                 text = "إعادة تسمية",
@@ -201,6 +217,56 @@ fun RecordingsTab(vm: AppViewModel) {
             },
             dismissButton = {
                 TextButton(onClick = { deleteTarget = null }) { Text("إلغاء") }
+            }
+        )
+    }
+
+    // حوار إرسال تسجيل إلى مسار مونتاج عند رأس التشغيل (التسجيل متعدد المسارات)
+    if (sendTarget != null) {
+        val choices = remember(sendTarget) { vm.montageTrackChoices() }
+        AlertDialog(
+            onDismissRequest = { sendTarget = null },
+            title = { Text("إرسال إلى المونتاج") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "«${sendTarget?.displayName}» يُدرج عند رأس التشغيل (${formatMs(vm.montagePlayheadMs.value)}) على المسار:",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (choices.isEmpty()) {
+                        Text(
+                            "لا توجد مسارات — افتح صفحة المونتاج أولًا",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            choices.forEach { (id, name) ->
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            val f = sendTarget?.file
+                                            sendTarget = null
+                                            if (f != null) vm.sendRecordingToMontage(f, id)
+                                        }
+                                ) {
+                                    Text(
+                                        name,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { sendTarget = null }) { Text("إلغاء") }
             }
         )
     }

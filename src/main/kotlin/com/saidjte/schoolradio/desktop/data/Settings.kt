@@ -1,5 +1,6 @@
 package com.saidjte.schoolradio.desktop.data
 
+import com.saidjte.schoolradio.desktop.audio.RecordingStudio
 import java.io.File
 
 /**
@@ -65,6 +66,34 @@ data class SegmentTimerJson(
     val warnSeconds: Int? = null
 )
 
+/**
+ * بند جدولة تسجيل محفوظ (v0.43.0 «التسجيل المجدول») — يُخزَّن كما هو
+ * والتعقيم عند القراءة في ScheduledRecordingMath.sanitize.
+ */
+data class SchedRecJson(
+    val id: String? = null,
+    val title: String? = null,
+    val startMinutes: Int? = null,
+    val durationMinutes: Int? = null,
+    val repeat: String? = null,
+    val weeklyDays: List<Int>? = null,
+    val enabled: Boolean? = null,
+    val lastFiredDateKey: String? = null
+)
+
+/**
+ * إعدادات استوديو التسجيل الاحترافي المحفوظة (v0.43.0): الجودة المطلوبة
+ * وسماع المراقبة والأجهزة المختارة (بأسمائها تُطابق عند التشغيل) وبنود
+ * الجدولة — كلها في settings.json فتعود بين الجلسات.
+ */
+data class RecordingJson(
+    val bits: Int? = null,
+    val rateHz: Int? = null,
+    val monitor: Boolean? = null,
+    val deviceNames: List<String>? = null,
+    val schedules: List<SchedRecJson>? = null
+)
+
 /** إعدادات التطبيق العامة — تُحفظ في settings.json. */
 data class AppSettings(
     val schoolName: String? = null,
@@ -83,7 +112,9 @@ data class AppSettings(
     /** مؤقت الفاصل الآلي (v0.31.0). */
     val segmentTimer: SegmentTimerJson? = null,
     /** مساحة العمل القابلة للتخصيص: الخط والقائمة الجانبية واللوحات (v0.39.0). */
-    val workspace: WorkspaceJson? = null
+    val workspace: WorkspaceJson? = null,
+    /** استوديو التسجيل الاحترافي: الجودة والمراقبة والأجهزة والجدولة (v0.43.0). */
+    val recording: RecordingJson? = null
 )
 
 /**
@@ -363,6 +394,81 @@ class SettingsStore(private val file: File) {
                 aec = AecJson(enabled = state.aec.enabled)
             )
         )
+        persist()
+    }
+
+    // ================= استوديو التسجيل الاحترافي (v0.43.0) =================
+
+    /**
+     * إعدادات الاستوديو المحسومة: الجودة محبوسة داخل المسموح، والمراقبة
+     * الافتراضية معطلة (سماعات رأس مسؤولية المذيع)، والأجهزة أسماء معقّمة،
+     * وكل بند جدولة معقّم في ScheduledRecordingMath.sanitize.
+     */
+    fun recordingStudio(): RecordingJson {
+        val r = doc.recording ?: RecordingJson()
+        val q = RecordingStudio.Quality(r.bits ?: 16, r.rateHz ?: 48_000).clamp()
+        val schedules = (r.schedules ?: emptyList()).mapNotNull { j ->
+            val id = j.id?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            RecordingStudio.sanitize(
+                RecordingStudio.ScheduledItem(
+                    id = id,
+                    title = j.title ?: "تسجيل مجدول",
+                    startMinutes = j.startMinutes ?: 480,
+                    durationMinutes = j.durationMinutes,
+                    repeat = j.repeat ?: RecordingStudio.REPEAT_ONCE,
+                    weeklyDays = j.weeklyDays ?: emptyList(),
+                    enabled = j.enabled ?: true,
+                    lastFiredDateKey = j.lastFiredDateKey
+                )
+            )
+        }
+        return RecordingJson(
+            bits = q.bits,
+            rateHz = q.rateHz,
+            monitor = r.monitor ?: false,
+            deviceNames = (r.deviceNames ?: emptyList()).map { it.trim() }.filter { it.isNotEmpty() },
+            schedules = schedules.map { s ->
+                SchedRecJson(
+                    id = s.id, title = s.title, startMinutes = s.startMinutes,
+                    durationMinutes = s.durationMinutes, repeat = s.repeat,
+                    weeklyDays = s.weeklyDays, enabled = s.enabled,
+                    lastFiredDateKey = s.lastFiredDateKey
+                )
+            }
+        )
+    }
+
+    /** جدولة الاستوديو كبنود منطقية جاهزة للقرارات — معقّمة كاملة. */
+    fun recordingSchedules(): List<RecordingStudio.ScheduledItem> =
+        recordingStudio().schedules?.mapNotNull { j ->
+            j.id?.let {
+                RecordingStudio.sanitize(
+                    RecordingStudio.ScheduledItem(
+                        id = it, title = j.title ?: "تسجيل مجدول",
+                        startMinutes = j.startMinutes ?: 480,
+                        durationMinutes = j.durationMinutes,
+                        repeat = j.repeat ?: RecordingStudio.REPEAT_ONCE,
+                        weeklyDays = j.weeklyDays ?: emptyList(),
+                        enabled = j.enabled ?: true,
+                        lastFiredDateKey = j.lastFiredDateKey
+                    )
+                )
+            }
+        } ?: emptyList()
+
+    /** حفظ إعدادات الاستوديو دفعة واحدة — يُستدعى عند كل تعديل من المذيع. */
+    fun setRecordingStudio(cfg: RecordingJson) {
+        doc = doc.copy(recording = cfg)
+        persist()
+    }
+
+    /** تحديث مفتاح آخر تنفيذ لبند جدولة بعد إطلاقه أو تسجيله فائتًا. */
+    fun setScheduleFired(id: String, dateKey: String) {
+        val cur = doc.recording ?: RecordingJson()
+        val updated = (cur.schedules ?: emptyList()).map {
+            if (it.id == id) it.copy(lastFiredDateKey = dateKey) else it
+        }
+        doc = doc.copy(recording = cur.copy(schedules = updated))
         persist()
     }
 

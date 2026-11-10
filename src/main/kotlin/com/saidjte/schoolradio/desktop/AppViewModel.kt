@@ -1,5 +1,6 @@
 package com.saidjte.schoolradio.desktop
 
+import com.saidjte.schoolradio.desktop.audio.AudioDevices
 import com.saidjte.schoolradio.desktop.audio.AudioFx
 import com.saidjte.schoolradio.desktop.audio.BundledJingles
 import com.saidjte.schoolradio.desktop.audio.BundledSounds
@@ -15,6 +16,8 @@ import com.saidjte.schoolradio.desktop.audio.MontageRender
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
 import com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS
+import com.saidjte.schoolradio.desktop.audio.RecordingEngine
+import com.saidjte.schoolradio.desktop.audio.RecordingStudio
 import com.saidjte.schoolradio.desktop.audio.RecordingItem
 import com.saidjte.schoolradio.desktop.audio.RecordingMeta
 import com.saidjte.schoolradio.desktop.audio.RecordingsScanner
@@ -59,6 +62,8 @@ import com.saidjte.schoolradio.desktop.data.NamedPlaylist
 import com.saidjte.schoolradio.desktop.data.PlaylistMath
 import com.saidjte.schoolradio.desktop.data.PlaylistStore
 import com.saidjte.schoolradio.desktop.data.ReadingJson
+import com.saidjte.schoolradio.desktop.data.RecordingJson
+import com.saidjte.schoolradio.desktop.data.SchedRecJson
 import com.saidjte.schoolradio.desktop.data.RepeatMode
 import com.saidjte.schoolradio.desktop.data.Role
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
@@ -102,6 +107,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import javax.sound.sampled.Mixer
 import kotlin.concurrent.thread
 
 /**
@@ -869,6 +875,350 @@ class AppViewModel {
         }
         _mixError.value = null
         refreshRecordings()
+    }
+
+    // ================= استوديو التسجيل الاحترافي (v0.43.0) =================
+    // بنود الطلب الأحد عشر على محرك مستقل عن البث المباشر: جودة موحّدة
+    // مضمونة مهما كان العتاد، وأجهزة متعددة بالتوازي (متعدد المسارات)،
+    // وإيقاف/استئناف، ومراقبة حية، ومقياس وتشبع، وجدولة، وفوقية مونتاج.
+
+    /** محرك التسجيل الاحترافي — مستقل تمامًا عن MicLiveEngine فلا تعارض قنوات. */
+    val recorder = RecordingEngine()
+
+    /** أجهزة الإدخال المتاحة حاليًا — تُحدَّث بطلب المذيع («تحديث»). */
+    private val _recorderMics = MutableStateFlow(AudioDevices.listMics())
+    val recorderMics: StateFlow<List<AudioDevices.MicDevice>> = _recorderMics.asStateFlow()
+
+    fun refreshRecorderMics() {
+        _recorderMics.value = AudioDevices.listMics()
+        // إسقاط الأسماء التي لم تعد موجودة من الاختيار الحي فقط —
+        // المحفوظ يبقى كما كتبه المذيع (عقد «جهاز غير موصول لا يُمحى»)
+        val alive = _recorderMics.value.map { it.name }.toSet()
+        if (_recorderSelected.value.any { it !in alive }) {
+            _recorderSelected.value = _recorderSelected.value.filter { it in alive }
+        }
+    }
+
+    /** الأجهزة المختارة للتسجيل المتعدد (أسماء — حد أربعة كأقصى للمسارات المتوازية). */
+    private val _recorderSelected = MutableStateFlow(settingsStore.recordingStudio().deviceNames ?: emptyList())
+    val recorderSelected: StateFlow<List<String>> = _recorderSelected.asStateFlow()
+
+    /** الجودة المطلوبة (بت × معدل) — الملف يخرج بها دائمًا. */
+    private val _recorderQuality = MutableStateFlow(
+        RecordingStudio.Quality(
+            settingsStore.recordingStudio().bits ?: 16,
+            settingsStore.recordingStudio().rateHz ?: 48_000
+        ).clamp()
+    )
+    val recorderQuality: StateFlow<RecordingStudio.Quality> = _recorderQuality.asStateFlow()
+
+    /** سماع المراقبة أثناء التسجيل — الافتراضي معطّل. */
+    private val _recorderMonitor = MutableStateFlow(settingsStore.recordingStudio().monitor ?: false)
+    val recorderMonitor: StateFlow<Boolean> = _recorderMonitor.asStateFlow()
+
+    /** رسالة الاستوديو الحية (خطأ/تأكيد) تُعرض في اللوحة نفسها. */
+    private val _recorderMessage = MutableStateFlow<String?>(null)
+    val recorderMessage: StateFlow<String?> = _recorderMessage.asStateFlow()
+
+    /** جدولة التسجيل المحفوظة. */
+    private val _recorderSchedules = MutableStateFlow(settingsStore.recordingSchedules())
+    val recorderSchedules: StateFlow<List<RecordingStudio.ScheduledItem>> = _recorderSchedules.asStateFlow()
+
+    /** البند المجدول الذي أطلق الجلسة الجارية — لوقفه الآلي عند مدته. */
+    @Volatile private var scheduledActiveId: String? = null
+
+    private fun persistRecordingStudio() {
+        settingsStore.setRecordingStudio(
+            RecordingJson(
+                bits = _recorderQuality.value.bits,
+                rateHz = _recorderQuality.value.rateHz,
+                monitor = _recorderMonitor.value,
+                deviceNames = _recorderSelected.value,
+                schedules = _recorderSchedules.value.map {
+                    SchedRecJson(
+                        id = it.id, title = it.title, startMinutes = it.startMinutes,
+                        durationMinutes = it.durationMinutes, repeat = it.repeat,
+                        weeklyDays = it.weeklyDays, enabled = it.enabled,
+                        lastFiredDateKey = it.lastFiredDateKey
+                    )
+                }
+            )
+        )
+    }
+
+    /** تبديل اختيار جهاز للتسجيل المتعدد — حتى أربعة مسارات متوازية. */
+    fun toggleRecorderDevice(name: String) {
+        val cur = _recorderSelected.value
+        _recorderSelected.value = if (name in cur) {
+            cur - name
+        } else {
+            (cur + name).takeLast(4)
+        }
+        persistRecordingStudio()
+    }
+
+    fun setRecorderBits(bits: Int) {
+        _recorderQuality.value = _recorderQuality.value.copy(bits = bits).clamp()
+        persistRecordingStudio()
+    }
+
+    fun setRecorderRate(rateHz: Int) {
+        _recorderQuality.value = _recorderQuality.value.copy(rateHz = rateHz).clamp()
+        persistRecordingStudio()
+    }
+
+    fun setRecorderMonitor(on: Boolean) {
+        _recorderMonitor.value = on
+        recorder.setMonitor(on)
+        persistRecordingStudio()
+    }
+
+    /**
+     * حل أسماء الأجهزة المختارة إلى Mixer.Info فعلية — الاسم الغائب
+     * (جهاز فُصل) يُسقط بهدوء والبقية تعمل، فلا فشل كامل بسبب جهاز واحد.
+     */
+    private fun resolveRecorderDevices(): List<Mixer.Info?> {
+        val mics = _recorderMics.value
+        val byName = mics.associateBy { it.name }
+        val chosen = _recorderSelected.value.mapNotNull { byName[it]?.mixerInfo }
+        return if (chosen.isEmpty()) listOf(mics.firstOrNull()?.mixerInfo) else chosen
+    }
+
+    /** بدء تسجيل احترافي — الأجهزة المختارة كلها بالتوازي بالجودة المطلوبة. */
+    fun startProRecording(): Boolean {
+        if (recorder.state.value != RecordingStudio.RecState.IDLE) return false
+        val devices = resolveRecorderDevices().filterNotNull()
+        if (devices.isEmpty()) {
+            _recorderMessage.value = "لا يوجد جهاز إدخال متاح — وصّل ميكروفونًا واضغط «تحديث»"
+            return false
+        }
+        val u = _currentUser.value
+        recorder.recorderName = u?.name ?: "مستخدم"
+        recorder.recorderRole = (u?.role ?: Role.STUDENT).labelAr
+        recorder.setMonitor(_recorderMonitor.value)
+        val ok = recorder.start(
+            devices,
+            _recorderQuality.value,
+            _recordingsDir.value,
+            _recorderMonitor.value
+        )
+        _recorderMessage.value = if (ok) {
+            "بدأ التسجيل الاحترافي على ${devices.size} ${if (devices.size == 1) "جهاز" else "أجهزة"} — ${_recorderQuality.value.labelAr()}"
+        } else {
+            recorder.error.value ?: "تعذّر بدء التسجيل الاحترافي"
+        }
+        return ok
+    }
+
+    /** إيقاف مؤقت — المدة تتجمد والملفات تبقى مفتوحة للاستئناف. */
+    fun pauseProRecording(): Boolean {
+        val ok = recorder.pause()
+        if (ok) _recorderMessage.value = "التسجيل متوقف مؤقتًا — «استئناف» يكمل في الملفات نفسها"
+        return ok
+    }
+
+    /** استئناف التسجيل في الملفات نفسها. */
+    fun resumeProRecording(): Boolean {
+        val ok = recorder.resume()
+        if (ok) _recorderMessage.value = "استُؤنف التسجيل"
+        return ok
+    }
+
+    /** إنهاء التسجيل وحفظ الملفات وتوقيعها وتحديث المكتبة. */
+    fun stopProRecording() {
+        val fromSchedule = scheduledActiveId
+        val takes = recorder.stop()
+        scheduledActiveId = null
+        refreshRecordings()
+        if (takes.isNotEmpty()) {
+            _recorderMessage.value =
+                if (takes.size == 1) "حُفظ «${takes[0].file.nameWithoutExtension}» (${montageClock(takes[0].durationMs)}) في التسجيلات"
+                else "حُفظت ${takes.size} ملفات — ملف لكل جهاز — في التسجيلات (التسجيل متعدد المسارات)"
+            if (fromSchedule != null) {
+                settingsStore.setScheduleFired(fromSchedule, RecordingStudio.dateKeyOf(System.currentTimeMillis()))
+            }
+        } else {
+            _recorderMessage.value = recorder.error.value ?: "انتهى التسجيل بلا ملف صالح"
+        }
+        refreshRecorderMics()
+    }
+
+    // ---- الجدولة: الإضافة والتعديل والحذف والنبضة ----
+
+    fun addRecorderSchedule(item: RecordingStudio.ScheduledItem) {
+        val withId = if (item.id.isBlank()) item.copy(id = "sr${System.nanoTime()}") else item
+        _recorderSchedules.value = (_recorderSchedules.value + RecordingStudio.sanitize(withId))
+            .take(24) // سقف البنود — فلا جدولة لا نهائية تعيث فسادًا
+        persistRecordingStudio()
+        _recorderMessage.value = "أُضيفت الجدولة «${withId.title}» — ${RecordingStudio.repeatLabel(withId)} ${RecordingStudio.clockOf(withId.startMinutes)}"
+    }
+
+    fun toggleRecorderSchedule(id: String) {
+        _recorderSchedules.value = _recorderSchedules.value.map {
+            if (it.id == id) it.copy(enabled = !it.enabled) else it
+        }
+        persistRecordingStudio()
+    }
+
+    fun removeRecorderSchedule(id: String) {
+        _recorderSchedules.value = _recorderSchedules.value.filterNot { it.id == id }
+        persistRecordingStudio()
+    }
+
+    /**
+     * نبضة التسجيل المجدول — كل عشر ثوانٍ: المستحق يُطلق (إن كان المحرك
+     * خاملًا وإلا بقي مستحقًا حتى يفرغ)، والمنطلَق بمدة محددة يُوقف آليًا
+     * عند اكتمالها، والفائت يُسجَّل فلا يُطلق متأخرًا فيكرّر نفسه.
+     */
+    fun tickScheduledRecordings() {
+        val now = System.currentTimeMillis()
+        // الإيقاف الآلي للجلسة المجدولة عند اكتمال مدتها
+        val activeId = scheduledActiveId
+        if (activeId != null) {
+            val item = _recorderSchedules.value.firstOrNull { it.id == activeId }
+            val dur = item?.durationMinutes
+            if (item == null || (dur != null && recorder.elapsedMs.value >= dur * 60_000L)) {
+                stopProRecording()
+            }
+            return
+        }
+        if (recorder.state.value != RecordingStudio.RecState.IDLE) return
+        for (item in _recorderSchedules.value) {
+            when (RecordingStudio.decide(item, now).status) {
+                RecordingStudio.SchedStatus.DUE -> {
+                    if (startProRecording()) {
+                        scheduledActiveId = item.id
+                        settingsStore.setScheduleFired(item.id, RecordingStudio.dateKeyOf(now))
+                        return
+                    }
+                    // فشل البدء: تُترك مستحقًا — النبضة القادمة تحاول حتى نهاية النافذة
+                }
+                RecordingStudio.SchedStatus.MISSED -> {
+                    settingsStore.setScheduleFired(item.id, RecordingStudio.dateKeyOf(now))
+                    _recorderSchedules.value = _recorderSchedules.value.map {
+                        if (it.id == item.id) it.copy(lastFiredDateKey = RecordingStudio.dateKeyOf(now)) else it
+                    }
+                    _recorderMessage.value = "فات موعد التسجيل المجدول «${item.title}» — سُجّل فائتًا"
+                }
+                else -> { /* بانتظار موعده أو منفّذ اليوم أو معطّل */ }
+            }
+        }
+    }
+
+    // ---- الفوقية: التسجيل مع سماع المسارات الأخرى وإدراجها في المونتاج ----
+
+    /** هل الجلسة الجارية فوقية على المونتاج؟ */
+    private val _overdubActive = MutableStateFlow(false)
+    val overdubActive: StateFlow<Boolean> = _overdubActive.asStateFlow()
+
+    /** موضع الرأس لحظة بدء الفوقية — الإدراج عند هذا الموضع بالضبط. */
+    @Volatile private var overdubStartMs = 0L
+
+    /** انتظار اكتمال تصيير المعاينة قبل إطلاق مسجّل الفوقية. */
+    @Volatile private var overdubPending = false
+
+    /** مسار وجهة الفوقية المحسوم عند البدء. */
+    @Volatile private var overdubTrackId: String? = null
+
+    /**
+     * بدء الفوقية: تشغيل المعاينة من الرأس (تُسمَع المسارات الأخرى عبر
+     * السماعات — هذا هو «سماع المسارات») والتسجيل عليها في آن واحد.
+     */
+    fun startMontageOverdub() {
+        if (recorder.state.value != RecordingStudio.RecState.IDLE) {
+            _recorderMessage.value = "التسجيل يعمل بالفعل — أنهِ الجلسة الحالية أولًا"
+            return
+        }
+        val p = _montageProject.value
+        val devices = resolveRecorderDevices().filterNotNull()
+        if (devices.isEmpty()) {
+            _recorderMessage.value = "لا يوجد جهاز إدخال متاح — وصّل ميكروفونًا واضغط «تحديث»"
+            return
+        }
+        overdubStartMs = _montagePlayheadMs.value.coerceAtLeast(0L)
+        val (project, trackId) = MontageLogic.ensureOverdubTrack(p)
+        if (project != p) applyMontage(project)
+        overdubTrackId = trackId
+        overdubPending = true
+        // المعاينة الجاهزة تبدأ فورًا، وغير الجاهزة تُصيَّر ثم تبدأ —
+        // وفي الحالين hook اكتمال التشغيل يطلق المسجّل لحظة بدء الصوت
+        toggleMontagePreview()
+        if (player.isPlaying.value && player.currentFile.value == montagePreviewFile) {
+            launchOverdubRecorder(devices)
+        }
+    }
+
+    /** إطلاق مسجّل الفوقية لحظة بدء تشغيل المعاينة فعليًا. */
+    private fun launchOverdubRecorder(devices: List<Mixer.Info?>) {
+        overdubPending = false
+        val u = _currentUser.value
+        recorder.recorderName = u?.name ?: "مستخدم"
+        recorder.recorderRole = (u?.role ?: Role.STUDENT).labelAr
+        recorder.setMonitor(false) // سماع المسارات يمر عبر المعاينة نفسها — لا تكرار مزدوج
+        val ok = recorder.start(devices, _recorderQuality.value, _recordingsDir.value, false)
+        if (ok) {
+            _overdubActive.value = true
+            _recorderMessage.value =
+                "الفوقية جارية من ${montageClock(overdubStartMs)} — سمع المسارات يعمل وأنهِ بالزر حين تنهي"
+        } else {
+            _recorderMessage.value = recorder.error.value ?: "تعذّر بدء تسجيل الفوقية"
+        }
+    }
+
+    /**
+     * إنهاء الفوقية: إيقاف التشغيل والتسجيل، تثبيت الرأس حيث وصل، ثم
+     * إدراج الملف المسجَّل مقطعًا على مسار الوجهة عند موضع البدء —
+     * إدراج غير إتلافي يمر ببوابة applyMontage ككل تعديلات المونتاج.
+     */
+    fun stopMontageOverdub() {
+        if (!_overdubActive.value) return
+        _overdubActive.value = false
+        if (player.currentFile.value == montagePreviewFile && player.hasTrack.value) {
+            val pos = player.positionMs.value
+            player.stop()
+            setMontagePlayhead(pos)
+        }
+        val takes = recorder.stop()
+        val startMs = overdubStartMs
+        val trackId = overdubTrackId
+        refreshRecordings()
+        if (takes.isEmpty()) {
+            _recorderMessage.value = recorder.error.value ?: "انتهت الفوقية بلا ملف صالح فلم يُدرج شيء"
+            return
+        }
+        val take = takes.first()
+        val clip = MontageLogic.overdubClip(
+            path = take.file.absolutePath,
+            title = take.file.nameWithoutExtension,
+            durationMs = take.durationMs,
+            startMs = startMs,
+            trackId = trackId ?: MontageLogic.DEFAULT_TRACK_ID
+        )
+        val p = _montageProject.value
+        if (p.musicClips.size >= MontageLogic.MAX_TRACK_CLIPS) {
+            _recorderMessage.value = "حُفظ التسجيل في المكتبة — المسار ممتلئ (سقف ${MontageLogic.MAX_TRACK_CLIPS})"
+            return
+        }
+        applyMontage(p.copy(musicClips = p.musicClips + clip))
+        _recorderMessage.value =
+            "أُدرج التسجيل «${clip.title}» على مسار الفوقية عند ${montageClock(startMs)} — ${montageClock(take.durationMs)}"
+    }
+
+    /** خيارات المسارات لحوار «إلى المونتاج» — الافتراضي أولًا ثم المسارات الحرة. */
+    fun montageTrackChoices(): List<Pair<String, String>> {
+        val p = _montageProject.value
+        val eff = MontageLogic.effectiveTracks(p)
+        return eff.map { it.id to it.name }
+    }
+
+    /** إرسال تسجيل من المكتبة إلى مسار مونتاج عند رأس التشغيل (التسجيل متعدد المسارات). */
+    fun sendRecordingToMontage(file: File, trackId: String) {
+        if (!file.isFile) {
+            _recorderMessage.value = "الملف غير موجود على القرص"
+            return
+        }
+        addMontageMusicFiles(listOf(file), trackId)
+        _recorderMessage.value = "أُضيف «${file.nameWithoutExtension}» إلى المونتاج عند رأس التشغيل"
     }
 
     // ================= مؤقت الفاصل الآلي (v0.31.0) =================
@@ -2350,9 +2700,18 @@ class AppViewModel {
                             player.toggle()
                             _lastLibraryMessage.value =
                                 "المعاينة جاهزة — تشغيل من ${montageClock(_montagePlayheadMs.value)} — مسافة للإيقاف"
+                            // الفوقية المنتظرة تُطلق لحظة بدء الصوت الفعلي (v0.43.0)
+                            if (overdubPending) {
+                                val devs = resolveRecorderDevices().filterNotNull()
+                                if (devs.isNotEmpty()) launchOverdubRecorder(devs) else overdubPending = false
+                            }
                         } else {
                             player.play(target)
                             _lastLibraryMessage.value = "المعاينة جاهزة (${montageClock(r.durationMs)})"
+                            if (overdubPending) {
+                                val devs = resolveRecorderDevices().filterNotNull()
+                                if (devs.isNotEmpty()) launchOverdubRecorder(devs) else overdubPending = false
+                            }
                         }
                     } else {
                         player.play(target)
@@ -3535,6 +3894,13 @@ class AppViewModel {
             while (true) {
                 delay(20_000)
                 tickWeekly()
+            }
+        }
+        // نبضة التسجيل المجدول (v0.43.0): كل 10 ثوانٍ — الإطلاق والوقف الآلي
+        runScope.launch {
+            while (true) {
+                delay(10_000)
+                runCatching { tickScheduledRecordings() }
             }
         }
         // كشف الملفات المفقودة دوريًا
