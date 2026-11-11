@@ -214,20 +214,44 @@ class AppViewModel {
     /** ملفات الجينلات المدمجة المستخرجة بمعرفاتها — مصدر جينل الإعلان. */
     @Volatile private var bundledJingleFiles: Map<String, File> = emptyMap()
 
+    // ---- نغمة الإعلان (v0.45.0): اختيار المذيع من المدمجات ويُحفظ بين الجلسات ----
+
+    /** نغمة الإعلان المختارة — تُهذّب من المحفوظ في init بعد اكتمال المخازن. */
+    private val _liveAnnounceJingleId = MutableStateFlow(LiveAnnounceLogic.JINGLE_ID)
+    val liveAnnounceJingleId: StateFlow<String> = _liveAnnounceJingleId.asStateFlow()
+
+    /** اختيار نغمة الإعلان: المعروف يُحفظ، والغريب يعود للافتراضي برسالة واضحة. */
+    fun selectLiveAnnounceJingle(id: String) {
+        val resolved = LiveAnnounceLogic.resolveJingleId(id, BundledJingles.ALL.map { it.id })
+        if (resolved != id.trim()) {
+            _lastLibraryMessage.value = "نغمة غير معروفة — عاد الاختيار للافتراضي «${jingleTitleOf(LiveAnnounceLogic.JINGLE_ID)}»"
+        } else {
+            _lastLibraryMessage.value = "نغمة الإعلان: «${jingleTitleOf(resolved)}»"
+        }
+        _liveAnnounceJingleId.value = resolved
+        settingsStore.setLiveAnnounceJingleId(resolved)
+    }
+
+    /** عنوان نغمة الإعلان من معرفها — من عناوين المدمجات. */
+    fun jingleTitleOf(id: String): String =
+        LiveAnnounceLogic.jingleTitleOf(id) { jid -> BundledJingles.ALL.firstOrNull { it.id == jid }?.title }
+
     /**
-     * إعلان البث المباشر بنقرة واحدة: جينل الافتتاح من القناة المستقلة
-     * (نفس موضع جينل الفاصل الآلي فلا تتراكم الأصوات) + شارة «البث المباشر
-     * بدأ الآن» على شاشة الطلاب + رسالة تأكيد في الاستوديو.
+     * إعلان البث المباشر بنقرة واحدة: نغمة الإعلان المختارة من القناة
+     * المستقلة (نفس موضع جينل الفاصل الآلي فلا تتراكم الأصوات) + شارة
+     * «البث المباشر بدأ الآن» على شاشة الطلاب + إضاءة شارة على الهواء
+     * (v0.45.0) + رسالة تأكيد في الاستوديو.
      */
     fun announceLiveBroadcast() {
-        val f = bundledJingleFiles[LiveAnnounceLogic.JINGLE_ID]
+        val id = _liveAnnounceJingleId.value
+        val f = bundledJingleFiles[id]
         if (f == null || !f.isFile) {
-            _lastLibraryMessage.value = "جينل الإعلان غير متاح — أعد فتح التطبيق لتُستخرج الجينلات المدمجة"
+            _lastLibraryMessage.value = "نغمة الإعلان غير متاحة — أعد فتح التطبيق لتُستخرج الجينلات المدمجة"
             return
         }
         jingles.sting(f)
         _liveAnnounceStartedAt.value = System.currentTimeMillis()
-        _lastLibraryMessage.value = "إعلان البث المباشر: «${LiveAnnounceLogic.BANNER_TEXT}» — جينل الافتتاح يعمل الآن"
+        _lastLibraryMessage.value = "إعلان البث المباشر: «${LiveAnnounceLogic.BANNER_TEXT}» — «${jingleTitleOf(id)}» تعمل الآن"
     }
 
     private val _jinglePads = MutableStateFlow(JingleWallLogic.emptyPads())
@@ -2251,7 +2275,14 @@ class AppViewModel {
     private var envelopeJob: Job? = null
 
     /** عند الإقلاع: مغلّفات المشروع المستعاد من الجلسة تُبنى فورًا فالويڤ فورم لا يولد فارغًا. */
-    init { refreshMontageStates() }
+    init {
+        refreshMontageStates()
+        // نغمة الإعلان من المحفوظ — هنا بعد اكتمال تهيئة المخازن وخصائص النموذج (v0.45.0)
+        _liveAnnounceJingleId.value = LiveAnnounceLogic.resolveJingleId(
+            settingsStore.liveAnnounceJingleId(),
+            BundledJingles.ALL.map { it.id }
+        )
+    }
 
     /** ختم المشروع الذي صُيِّرت معاينته الحالية — تُعاد استعمالها إن لم يتغير المشروع. */
     @Volatile private var montagePreviewStamp: String? = null

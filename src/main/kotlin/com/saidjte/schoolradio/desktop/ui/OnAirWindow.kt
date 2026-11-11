@@ -141,7 +141,7 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
     val model = remember(
         runActive, runIndex, runElapsed, remaining, warn, schedule,
         musicTitle, musicPos, musicDur, playing,
-        micState == MicState.LIVE, rec, mixRec
+        micState == MicState.LIVE, rec, mixRec, announceActive
     ) {
         OnAirDisplayLogic.buildModel(
             runActive = runActive,
@@ -156,7 +156,8 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
             musicDurationMs = musicDur,
             musicPlaying = playing,
             micLive = micState == MicState.LIVE,
-            recording = rec || mixRec
+            recording = rec || mixRec,
+            announceActive = announceActive
         )
     }
 

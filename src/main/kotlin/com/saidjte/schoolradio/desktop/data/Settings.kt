@@ -94,6 +94,16 @@ data class RecordingJson(
     val schedules: List<SchedRecJson>? = null
 )
 
+/**
+ * إعدادات إعلان البث المباشر المحفوظة (v0.45.0 «أضف إمكانية اختيار نغمة
+ * الاعلان»): معرف الجينل المدمج المختار نغمةً للإعلان — يُخزّن كما هو
+ * والتعقيم عند القراءة في LiveAnnounceLogic.resolveJingleId فالمعرف
+ * الغريب يعود للافتراضي بلا مساس.
+ */
+data class AnnounceJson(
+    val jingleId: String? = null
+)
+
 /** إعدادات التطبيق العامة — تُحفظ في settings.json. */
 data class AppSettings(
     val schoolName: String? = null,
@@ -114,7 +124,9 @@ data class AppSettings(
     /** مساحة العمل القابلة للتخصيص: الخط والقائمة الجانبية واللوحات (v0.39.0). */
     val workspace: WorkspaceJson? = null,
     /** استوديو التسجيل الاحترافي: الجودة والمراقبة والأجهزة والجدولة (v0.43.0). */
-    val recording: RecordingJson? = null
+    val recording: RecordingJson? = null,
+    /** إعلان البث المباشر: نغمة الإعلان المختارة (v0.45.0). */
+    val announce: AnnounceJson? = null
 )
 
 /**
@@ -469,6 +481,18 @@ class SettingsStore(private val file: File) {
             if (it.id == id) it.copy(lastFiredDateKey = dateKey) else it
         }
         doc = doc.copy(recording = cur.copy(schedules = updated))
+        persist()
+    }
+
+    // ================= إعلان البث المباشر: نغمة الإعلان (v0.45.0) =================
+
+    /** معرف نغمة الإعلان المحفوظة كما هي — التعقيم مع الافتراضي في resolveJingleId. */
+    fun liveAnnounceJingleId(): String? = doc.announce?.jingleId
+
+    /** حفظ نغمة الإعلان المختارة — يُستدعى من منتقي نغمة الإعلان في الاستوديو. */
+    fun setLiveAnnounceJingleId(id: String) {
+        val cur = doc.announce ?: AnnounceJson()
+        doc = doc.copy(announce = cur.copy(jingleId = id.trim()))
         persist()
     }
 

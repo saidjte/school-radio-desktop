@@ -69,10 +69,12 @@ object StudioLayoutLogic {
 data class StudioStatus(
     val micLive: Boolean,
     val recording: Boolean,
-    val musicPlaying: Boolean
+    val musicPlaying: Boolean,
+    /** شارة إعلان البث المباشر مضاءة (v0.45.0 — طلب «زر الإعلان يجب أن يفعل شارة على الهواء»). */
+    val announceActive: Boolean = false
 ) {
-    /** على الهواء = أي صوت يخرج أو يُسجَّل الآن. */
-    val onAir: Boolean get() = micLive || recording || musicPlaying
+    /** على الهواء = أي صوت يخرج أو يُسجَّل الآن أو إعلان بث مضيء. */
+    val onAir: Boolean get() = micLive || recording || musicPlaying || announceActive
 }
 
 /**
@@ -145,9 +147,25 @@ object StudioLogic {
         return if (next in 0 until itemCount) next else null
     }
 
-    /** تجميع حالة الهواء من مصادرها الثلاثة. */
-    fun status(micLive: Boolean, recording: Boolean, musicPlaying: Boolean): StudioStatus =
-        StudioStatus(micLive, recording, musicPlaying)
+    /** تجميع حالة الهواء من مصادرها الثلاثة وشارة الإعلان (v0.45.0). */
+    fun status(
+        micLive: Boolean,
+        recording: Boolean,
+        musicPlaying: Boolean,
+        announceActive: Boolean = false
+    ): StudioStatus = StudioStatus(micLive, recording, musicPlaying, announceActive)
+
+    /**
+     * تسمية فقرة في منتقي السكريبت اليدوي على شاشة الاستوديو (v0.45.0 —
+     * طلب «أضف إمكانية اختيار السكربتات يدويا من شاشة الاستوديو المدمج»):
+     * «1. العنوان» — العنوان الفارغ «بدون عنوان»، والطويل يُقصّ عند 38
+     * حرفًا بعلامة الحذف حتى لا يمزّق القائمة تخطيط الشريط.
+     */
+    fun pickerLabel(index: Int, title: String, maxChars: Int = 38): String {
+        val t = title.trim().ifEmpty { "بدون عنوان" }
+        val shown = if (t.length > maxChars) t.take(maxChars) + "…" else t
+        return "${index + 1}. $shown"
+    }
 
     /** ساعة الحاسوب "HH:mm:ss" من زمن إبوكيلي — صافية وقابلة للاختبار بمنطقة ثابتة. */
     fun clockText(epochMs: Long, zone: TimeZone = TimeZone.getDefault()): String {

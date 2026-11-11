@@ -29,4 +29,20 @@ object LiveAnnounceLogic {
         if (!isActive(startedAtMs, nowMs)) return 0L
         return (startedAtMs!! + DURATION_MS - nowMs).coerceAtLeast(0L)
     }
+
+    /**
+     * اختيار نغمة الإعلان (v0.45.0 — طلب «أضف إمكانية اختيار نغمة الاعلان»):
+     * المحفوظ صالح يُعاد مهذّبًا، والغائب أو الفارغ أو غير المعروف (جينل حُذف
+     * من المدمجات في نسخة أقدم) يعود للافتراضي «افتتاحية مبهجة» — فلا يبقى
+     * الإعلان بلا نغمة أبدًا. النقاوة هنا كي يُختبر القرار بلا ملفات ولا واجهة.
+     */
+    fun resolveJingleId(saved: String?, knownIds: Collection<String>): String {
+        val s = saved?.trim().takeUnless { it.isNullOrEmpty() } ?: return JINGLE_ID
+        if (knownIds.none { it == s }) return JINGLE_ID
+        return s
+    }
+
+    /** عنوان نغمة الإعلان من معرفها — «نغمة مخصصة» للمعرف الغريب غير المتوقع. */
+    fun jingleTitleOf(id: String, titlesOf: (String) -> String?): String =
+        titlesOf(id) ?: "نغمة مخصصة"
 }

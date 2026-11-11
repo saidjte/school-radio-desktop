@@ -83,9 +83,12 @@ object OnAirDisplayLogic {
         musicDurationMs: Long,
         musicPlaying: Boolean,
         micLive: Boolean,
-        recording: Boolean
+        recording: Boolean,
+        announceActive: Boolean = false
     ): OnAirModel {
-        val onAir = micLive || recording || musicPlaying
+        // شارة الإعلان تُضيء الهواء كذلك (v0.45.0 — طلب «زر الإعلان عن البث
+        // المباشر يجب أن يفعل شارة على الهواء»): نقرة الإعلان حالة هواء كاملة
+        val onAir = micLive || recording || musicPlaying || announceActive
         val item = if (runActive) scheduleTitles.getOrNull(runIndex) else null
         val plannedSec = if (runActive) schedulePlannedSeconds.getOrNull(runIndex) ?: 0L else 0L
 

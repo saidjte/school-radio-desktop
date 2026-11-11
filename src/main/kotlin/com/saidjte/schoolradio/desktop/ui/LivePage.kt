@@ -25,6 +25,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,6 +37,7 @@ import com.saidjte.schoolradio.desktop.APP_VERSION
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.Tab
 import com.saidjte.schoolradio.desktop.audio.MicState
+import com.saidjte.schoolradio.desktop.data.LiveAnnounceLogic
 import com.saidjte.schoolradio.desktop.data.ScriptStats
 import com.saidjte.schoolradio.desktop.data.StudioLogic
 
@@ -84,10 +87,20 @@ private fun LiveTopBar(vm: AppViewModel) {
     val recording by vm.mic.recording.collectAsState()
     val playing by vm.player.isPlaying.collectAsState()
     val paused by vm.player.isPaused.collectAsState()
+    // شارة إعلان البث المباشر تُضيء الهواء كذلك (v0.45.0) — نبضة نصف ثانية
+    val announceAt by vm.liveAnnounceStartedAt.collectAsState()
+    var announceNow by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            announceNow = System.currentTimeMillis()
+            delay(500)
+        }
+    }
     val onAir = StudioLogic.status(
         micLive = micState == MicState.LIVE,
         recording = recording,
-        musicPlaying = playing && !paused
+        musicPlaying = playing && !paused,
+        announceActive = LiveAnnounceLogic.isActive(announceAt, announceNow)
     ).onAir
 
     Row(

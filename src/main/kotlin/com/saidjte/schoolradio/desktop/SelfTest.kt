@@ -4,6 +4,7 @@ import com.saidjte.schoolradio.desktop.audio.AudioDevices
 import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.LevelMeter
 import com.saidjte.schoolradio.desktop.audio.MixBus
+import com.saidjte.schoolradio.desktop.audio.MixMath
 import com.saidjte.schoolradio.desktop.audio.MontageDemo
 import com.saidjte.schoolradio.desktop.audio.MontageExportFormat
 import com.saidjte.schoolradio.desktop.audio.MontageRender
@@ -2390,6 +2391,68 @@ object SelfTest {
                 check(!usable(small, "abc-_12345X", "abc-_12345X")) { "v44 usable too small" }
                 val gone = File(pendDir, "gone.mp3")
                 check(!usable(gone, "abc-_12345X", "abc-_12345X")) { "v44 usable missing file" }
+            }
+
+            // ================= v0.45.0: خلط المزيج الحقيقي وشارة الإعلان ونغمته واختيار السكربت =================
+            run {
+                // 1) الإشباع الناعم: تعريف داخل الركبة وانحناء فوقها بلا موجة مربعة
+                check(MixMath.saturate(0.5f) == 0.5f) { "v45 sat identity" }
+                check(MixMath.saturate(-0.5f) == -0.5f) { "v45 sat identity neg" }
+                val s = MixMath.saturate(1.5f)
+                check(s > MixMath.KNEE && s < 1.0f) { "v45 sat bent=$s" }
+                check(MixMath.saturate(1.5f) > MixMath.saturate(1.0f)) { "v45 sat monotone" }
+                check(MixMath.saturate(-1.5f) == -s) { "v45 sat symmetry" }
+
+                // 2) خلط مسارين متزامنين: المدة أقصى المدد والذروة مجموعهما —
+                //    درس «أي تشغيل متوازٍ يشوّش التسجيل»
+                val mixF = File(tmp, "v45-mix.wav")
+                check(MixBus.start(mixF)) { "v45 mix start" }
+                val music = ShortArray(22_050 * 2) { (0.4f * 32767).toInt().toShort() }
+                MixBus.feedMusic(music, music.size, 44_100, 2)
+                val micBytes = ByteArray(22_050 * 2) { i ->
+                    if (i % 2 == 0) (0.4f * 32767).toInt().toByte() else ((0.4f * 32767).toInt() shr 8).toByte()
+                }
+                MixBus.feedMic(micBytes, 0, micBytes.size, 44_100, 1)
+                val mixDur = MixBus.stop()
+                check(mixDur > 0L) { "v45 mix duration=$mixDur" }
+                val mixInfo = WavHeader.read(mixF)
+                check(mixInfo != null && mixInfo.sampleRate == 44_100 && mixInfo.channels == 2) { "v45 mix header" }
+                // المدة قريبة من نصف ثانية (أقصى المدد) لا ثانية كاملة (مجموعها)
+                val mixFrames = mixInfo!!.dataBytes / 4
+                check(mixFrames in 18_000..30_000) { "v45 mix frames=$mixFrames expect ~22050" }
+                // الذروة ≈ 0.8 (جمع متزامن) — التناوب القديم كان يتركها 0.4
+                val bytes = mixF.readBytes()
+                val dataOff = (bytes.size - mixInfo.dataBytes).toInt()
+                var peak = 0
+                for (i in 0 until (mixInfo.dataBytes / 2).toInt()) {
+                    val v = (((bytes[dataOff + i * 2 + 1].toInt()) shl 8) or (bytes[dataOff + i * 2].toInt() and 0xFF)).toShort().toInt()
+                    val a = maxOf(v, -v)
+                    if (a > peak) peak = a
+                }
+                check(peak in (0.75f * 32767).toInt()..(0.83f * 32767).toInt()) { "v45 mix peak=$peak expect sum ~0.8" }
+                check(MixBus.stop() == 0L) { "v45 mix double stop" }
+
+                // 3) نغمة الإعلان: تعقيم الاختيار مع الافتراضي
+                val ids = BundledJingles.ALL.map { it.id }
+                check(LiveAnnounceLogic.resolveJingleId(null, ids) == LiveAnnounceLogic.JINGLE_ID) { "v45 tone null" }
+                check(LiveAnnounceLogic.resolveJingleId("ghost_tone", ids) == LiveAnnounceLogic.JINGLE_ID) { "v45 tone unknown" }
+                check(LiveAnnounceLogic.resolveJingleId(" school_bell ", ids) == "school_bell") { "v45 tone trim" }
+
+                // 4) شارة الإعلان تُضيء الهواء في المنطقين
+                check(!StudioLogic.status(false, false, false).onAir) { "v45 badge off baseline" }
+                check(StudioLogic.status(false, false, false, announceActive = true).onAir) { "v45 badge lights studio" }
+                check(
+                    OnAirDisplayLogic.buildModel(
+                        false, -1, 0L, null, false, emptyList(), emptyList(),
+                        null, 0L, 0L, false, false, false, announceActive = true
+                    ).onAir
+                ) { "v45 badge lights display" }
+
+                // 5) تسمية منتقي السكربت اليدوي
+                check(StudioLogic.pickerLabel(0, "المقدمة") == "1. المقدمة") { "v45 picker label" }
+                check(StudioLogic.pickerLabel(1, "") == "2. بدون عنوان") { "v45 picker empty" }
+                val pl = StudioLogic.pickerLabel(0, "فترة طويلة جدًا في الإذاعة المدرسية تحتاج قصًّا محكمًا هنا")
+                check(pl.endsWith("…") && pl.length <= 42) { "v45 picker truncate=$pl" }
             }
 
             println("SELFTEST OK — version $APP_VERSION")

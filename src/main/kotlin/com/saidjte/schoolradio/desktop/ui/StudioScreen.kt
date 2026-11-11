@@ -24,6 +24,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -39,6 +41,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,7 +58,9 @@ import androidx.compose.ui.unit.sp
 import com.saidjte.schoolradio.desktop.APP_VERSION
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.Tab
+import com.saidjte.schoolradio.desktop.audio.BundledJingles
 import com.saidjte.schoolradio.desktop.audio.MicState
+import com.saidjte.schoolradio.desktop.data.LiveAnnounceLogic
 import com.saidjte.schoolradio.desktop.data.ScheduleItem
 import com.saidjte.schoolradio.desktop.data.ScheduleMath
 import com.saidjte.schoolradio.desktop.data.SegmentTimerLogic
@@ -384,10 +390,20 @@ private fun StudioTopBar(vm: AppViewModel) {
     val mixRec by vm.mixRecording.collectAsState()
     val playing by vm.player.isPlaying.collectAsState()
     val paused by vm.player.isPaused.collectAsState()
+    // شارة إعلان البث المباشر تُضيء الهواء كذلك (v0.45.0) — نبضة نصف ثانية
+    val announceAt by vm.liveAnnounceStartedAt.collectAsState()
+    var announceNow by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            announceNow = System.currentTimeMillis()
+            delay(500)
+        }
+    }
     val onAir = StudioLogic.status(
         micLive = micState == MicState.LIVE,
         recording = recording || mixRec,
-        musicPlaying = playing && !paused
+        musicPlaying = playing && !paused,
+        announceActive = LiveAnnounceLogic.isActive(announceAt, announceNow)
     ).onAir
     val sc = LocalStudioColors.current
 
@@ -439,9 +455,11 @@ private fun StudioTopBar(vm: AppViewModel) {
             // وضع «على الهواء» (v0.32.0): ملء الشاشة لشاشة ثانية يتابعها الطلاب —
             // نافذة مستقلة كجدار الجينغل فلا تعرقل عمل الاستوديو المدمج
             SecondaryAction(text = "على الهواء", onClick = { vm.onAirDisplayOpen.value = true })
-            // إعلان البث المباشر (v0.35.0): جينل الافتتاح من القناة المستقلة
-            // + شارة «البث المباشر بدأ الآن» على شاشة الطلاب — بنقرة واحدة
+            // إعلان البث المباشر (v0.35.0): نغمة الإعلان من القناة المستقلة
+            // + شارة «البث المباشر بدأ الآن» على شاشة الطلاب + شارة على الهواء (v0.45.0)
             SecondaryAction(text = "إعلان البث المباشر", onClick = { vm.announceLiveBroadcast() })
+            // اختيار نغمة الإعلان (v0.45.0): من الجينلات المدمجة السبعة ويُحفظ بين الجلسات
+            AnnounceTonePicker(vm)
             // جدار الجينغل (v0.28.0): يفتح نافذة منبثقة مستقلة غير ماسكة —
             // الاستوديو المدمج يظل قابلًا للعمل بكامله ما دامت النافذة مفتوحة
             SecondaryAction(
@@ -469,6 +487,41 @@ private fun StudioTopBar(vm: AppViewModel) {
                     )
                 )
         )
+    }
+}
+
+/**
+ * منتقي نغمة الإعلان (v0.45.0 — طلب «أضف إمكانية اختيار نغمة الاعلان»):
+ * قائمة منسدلة بجينلات المدمجات السبعة بجانب زر إعلان البث المباشر،
+ * المختار يُعلَّم بنقطة ويُحفظ في settings.json فتعود النغمة بين الجلسات —
+ * والإعلان التالي يطلق النغمة المختارة أيًا كانت.
+ */
+@Composable
+private fun AnnounceTonePicker(vm: AppViewModel) {
+    var menu by remember { mutableStateOf(false) }
+    val selectedId by vm.liveAnnounceJingleId.collectAsState()
+    Box {
+        SecondaryAction(
+            text = "نغمة الإعلان: ${vm.jingleTitleOf(selectedId)} ▾",
+            onClick = { menu = true }
+        )
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            BundledJingles.ALL.forEach { j ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            (if (j.id == selectedId) "● " else "") + j.title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    onClick = {
+                        vm.selectLiveAnnounceJingle(j.id)
+                        menu = false
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -908,6 +961,34 @@ private fun StudioScriptPanel(vm: AppViewModel, modifier: Modifier = Modifier) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
+            // الاختيار اليدوي من شاشة الاستوديو (v0.45.0): قائمة بكل الفقرات
+            // والفقرة المختارة تُعرض فورًا وتُعلَّم «اختيار يدوي» على الرأس
+            var pickMenu by remember { mutableStateOf(false) }
+            Box {
+                SecondaryAction(
+                    text = "اختيار فقرة ▾",
+                    onClick = { pickMenu = true },
+                    enabled = script.isNotEmpty()
+                )
+                DropdownMenu(expanded = pickMenu, onDismissRequest = { pickMenu = false }) {
+                    script.forEachIndexed { idx, s ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    (if (s.id == selectedId) "● " else "") +
+                                            StudioLogic.pickerLabel(idx, s.title),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            onClick = {
+                                vm.selectSection(s.id)
+                                pickMenu = false
+                            }
+                        )
+                    }
+                }
+            }
             SecondaryAction(
                 text = "السابقة",
                 onClick = { vm.selectAdjacentSection(-1) },
