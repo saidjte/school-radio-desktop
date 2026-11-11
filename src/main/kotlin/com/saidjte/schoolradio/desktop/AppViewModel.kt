@@ -1978,8 +1978,10 @@ class AppViewModel {
         }
     }
 
-    // ================= استيراد من اليوتيوب (v0.25.0) =================
+    // ================= استيراد من اليوتيوب (v0.25.0 — معاينة وتصنيف v0.44.0) =================
     // الأداة مدمجة لكل منصة، والتحويل M4A→MP3 محلي نقي — المقاطع تدخل المكتبة بأضمن صيغة.
+    // v0.44.0: معاينة قبل التحميل (تحميل مؤقت → تشغيل → تأكيد بلا إعادة تحميل)
+    // وسلسلة قنوات تلقائية تتجاوز حاجز «تحقق البوت» الذي أجهز الاستيراد القديم.
 
     private val youtubeService = YouTubeImportService(
         YtDlpLocator(dataDir()),
@@ -1993,6 +1995,7 @@ class AppViewModel {
     fun youtubeSearch(input: String) {
         val q = input.trim()
         if (q.isEmpty()) return
+        soundPreview.stop()
         runScope.launch(Dispatchers.IO) {
             try {
                 youtubeService.resolve(q)
@@ -2003,8 +2006,37 @@ class AppViewModel {
         }
     }
 
+    /** معاينة مقطع قبل التحميل: تحميل مؤقت وتحويل جاهز ثم تشغيل — في خيط عمل. */
+    fun youtubePreview(video: YouTubeJson.VideoInfo) {
+        runScope.launch(Dispatchers.IO) {
+            try {
+                youtubeService.preview(video)
+                // جاهزة؟ شغّل فورًا عبر محرك المعاينة المشترك (صوت واحد في كل لحظة)
+                val p = youtubeService.pendingDownload()
+                val st = youtubeService.state.value
+                if (p != null && st.phase == YouTubeImportService.Phase.PREVIEW_READY && p.file.isFile) {
+                    soundPreview.toggle(p.file)
+                }
+            } catch (t: Throwable) {
+                youtubeService.fail(t.message ?: "تعذّرت المعاينة")
+            }
+        }
+    }
+
+    /** إيقاف صوت المعاينة الجارية (بلا مساس بالحالة). */
+    fun youtubeStopPreviewSound() {
+        soundPreview.stop()
+    }
+
+    /** تجاهل المعاينة: إيقاف الصوت وحذف الملفات المؤقتة وتصفير المرحلة. */
+    fun youtubeDiscardPreview() {
+        soundPreview.stop()
+        youtubeService.discardPreview()
+    }
+
     /** تحميل مقطع وتحويله وإضافته إلى المكتبة في تصنيف — في خيط عمل. */
     fun youtubeImport(video: YouTubeJson.VideoInfo, category: String) {
+        soundPreview.stop() // إن كانت المعاينة تعمل فتوقف أولًا — فالملف قد يُنقل
         runScope.launch(Dispatchers.IO) {
             try {
                 youtubeService.import(video) { file, v ->
@@ -2027,7 +2059,11 @@ class AppViewModel {
     }
 
     fun youtubeCancel() = youtubeService.cancel()
-    fun youtubeReset() = youtubeService.reset()
+    fun youtubeReset() {
+        soundPreview.stop()
+        youtubeService.reset()
+    }
+    fun youtubePending() = youtubeService.pendingDownload()
     fun setYouTubeCookies(file: File?) { youtubeService.cookiesFile = file }
     fun youtubeCookiesFile(): File? = youtubeService.cookiesFile
 

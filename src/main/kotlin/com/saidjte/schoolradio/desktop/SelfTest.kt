@@ -63,6 +63,10 @@ import com.saidjte.schoolradio.desktop.ui.TextEditing
 import com.saidjte.schoolradio.desktop.ui.resolveShortcut
 import com.saidjte.schoolradio.desktop.ui.typographyWithFamilies
 import com.saidjte.schoolradio.desktop.youtube.AudioTranscoder
+import com.saidjte.schoolradio.desktop.youtube.YouTubeClientChain
+import com.saidjte.schoolradio.desktop.youtube.YouTubeImportService
+import com.saidjte.schoolradio.desktop.youtube.YouTubeJson
+import com.saidjte.schoolradio.desktop.youtube.YouTubeUrl
 import com.saidjte.schoolradio.desktop.youtube.YtDlpLocator
 import java.io.File
 import javax.sound.sampled.AudioFormat
@@ -2323,6 +2327,69 @@ object SelfTest {
                 val eng43 = com.saidjte.schoolradio.desktop.audio.RecordingEngine()
                 check(!eng43.start(emptyList(), RecordingStudio.Quality(16, 48_000), tmp, false)) { "v43 engine no devices" }
                 check(eng43.state.value == RecordingStudio.RecState.IDLE && eng43.stop().isEmpty() && !eng43.pause() && !eng43.resume()) { "v43 engine guards" }
+            }
+
+            // ================= v0.44.0: استيراد اليوتيوب — سلسلة القنوات والمعاينة وفصل التبويبين =================
+            run {
+                // 1) سلسلة القنوات: ثماني محاولات والافتراضية أولًا بلا وسائط قناة
+                check(YouTubeClientChain.size == 8 && YouTubeClientChain.CHAIN.first().client == null) { "v44 chain size/first" }
+                check(YouTubeClientChain.extractorArgs(YouTubeClientChain.CHAIN.first()).isEmpty()) { "v44 default no args" }
+                check(YouTubeClientChain.extractorArgs(YouTubeClientChain.attempt(1)) ==
+                        listOf("--extractor-args", "youtube:player_client=tv")) { "v44 tv args" }
+                check(YouTubeClientChain.extractorArgs(YouTubeClientChain.attempt(3)) ==
+                        listOf("--extractor-args", "youtube:player_client=android_vr")) { "v44 vr args" }
+                check(YouTubeClientChain.attempt(99) == YouTubeClientChain.CHAIN.last()) { "v44 clamp" }
+                check(YouTubeClientChain.CHAIN.map { it.client }.toSet().size == YouTubeClientChain.size) { "v44 unique clients" }
+                check(YouTubeClientChain.CHAIN.all { it.label.isNotBlank() }) { "v44 labels" }
+
+                // 2) التصنيف: تحقق البوت/لا صيغة/صفحة تُعاد على قناة تالية، والحاسم يتوقف
+                check(YouTubeClientChain.retryableError("ERROR: Sign in to confirm you're not a bot")) { "v44 retry bot" }
+                check(YouTubeClientChain.retryableError("ERROR: Requested format is not available")) { "v44 retry format" }
+                check(YouTubeClientChain.retryableError("ERROR: unable to download webpage")) { "v44 retry webpage" }
+                check(!YouTubeClientChain.retryableError("ERROR: [youtube] x: Video unavailable")) { "v44 stop unavailable" }
+                check(!YouTubeClientChain.retryableError("ERROR: Unsupported URL")) { "v44 stop unsupported" }
+                check(!YouTubeClientChain.retryableError("ERROR: [Errno 13] Permission denied")) { "v44 stop permission" }
+                check(YouTubeClientChain.botCheck("sign in to confirm") && !YouTubeClientChain.botCheck("video unavailable")) { "v44 botcheck" }
+
+                // 3) رسائل التقدم تحمل رقم المحاولة والقناة العربية
+                val pm0 = YouTubeClientChain.progressMessage(0, "جلب المعلومات من يوتيوب")
+                val pm2 = YouTubeClientChain.progressMessage(2, "تحميل الصوت")
+                check(pm0.contains("1 من 8") && !pm0.contains("عبر")) { "v44 progress default" }
+                check(pm2.contains("3 من 8") && pm2.contains("التلفاز المبسطة")) { "v44 progress channel" }
+
+                // 4) فصل التبويبين: شبّاه الرابط يعرف الروابط وينحّي كلمات البحث
+                check(YouTubeUrl.looksLikeUrl("https://youtu.be/abc-_12345X")) { "v44 url https" }
+                check(YouTubeUrl.looksLikeUrl("WWW.YOUTUBE.COM/watch?v=x")) { "v44 url www" }
+                check(YouTubeUrl.looksLikeUrl("youtube.com/watch?v=x")) { "v44 url bare host" }
+                check(YouTubeUrl.looksLikeUrl("m.youtube.com/shorts/abc")) { "v44 url mobile" }
+                check(!YouTubeUrl.looksLikeUrl("نشيد العلم الوطني")) { "v44 search words" }
+                check(!YouTubeUrl.looksLikeUrl("مدرسة.النور")) { "v44 search dotted" }
+                check(!YouTubeUrl.looksLikeUrl("")) { "v44 search empty" }
+                check(YouTubeUrl.containsUrlSignal("انظر https://youtu.be/abc-_12345X للتفاصيل")) { "v44 signal embedded" }
+                check(!YouTubeUrl.containsUrlSignal("نشيد العلم الوطني")) { "v44 signal words" }
+
+                // 5) رسالة الجدار الكلي: كوكيز وشبكة أخرى — بلا تعليمات خارجية
+                val wall44 = YouTubeJson.describeError("Sign in to confirm you're not a bot")
+                check(wall44 != null && wall44.contains("القنوات") && wall44.contains("كوكيز")) { "v44 wall message" }
+
+                // 6) دورة المعاينة: الخدمة الخاوية بلا معلَّق والتجاهل آمنة ومتكررة
+                val svc44 = YouTubeImportService(YtDlpLocator(tmp), File(tmp, "v44-yt"))
+                check(svc44.pendingDownload() == null && !svc44.pendingUsableFor("abc-_12345X")) { "v44 pending empty" }
+                svc44.discardPreview()
+                svc44.discardPreview()
+                check(svc44.state.value.phase == YouTubeImportService.Phase.IDLE) { "v44 discard idle" }
+
+                // 7) قرار التسليم من المعلَّق منطق نقي مُختبر على ملفات حقيقية
+                val pendDir = File(tmp, "v44-yt/tmp/preview").apply { mkdirs() }
+                val ready = File(pendDir, "ready.mp3").apply { writeBytes(ByteArray(4_096)) }
+                fun usable(file: File, vid: String, want: String) =
+                    file.isFile && file.length() > 1_000L && vid == want
+                check(usable(ready, "abc-_12345X", "abc-_12345X")) { "v44 usable same id" }
+                check(!usable(ready, "abc-_12345X", "other1234567")) { "v44 usable other id" }
+                val small = File(pendDir, "small.mp3").apply { writeBytes(ByteArray(100)) }
+                check(!usable(small, "abc-_12345X", "abc-_12345X")) { "v44 usable too small" }
+                val gone = File(pendDir, "gone.mp3")
+                check(!usable(gone, "abc-_12345X", "abc-_12345X")) { "v44 usable missing file" }
             }
 
             println("SELFTEST OK — version $APP_VERSION")

@@ -3,6 +3,7 @@ package com.saidjte.schoolradio.desktop.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,17 +34,22 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.saidjte.schoolradio.desktop.APP_VERSION
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.youtube.YouTubeImportService
 import com.saidjte.schoolradio.desktop.youtube.YouTubeUrl
 import java.io.File
 
+/** نمط الحوار: تبويب الرابط المباشر أو تبويب البحث بالكلمات — منفصلان تمامًا. */
+private enum class YouTubeMode { LINK, SEARCH }
+
 /**
- * حوار استيراد المقاطع من اليوتيوب (v0.25.0):
- * حقل واحد يفهم الرابط والبحث معًا — رابط يوتيوب يعرض بطاقة المقطع
- * (العنوان والقناة والمدة) والكلمات تعرض نتائج بحث للاختيار.
- * ثم اختيار تصنيف المكتبة وتحميل حي بالنسبة ثم تحويل MP3 محليًا،
- * وملف كوكيز اختياري لشبكات يطلب فيها يوتيوب تحققًا إضافيًا.
+ * حوار استيراد المقاطع من اليوتيوب (v0.25.0 — مطوَّر v0.44.0):
+ * تبويبان منفصلان كما طلب المستخدم — «رابط مباشر» و«بحث بالكلمات» —
+ * فحقل واحد كان يفهم الاثنين فيتلخبط. منتقي التصنيف أعلى المحتوى في كل
+ * الأطوار فيُختار قبل أي تحميل، ومعاينة «استمع قبل أن تحمّل» على بطاقة
+ * الرابط وكل نتيجة بحث: تحميل مؤقت وتحويل محلي ثم تشغيل، والتأكيد يسلّم
+ * الملف نفسه للمكتبة بلا تحميل ثانٍ. وشارة النسخة من المركز لا نص قديم ثابت.
  */
 @Composable
 fun YouTubeImportDialog(
@@ -53,8 +59,12 @@ fun YouTubeImportDialog(
     val st by vm.youtubeImportState.collectAsState()
     val results by vm.youtubeResults.collectAsState()
     val categories by vm.libraryCategories.collectAsState()
+    val previewPlayingPath by vm.soundPreview.playingFile.collectAsState()
 
-    var input by remember { mutableStateOf("") }
+    var mode by remember { mutableStateOf(YouTubeMode.SEARCH) }
+    var linkInput by remember { mutableStateOf("") }
+    var searchInput by remember { mutableStateOf("") }
+    var inputError by remember { mutableStateOf<String?>(null) }
     var category by remember { mutableStateOf(categories.firstOrNull() ?: "فقرات متنوعة") }
     var categoryMenu by remember { mutableStateOf(false) }
     var showCookiesRow by remember { mutableStateOf(false) }
@@ -63,10 +73,40 @@ fun YouTubeImportDialog(
             st.phase == YouTubeImportService.Phase.DOWNLOADING ||
             st.phase == YouTubeImportService.Phase.CONVERTING
 
+    fun clearError() { if (inputError != null) inputError = null }
+
     fun closeIfIdle(): () -> Unit = {
         if (!busy) {
             vm.youtubeReset()
             onDismiss()
+        }
+    }
+
+    fun doFetchLink() {
+        val q = linkInput.trim()
+        when {
+            q.isEmpty() -> inputError = "الصق رابط المقطع أولًا."
+            !YouTubeUrl.looksLikeUrl(q) -> {
+                inputError = if (YouTubeUrl.containsUrlSignal(q))
+                    "الصق الرابط وحده بلا كلام حوله."
+                else "هذا لا يشبه رابطًا — استخدم تبويب «بحث بالكلمات»."
+            }
+            else -> {
+                clearError()
+                vm.youtubeSearch(q)
+            }
+        }
+    }
+
+    fun doSearch() {
+        val q = searchInput.trim()
+        when {
+            q.isEmpty() -> inputError = "اكتب كلمات البحث أولًا."
+            YouTubeUrl.containsUrlSignal(q) -> inputError = "يبدو أنك لصقت رابطًا — استخدم تبويب «رابط مباشر»."
+            else -> {
+                clearError()
+                vm.youtubeSearch(q)
+            }
         }
     }
 
@@ -77,7 +117,7 @@ fun YouTubeImportDialog(
                 Text("استيراد من يوتيوب", fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "v0.25",
+                    "v$APP_VERSION",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -86,31 +126,86 @@ fun YouTubeImportDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 
-                // —— حقل الرابط/البحث + زر التنفيذ ——
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        placeholder = { Text("رابط مقطع يوتيوب أو كلمات للبحث…") },
-                        singleLine = true,
-                        enabled = !busy,
-                        modifier = Modifier.weight(1f).observesTextEditing()
-                    )
-                    if (st.phase == YouTubeImportService.Phase.RESOLVING) {
-                        SecondaryAction(text = "…", enabled = false, onClick = { })
-                    } else {
-                        PrimaryAction(
-                            text = "جلب",
-                            enabled = input.isNotBlank(),
-                            onClick = { vm.youtubeSearch(input) }
-                        )
+                // —— التبويبان: الرابط المباشر والبحث منفصلان تمامًا (طلب v0.44.0) ——
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ModeChip(
+                        label = "رابط مباشر",
+                        selected = mode == YouTubeMode.LINK,
+                        enabled = !busy
+                    ) { mode = YouTubeMode.LINK; clearError() }
+                    ModeChip(
+                        label = "بحث بالكلمات",
+                        selected = mode == YouTubeMode.SEARCH,
+                        enabled = !busy
+                    ) { mode = YouTubeMode.SEARCH; clearError() }
+                }
+
+                // —— حقل التبويب النشط فقط + زره ——
+                when (mode) {
+                    YouTubeMode.LINK -> {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = linkInput,
+                                onValueChange = { linkInput = it; clearError() },
+                                placeholder = { Text("الصق رابط مقطع يوتيوب هنا…") },
+                                singleLine = true,
+                                enabled = !busy,
+                                modifier = Modifier.weight(1f).observesTextEditing()
+                            )
+                            if (st.phase == YouTubeImportService.Phase.RESOLVING) {
+                                SecondaryAction(text = "…", enabled = false, onClick = { })
+                            } else {
+                                PrimaryAction(
+                                    text = "جلب المعلومات",
+                                    enabled = linkInput.isNotBlank(),
+                                    onClick = { doFetchLink() }
+                                )
+                            }
+                        }
+                    }
+                    YouTubeMode.SEARCH -> {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = searchInput,
+                                onValueChange = { searchInput = it; clearError() },
+                                placeholder = { Text("اكتب كلمات البحث — مثال: نشيد العلم الوطني") },
+                                singleLine = true,
+                                enabled = !busy,
+                                modifier = Modifier.weight(1f).observesTextEditing()
+                            )
+                            if (st.phase == YouTubeImportService.Phase.RESOLVING) {
+                                SecondaryAction(text = "…", enabled = false, onClick = { })
+                            } else {
+                                PrimaryAction(
+                                    text = "بحث",
+                                    enabled = searchInput.isNotBlank(),
+                                    onClick = { doSearch() }
+                                )
+                            }
+                        }
                     }
                 }
 
-                // —— الحالة: تقدم التحميل/التحويل ——
+                // —— خطأ إدخال محلي (فصل الرابط عن البحث) ——
+                inputError?.let { e ->
+                    Text(
+                        e,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                // —— التصنيف قبل التحميل: أعلى المحتوى في كل الأطوار (طلب v0.44.0) ——
+                CategoryPicker(
+                    categories = categories,
+                    category = category,
+                    expanded = categoryMenu,
+                    enabled = !busy,
+                    onExpanded = { categoryMenu = it },
+                    onPick = { category = it; categoryMenu = false }
+                )
+
+                // —— الحالة: تقدم التحميل/التحويل/المعاينة/النتائج ——
                 when (st.phase) {
                     YouTubeImportService.Phase.DOWNLOADING,
                     YouTubeImportService.Phase.CONVERTING -> {
@@ -158,16 +253,16 @@ fun YouTubeImportDialog(
 
                     YouTubeImportService.Phase.RESOLVED -> {
                         st.resolved?.let { v ->
-                            VideoCard(v) {
-                                // اختيار تصنيف ثم استيراد
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            VideoCard(v, previewPlayingPath == null, busy,
+                                onPreview = { vm.youtubePreview(v) },
+                                footer = {
                                     PrimaryAction(
                                         text = "تحميل إلى «${shortenName(category, 12)}»",
                                         enabled = !busy,
                                         onClick = { vm.youtubeImport(v, category) }
                                     )
                                 }
-                            }
+                            )
                         }
                     }
 
@@ -187,10 +282,6 @@ fun YouTubeImportDialog(
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(MaterialTheme.colorScheme.surface)
-                                        .clickable(enabled = !busy) {
-                                            category = category
-                                            vm.youtubeImport(v, category)
-                                        }
                                         .padding(horizontal = 12.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -213,18 +304,57 @@ fun YouTubeImportDialog(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                     }
-                                    SecondaryAction(text = "تحميل", enabled = !busy, onClick = { vm.youtubeImport(v, category) })
+                                    SecondaryAction(
+                                        text = "معاينة",
+                                        enabled = !busy,
+                                        onClick = { vm.youtubePreview(v) }
+                                    )
+                                    SecondaryAction(
+                                        text = "تحميل",
+                                        enabled = !busy,
+                                        onClick = { vm.youtubeImport(v, category) }
+                                    )
                                 }
                             }
                         }
-                        // تصنيف الاستيراد
-                        CategoryPicker(
-                            categories = categories,
-                            category = category,
-                            expanded = categoryMenu,
-                            onExpanded = { categoryMenu = it },
-                            onPick = { category = it; categoryMenu = false }
-                        )
+                    }
+
+                    YouTubeImportService.Phase.PREVIEW_READY -> {
+                        st.resolved?.let { v ->
+                            val pending = vm.youtubePending()
+                            val playing = pending != null && previewPlayingPath == pending.file.absolutePath
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                VideoCard(v, previewPlayingPath == null, busy,
+                                    onPreview = null, // جاهزة بالفعل — زر التشغيل أدناه يتكفل
+                                    footer = { }
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    SecondaryAction(
+                                        text = if (playing) "إيقاف المعاينة" else "تشغيل المعاينة",
+                                        enabled = pending != null && !busy,
+                                        onClick = {
+                                            val f = pending?.file
+                                            if (f != null && f.isFile) vm.soundPreview.toggle(f)
+                                        }
+                                    )
+                                    PrimaryAction(
+                                        text = "تأكيد التحميل إلى «${shortenName(category, 12)}»",
+                                        enabled = pending != null && !busy,
+                                        onClick = { vm.youtubeImport(v, category) }
+                                    )
+                                }
+                                Text(
+                                    "المعاينة تحميل مؤقت — لن يدخل شيئٌ إلى المكتبة إلا بعد التأكيد، والتأكيد لا يعيد التحميل.",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                SecondaryAction(
+                                    text = "تجاهل المعاينة",
+                                    enabled = !busy,
+                                    onClick = { vm.youtubeDiscardPreview() }
+                                )
+                            }
+                        }
                     }
 
                     YouTubeImportService.Phase.DONE -> {
@@ -279,7 +409,7 @@ fun YouTubeImportDialog(
                     }
                 } else {
                     Text(
-                        "يطلب يوتيوب تحققًا من شبكتك؟ أضف ملف كوكيز (خيار متقدم)",
+                        "يطلب يوتيوب تحققًا من شبكتك رغم كل القنوات؟ أضف ملف كوكيز (خيار متقدم)",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
@@ -301,10 +431,37 @@ fun YouTubeImportDialog(
     )
 }
 
-/** بطاقة المقطع المجلوب من رابط: العنوان والقناة والمدة + المحتوى الإضافي (زر التحميل). */
+/** تبويب الحوار: رقاقة اختيار نمط — رابط مباشر أو بحث بالكلمات. */
+@Composable
+private fun ModeChip(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val bg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    Text(
+        label,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+        color = fg,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (enabled) bg else bg.copy(alpha = 0.6f))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    )
+}
+
+/** بطاقة المقطع المجلوب من رابط: العنوان والقناة والمدة + زرا المعاينة والتحميل. */
 @Composable
 private fun VideoCard(
     v: com.saidjte.schoolradio.desktop.youtube.YouTubeJson.VideoInfo,
+    previewIdle: Boolean,
+    busy: Boolean,
+    onPreview: (() -> Unit)?,
     footer: @Composable () -> Unit
 ) {
     Column(
@@ -330,7 +487,14 @@ private fun VideoCard(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        footer()
+        if (onPreview != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryAction(text = "معاينة", enabled = previewIdle && !busy, onClick = onPreview)
+                footer()
+            }
+        } else {
+            footer()
+        }
     }
 }
 
@@ -339,11 +503,12 @@ private fun CategoryPicker(
     categories: List<String>,
     category: String,
     expanded: Boolean,
+    enabled: Boolean,
     onExpanded: (Boolean) -> Unit,
     onPick: (String) -> Unit
 ) {
-    androidx.compose.foundation.layout.Box {
-        SecondaryAction(text = "التصنيف: $category ▾", onClick = { onExpanded(true) })
+    Box {
+        SecondaryAction(text = "التصنيف قبل التحميل: $category ▾", enabled = enabled, onClick = { onExpanded(true) })
         DropdownMenu(expanded = expanded, onDismissRequest = { onExpanded(false) }) {
             categories.forEach { c ->
                 DropdownMenuItem(

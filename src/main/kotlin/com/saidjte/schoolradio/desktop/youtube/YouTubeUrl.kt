@@ -62,6 +62,32 @@ object YouTubeUrl {
     fun classify(input: String): Kind =
         if (isHttpUrl(input)) Kind.VIDEO_URL else Kind.SEARCH
 
+    /**
+     * هل النص رابط صافٍ منذ أوله (v0.44.0 فصل تبويبَي الرابط والبحث)؟
+     * يكفي أي إشارة رابط في البداية: http(s):// أو www. أو مضيف يوتيوب مكتوب حتى بلا بروتوكول —
+     * هذا شرط تبويب «رابط مباشر»؛ وللنص المخلوط (كلام حول رابط) انظر containsUrlSignal.
+     */
+    fun looksLikeUrl(input: String): Boolean {
+        val s = input.trim().lowercase()
+        if (s.isEmpty()) return false
+        if (isHttpUrl(s)) return true
+        if (s.startsWith("www.")) return true
+        val bare = s.removePrefix("https://").removePrefix("http://")
+        val host = bare.substringBefore('/').substringBefore('?')
+        return HOSTS.any { h -> host == h || host.endsWith(".$h") }
+    }
+
+    /**
+     * هل النص يحوي أي إشارة رابط حتى وسط كلام؟ (v0.44.0)
+     * تبويب البحث يرفض كل نص فيه http(s):// أو يشبه رابطًا في أي موضع —
+     * فلا تُرسَل الروابط إلى ytsearch فتفشل النتائج خفاءً.
+     */
+    fun containsUrlSignal(input: String): Boolean {
+        val s = input.trim()
+        if (looksLikeUrl(s)) return true
+        return Regex("https?://", RegexOption.IGNORE_CASE).containsMatchIn(s)
+    }
+
     /** رابط مشاهدة قياسي من معرّف المقطع. */
     fun watchUrl(videoId: String): String = "https://www.youtube.com/watch?v=$videoId"
 

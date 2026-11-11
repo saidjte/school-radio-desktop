@@ -10,9 +10,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * خدمة استيراد المقاطع من اليوتيوب — كل التفاصيل محلية والأداة مدمجة:
- * 1) جلب بيانات المقطع أو البحث (yt-dlp -J) — عنوان ومدة وقناة.
- * 2) تحميل أفضل صوت mp4a (AAC) مع تقدم حي.
- * 3) تحويل M4A→MP3 محليًا (JAAD+LAME) فتدخل المكتبة بأضمن صيغة للمحرك.
+ * 1) جلب بيانات المقطع (yt-dlp -J بسلسلة قنوات تلقائية) أو البحث (بـ --flat-playlist:
+ *    لا يفحص كل نتيجة فيستبق حاجز «تحقق البوت» ويكون أسرع بثمانية أضعاف).
+ * 2) معاينة قبل التحميل (v0.44.0): تحميل مؤقت إلى مجلد المعاينة ثم تحويله MP3
+ *    محليًا فيبقى جاهزًا — التشغيل عبر محرك المعاينة المشترك من الحوار،
+ *    والتأكيد يسلّم الملف نفسه للمكتبة بلا تحميل ثانٍ ولا تحويل ثانٍ.
+ * 3) تحميل أفضل صوت mp4a (AAC) مع تقدم حي وتحويل M4A→MP3 محليًا (JAAD+LAME).
  * الدوال مُعطِّلة (تُستدعى من خيط عمل في AppViewModel) والحالة تنبض عبر StateFlow.
  */
 class YouTubeImportService(
@@ -21,7 +24,7 @@ class YouTubeImportService(
     private val workDir: File
 ) {
 
-    enum class Phase { IDLE, RESOLVING, RESOLVED, RESULTS, DOWNLOADING, CONVERTING, DONE, FAILED }
+    enum class Phase { IDLE, RESOLVING, RESOLVED, RESULTS, PREVIEW_READY, DOWNLOADING, CONVERTING, DONE, FAILED }
 
     data class State(
         val phase: Phase = Phase.IDLE,
@@ -29,6 +32,12 @@ class YouTubeImportService(
         val title: String = "",
         val message: String = "",
         val resolved: YouTubeJson.VideoInfo? = null
+    )
+
+    /** تحميل مؤقت جاهز للتسليم: ملف MP3 (أو صيغة قابلة للتشغيل) بانتظار تأكيد المستخدم. */
+    data class PendingDownload(
+        val video: YouTubeJson.VideoInfo,
+        val file: File
     )
 
     private val _state = MutableStateFlow(State())
@@ -40,8 +49,21 @@ class YouTubeImportService(
     /** ملف كوكيز اختياري (يُصدَّر من المتصفح) لشبكات يطلب يوتيوب فيها تحققًا إضافيًا. */
     @Volatile var cookiesFile: File? = null
 
+    /** التحميل الجاهز للتأكيد (من مسار المعاينة) — يعاد استخدامه عند الاستيراد بلا إعادة تحميل. */
+    @Volatile private var pending: PendingDownload? = null
+    fun pendingDownload(): PendingDownload? = pending
+
+    /** مجلد المعاينة المؤقتة — يبقى حتى التأكيد أو التجاهل أو إغلاق الحوار. */
+    private val previewDir: File get() = File(workDir, "tmp/preview")
+
     private val cancelFlag = AtomicBoolean(false)
     @Volatile private var activeProcess: Process? = null
+
+    /**
+     * خطأ أداة يحمل الاثنين: النص الخام للتصنيف (سلسلة القنوات تصنّف به)
+     * والرسالة الودّية للعرض (describeError تترجم أو آخر سطر خام).
+     */
+    internal class ToolError(val raw: String, friendly: String) : IllegalStateException(friendly)
 
     /** طلب إلغاء: يقطع العملية الجارية ويُنظّف الملفات المؤقتة. */
     fun cancel() {
@@ -50,6 +72,7 @@ class YouTubeImportService(
     }
 
     fun reset() {
+        discardPreview()
         _state.value = State()
     }
 
@@ -62,10 +85,35 @@ class YouTubeImportService(
         _results.value = emptyList()
     }
 
+    /**
+     * هل التحميل المعلَّق صالح لهذا المقطع؟ منطق نقي مُختبر: نفس المقطع والملف
+     * موجود فعليًا وله حجم منطقي — عندها الاستيراد يتخطى التحميل والتحويل معًا.
+     */
+    fun pendingUsableFor(videoId: String): Boolean {
+        val p = pending ?: return false
+        return p.video.videoId == videoId &&
+                p.file.isFile &&
+                p.file.length() > 1_000L
+    }
+
+    /** تجاهل المعاينة: إزالة الملفات المؤقتة وتصفير المعلَّق وتهدئة الحالة إن كانت مرحلة معاينة. */
+    fun discardPreview() {
+        pending = null
+        try {
+            previewDir.listFiles()?.forEach { it.delete() }
+            previewDir.delete()
+        } catch (_: Exception) { }
+        if (_state.value.phase == Phase.PREVIEW_READY) {
+            _state.value = State()
+        }
+    }
+
     // ================= جلب البيانات: رابط واحد أو بحث =================
 
     /**
      * جلب بيانات: رابط مقطع → معلوماته كاملة (RESOLVED)، أو نص → نتائج بحث (RESULTS).
+     * رابط المقطع يُجرَّب بسلسلة قنوات التشغيل تلقائيًا (v0.44.0) — أول قناة تنجح تُكمل.
+     * البحث يعمل بـ --flat-playlist فلا يفحص كل نتيجة — أسرع ويتفادى حاجز التحقق.
      * يرمي IllegalStateException برسالة عربية عند الفشل.
      */
     fun resolve(input: String) {
@@ -74,18 +122,22 @@ class YouTubeImportService(
         cancelFlag.set(false)
         setState(Phase.RESOLVING, message = "جلب المعلومات من يوتيوب…")
 
-        val bin = locator.resolve()
-        val json = try {
-            val args = mutableListOf(bin.binary.path, "-J", "--no-warnings", "--no-playlist")
-            cookiesFile?.takeIf { it.isFile }?.let { args.addAll(listOf("--cookies", it.absolutePath)) }
-            when (YouTubeUrl.classify(q)) {
-                YouTubeUrl.Kind.VIDEO_URL -> {
-                    val id = YouTubeUrl.extractVideoId(q)
-                    args.add(if (id != null) YouTubeUrl.watchUrl(id) else q)
-                }
-                YouTubeUrl.Kind.SEARCH -> args.add("ytsearch8:$q")
+        val isSearch = YouTubeUrl.classify(q) == YouTubeUrl.Kind.SEARCH
+        val json: String = try {
+            if (isSearch) {
+                // البحث: مسطّح — لا فحص لكل نتيجة (الإصلاح المُتحقَّق منه ضد حاجز البوت)
+                val args = mutableListOf(
+                    locator.resolve().binary.path, "-J", "--no-warnings", "--no-playlist",
+                    "--flat-playlist", "--sleep-requests", "1"
+                )
+                cookiesFile?.takeIf { it.isFile }?.let { args.addAll(listOf("--cookies", it.absolutePath)) }
+                args.add("ytsearch8:$q")
+                runTool(args, onProgress = null)
+            } else {
+                // رابط مباشر: سلسلة قنوات — كل محاولة بـ -f صريح فلا يفشل اختيار الصيغ
+                // على أنظمة بلا ffmpeg مع القنوات ذات الصيغ المنفصلة فقط
+                resolveViaChain(q)
             }
-            runTool(args, onProgress = null)
         } catch (t: Throwable) {
             _results.value = emptyList()
             setState(Phase.FAILED, message = friendlyMessage(t))
@@ -94,7 +146,7 @@ class YouTubeImportService(
 
         if (cancelFlag.get()) { setState(Phase.IDLE, message = "أُلغي الطلب"); return }
 
-        if (YouTubeUrl.classify(q) == YouTubeUrl.Kind.VIDEO_URL) {
+        if (!isSearch) {
             val info = YouTubeJson.parseVideo(json)?.copy(
                 sourceUrl = YouTubeUrl.extractVideoId(q)?.let { YouTubeUrl.watchUrl(it) } ?: q
             )
@@ -111,7 +163,97 @@ class YouTubeImportService(
                 setState(Phase.FAILED, message = "لا نتائج للبحث — جرّب كلمات أخرى.")
             } else {
                 _results.value = list
-                setState(Phase.RESULTS, message = "نتائج البحث (${list.size}) — اختر مقطعًا للتحميل")
+                setState(Phase.RESULTS, message = "نتائج البحث (${list.size}) — استمع بالمعاينة ثم اختر مقطعًا للتحميل")
+            }
+        }
+    }
+
+    /**
+     * جلب بيانات رابط مباشر عبر سلسلة القنوات — يرمي آخر خطأ إن فشلت كلها،
+     * وتحقق البوت الكلي يعطي رسالة الكوكيز الواضحة.
+     */
+    private fun resolveViaChain(q: String): String {
+        val bin = locator.resolve()
+        var lastErr: IllegalStateException? = null
+        for (i in 0 until YouTubeClientChain.size) {
+            if (cancelFlag.get()) throw IllegalStateException("cancel")
+            val attempt = YouTubeClientChain.attempt(i)
+            setState(Phase.RESOLVING, message = YouTubeClientChain.progressMessage(i, "جلب المعلومات من يوتيوب"))
+            val args = mutableListOf(
+                bin.binary.path, "-J", "--no-warnings", "--no-playlist",
+                "--sleep-requests", "1", "-f", YouTubeJson.FALLBACK_FORMAT
+            )
+            cookiesFile?.takeIf { it.isFile }?.let { args.addAll(listOf("--cookies", it.absolutePath)) }
+            args.addAll(YouTubeClientChain.extractorArgs(attempt))
+            val id = YouTubeUrl.extractVideoId(q)
+            args.add(if (id != null) YouTubeUrl.watchUrl(id) else q)
+            try {
+                return runTool(args, onProgress = null)
+            } catch (t: Throwable) {
+                if (t.message == "cancel") throw t
+                val raw = (t as? ToolError)?.raw ?: t.message.orEmpty()
+                lastErr = t as? IllegalStateException ?: IllegalStateException(raw)
+                if (!YouTubeClientChain.retryableError(raw)) throw lastErr
+            }
+        }
+        val m = lastErr?.message.orEmpty()
+        throw IllegalStateException(
+            if (YouTubeClientChain.botCheck(m)) friendlyBotWall() else m
+        )
+    }
+
+    private fun friendlyBotWall(): String =
+        YouTubeJson.describeError("sign in to confirm you're not a bot")
+            ?: "يوتيوب يطلب تحقّقًا إضافيًا من شبكتك — أرفق ملف كوكيز أو جرّب شبكة أخرى."
+
+    // ================= المعاينة قبل التحميل (v0.44.0) =================
+
+    /**
+     * معاينة مقطع: تحميل مؤقت في مجلد المعاينة ثم تحويله MP3 محليًا فجاهزًا
+     * للتشغيل من الحوار (محرك المعاينة المشترك) وللتأكيد بلا إعادة تحميل.
+     */
+    fun preview(video: YouTubeJson.VideoInfo) {
+        cancelFlag.set(false)
+        previewDir.mkdirs()
+        try {
+            // معاينة سابقة لنفس المقطع؟ لا تحميل ولا تحويل — أعد إظهار الجاهزية
+            if (pendingUsableFor(video.videoId)) {
+                setState(Phase.PREVIEW_READY, percent = 100f, title = video.title,
+                    message = "المعاينة جاهزة — شغّلها من الزر، وبعد الاستماع أكّد التحميل أو تجاهلها.",
+                    resolved = video)
+                return
+            }
+            discardPreview()
+            previewDir.mkdirs()
+
+            val downloaded = downloadViaChain(video, previewDir)
+            val ext = downloaded.extension.lowercase()
+            val ready: File = when {
+                AudioTranscoder.needsTranscode(ext) -> {
+                    setState(Phase.CONVERTING, percent = 0f, title = video.title, message = "تحويل المعاينة إلى MP3…")
+                    val ready = File(previewDir, "ready.mp3")
+                    AudioTranscoder.m4aToMp3(
+                        downloaded, ready,
+                        durationSec = video.durationSec,
+                        onProgress = { p ->
+                            setState(Phase.CONVERTING, percent = p * 100f, title = video.title, message = "تحويل المعاينة إلى MP3…")
+                        }
+                    )
+                    downloaded.delete()
+                    ready
+                }
+                ext == "mp3" || ext in com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS -> downloaded
+                else -> throw IllegalStateException("وصل المقطع بصيغة غير مدعومة ($ext) — جرّب مقطعًا آخر.")
+            }
+            pending = PendingDownload(video, ready)
+            setState(Phase.PREVIEW_READY, percent = 100f, title = video.title,
+                message = "المعاينة جاهزة — شغّلها من الزر، وبعد الاستماع أكّد التحميل أو تجاهلها.",
+                resolved = video)
+        } catch (t: Throwable) {
+            if (t.message == "cancel" || cancelFlag.get()) {
+                setState(Phase.IDLE, message = "أُلغيت المعاينة")
+            } else {
+                setState(Phase.FAILED, title = video.title, message = friendlyMessage(t))
             }
         }
     }
@@ -119,49 +261,34 @@ class YouTubeImportService(
     // ================= استيراد مقطع: تحميل ثم تحويل =================
 
     /**
-     * استيراد كامل لمقطع: تحميل الصوت ثم (إن لزم) تحويله MP3 ثم تسليمه
-     * عبر onAdded لإضافته إلى المكتبة (يُستدعى في خيط العمل نفسه).
+     * استيراد كامل لمقطع وتسليمه عبر onAdded لإضافته إلى المكتبة.
+     * إن وُجد تحميل معاينة جاهز لنفس المقطع فسُلِّم هو — بلا تحميل ثانٍ ولا تحويل ثانٍ.
      */
     fun import(
         video: YouTubeJson.VideoInfo,
         onAdded: (File, YouTubeJson.VideoInfo) -> Unit
     ) {
         cancelFlag.set(false)
-        val tmpDir = File(workDir, "tmp").apply { mkdirs() }
-        try {
-            val bin = locator.resolve()
 
-            // —— التحميل ——
-            setState(Phase.DOWNLOADING, percent = 0f, title = video.title, message = "تحميل الصوت…")
-            val outTemplate = File(tmpDir, "src.%(ext)s").absolutePath
-            // صيغة الصوت: itag 140 (AAC 128k) القياسي في يوتيوب ثم احتياطات m4a/أفضل صوت
-            val args = mutableListOf(
-                bin.binary.path, "--no-warnings", "--no-playlist", "--newline", "--no-part",
-                "-f", YouTubeJson.FALLBACK_FORMAT, "-o", outTemplate
-            )
-            cookiesFile?.takeIf { it.isFile }?.let { args.addAll(listOf("--cookies", it.absolutePath)) }
-            args.add(video.sourceUrl.ifEmpty { YouTubeUrl.watchUrl(video.videoId) })
-
+        // —— مسار المعاينة الجاهزة: تسليم مباشر ——
+        if (pendingUsableFor(video.videoId)) {
+            val p = pending!!
+            val finalName = YouTubeUrl.sanitizeFilename(video.title)
+            val final = uniqueOutput(File(workDir, "${finalName}.mp3"))
             try {
-                runTool(args) { line ->
-                    YouTubeJson.parseProgressLine(line)?.let { p ->
-                        setState(Phase.DOWNLOADING, percent = p, title = video.title, message = "تحميل الصوت…")
-                    }
-                }
+                if (!p.file.renameTo(final)) p.file.copyTo(final, overwrite = true)
             } catch (t: Throwable) {
-                if (cancelFlag.get()) { setState(Phase.IDLE, message = "أُلغي الاستيراد"); return }
-                setState(Phase.FAILED, title = video.title, message = friendlyMessage(t))
+                setState(Phase.FAILED, title = video.title, message = "تعذّر تجهيز الملف النهائي: ${t.message ?: ""}")
                 return
             }
-            if (cancelFlag.get()) { setState(Phase.IDLE, message = "أُلغي الاستيراد"); return }
+            discardPreview()
+            deliver(final, video, onAdded)
+            return
+        }
 
-            // —— الملف المُحمَّل ——
-            val downloaded = tmpDir.listFiles { f -> f.isFile && f.name.startsWith("src.") }
-                ?.maxByOrNull { it.length() }
-            if (downloaded == null || downloaded.length() < 1_000L) {
-                setState(Phase.FAILED, title = video.title, message = "لم يصل أي صوت من التحميل — أعد المحاولة.")
-                return
-            }
+        val dlDir = File(workDir, "tmp/dl").apply { mkdirs() }
+        try {
+            val downloaded = downloadViaChain(video, dlDir)
 
             // —— التحويل أو النقل المباشر ——
             val ext = downloaded.extension.lowercase()
@@ -169,20 +296,14 @@ class YouTubeImportService(
             val final = uniqueOutput(File(workDir, "$finalName.mp3"))
             if (AudioTranscoder.needsTranscode(ext)) {
                 setState(Phase.CONVERTING, percent = 0f, title = video.title, message = "تحويل إلى MP3…")
-                val converted = File(tmpDir, "converted.mp3")
-                try {
-                    AudioTranscoder.m4aToMp3(
-                        downloaded, converted,
-                        durationSec = video.durationSec,
-                        onProgress = { p ->
-                            setState(Phase.CONVERTING, percent = p * 100f, title = video.title, message = "تحويل إلى MP3…")
-                        }
-                    )
-                } catch (t: Throwable) {
-                    if (cancelFlag.get()) { setState(Phase.IDLE, message = "أُلغي الاستيراد"); return }
-                    setState(Phase.FAILED, title = video.title, message = friendlyMessage(t))
-                    return
-                }
+                val converted = File(dlDir, "converted.mp3")
+                AudioTranscoder.m4aToMp3(
+                    downloaded, converted,
+                    durationSec = video.durationSec,
+                    onProgress = { p ->
+                        setState(Phase.CONVERTING, percent = p * 100f, title = video.title, message = "تحويل إلى MP3…")
+                    }
+                )
                 if (cancelFlag.get()) { setState(Phase.IDLE, message = "أُلغي الاستيراد"); return }
                 if (!converted.renameTo(final)) converted.copyTo(final, overwrite = true)
                 converted.delete()
@@ -201,11 +322,65 @@ class YouTubeImportService(
             }
 
             deliver(final, video, onAdded)
+        } catch (t: Throwable) {
+            if (t.message == "cancel" || cancelFlag.get()) {
+                setState(Phase.IDLE, message = "أُلغي الاستيراد")
+            } else {
+                setState(Phase.FAILED, title = video.title, message = friendlyMessage(t))
+            }
         } finally {
-            // تنظيف المؤقتات دائمًا
-            try { tmpDir.listFiles()?.forEach { it.delete() } } catch (_: Exception) { }
-            try { tmpDir.delete() } catch (_: Exception) { }
+            // تنظيف مجلد التحميل المباشر دائمًا — مجلد المعاينة شأنه شأنه
+            try { dlDir.listFiles()?.forEach { it.delete() } } catch (_: Exception) { }
+            try { dlDir.delete() } catch (_: Exception) { }
         }
+    }
+
+    /**
+     * تحميل الصوت عبر سلسلة القنوات إلى مجلد معطى — يعيد الملف المُحمَّل.
+     * كل محاولة فاشلة قابلة للإعادة تنتقل للقناة التالية برسالة تقدم حية.
+     */
+    private fun downloadViaChain(video: YouTubeJson.VideoInfo, into: File): File {
+        val bin = locator.resolve()
+        var lastErr: IllegalStateException? = null
+        for (i in 0 until YouTubeClientChain.size) {
+            if (cancelFlag.get()) throw IllegalStateException("cancel")
+            val attempt = YouTubeClientChain.attempt(i)
+            setState(Phase.DOWNLOADING, percent = 0f, title = video.title,
+                message = YouTubeClientChain.progressMessage(i, "تحميل الصوت"))
+            val outTemplate = File(into, "src.%(ext)s").absolutePath
+            val args = mutableListOf(
+                bin.binary.path, "--no-warnings", "--no-playlist", "--newline", "--no-part",
+                "--sleep-requests", "1",
+                "-f", YouTubeJson.FALLBACK_FORMAT, "-o", outTemplate
+            )
+            cookiesFile?.takeIf { it.isFile }?.let { args.addAll(listOf("--cookies", it.absolutePath)) }
+            args.addAll(YouTubeClientChain.extractorArgs(attempt))
+            args.add(video.sourceUrl.ifEmpty { YouTubeUrl.watchUrl(video.videoId) })
+
+            try {
+                runTool(args) { line ->
+                    YouTubeJson.parseProgressLine(line)?.let { p ->
+                        setState(Phase.DOWNLOADING, percent = p, title = video.title,
+                            message = YouTubeClientChain.progressMessage(i, "تحميل الصوت"))
+                    }
+                }
+            } catch (t: Throwable) {
+                if (t.message == "cancel") throw t
+                lastErr = t as? IllegalStateException ?: IllegalStateException(t.message.orEmpty())
+                if (!YouTubeClientChain.retryableError((lastErr as? ToolError)?.raw ?: lastErr.message.orEmpty())) throw lastErr
+                continue
+            }
+
+            val downloaded = into.listFiles { f -> f.isFile && f.name.startsWith("src.") }
+                ?.maxByOrNull { it.length() }
+            if (downloaded != null && downloaded.length() >= 1_000L) return downloaded
+            // وصل لا شيء: اعتبرها محاولة فاشلة وانتقل للقناة التالية
+            lastErr = IllegalStateException("لم يصل أي صوت من التحميل — أعد المحاولة.")
+        }
+        val m = lastErr?.message.orEmpty()
+        throw IllegalStateException(
+            if (YouTubeClientChain.botCheck(m)) friendlyBotWall() else m
+        )
     }
 
     private fun deliver(file: File, video: YouTubeJson.VideoInfo, onAdded: (File, YouTubeJson.VideoInfo) -> Unit) {
@@ -291,8 +466,9 @@ class YouTubeImportService(
         if (code != 0) {
             val raw = synchronized(stderrTail) { stderrTail.joinToString("\n") }
             val known = YouTubeJson.describeError(raw)
-            throw IllegalStateException(known ?: (raw.lineSequence().lastOrNull { it.isNotBlank() }?.take(220)
-                ?: "فشل التحميل (رمز $code)"))
+            val friendly = known ?: (raw.lineSequence().lastOrNull { it.isNotBlank() }?.take(220)
+                ?: "فشل التحميل (رمز $code)")
+            throw ToolError(raw, friendly)
         }
         return stdout.toString()
     }

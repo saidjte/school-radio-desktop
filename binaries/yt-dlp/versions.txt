@@ -1,1 +1,1 @@
-yt-dlp 2026.10.26 — Unlicense — https://github.com/yt-dlp/yt-dlp — نسخ ثابتة مدمجة لتحميل مقاطع اليوتيوب (استيراد v0.25.0)
+yt-dlp 2026.11.04.232659 (nightly) — Unlicense — https://github.com/yt-dlp/yt-dlp — نسخ ثابتة مدمجة لتحميل مقاطع اليوتيوب (تحديث v0.44.0 لإصلاح حاجز التحقق)

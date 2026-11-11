@@ -117,8 +117,8 @@ object YouTubeJson {
         val s = stderr.lowercase()
         return when {
             "sign in to confirm" in s || "not a bot" in s ->
-                "يوتيوب يطلب تحقّقًا إضافيًا من شبكتك الحالية. الحل: صدّر ملف كوكيز من متصفحك " +
-                        "(امتداد «Get cookies.txt») ثم أرفقه في الحوار بخيار «ملف كوكيز» — أو جرّب شبكة أخرى."
+                "يوتيوب يطلب تحقّقًا إضافيًا من شبكتك الحالية وتعذّر التجاوز بكل القنوات المجرَّبة تلقائيًا. " +
+                        "الحل داخل هذا الحوار: أرفق ملف كوكيز من متصفحك بخيار «ملف كوكيز» (خيار متقدم أدناه) — أو جرّب شبكة أخرى."
             "video unavailable" in s ->
                 "المقطع غير متاح (حُذف أو خاص أو محجوب في بلدك)."
             "is not a valid url" in s || "unable to download webpage" in s || "network" in s ->
@@ -126,7 +126,7 @@ object YouTubeJson {
             "unsupported url" in s ->
                 "الرابط غير مدعوم — استخدم رابط مقطع يوتيوب أو اكتب كلمات للبحث."
             "no supported format" in s || "requested format is not available" in s ->
-                "لا تتوفر صيغة صوتية قابلة للاستيراد لهذا المقطع."
+                "لا تتوفر صيغة صوتية قابلة للاستيراد لهذا المقطع عبر كل القنوات المجرَّبة."
             "ffmpeg" in s ->
                 "احتاج التحميل أداة خارجية رفضت الشبكة — أعد المحاولة."
             "permission denied" in s || "errno 13" in s ->
