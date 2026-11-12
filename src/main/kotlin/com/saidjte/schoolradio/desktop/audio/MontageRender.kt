@@ -15,6 +15,7 @@ import java.io.Closeable
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioInputStream
 import javax.sound.sampled.AudioSystem
@@ -532,6 +533,232 @@ object MontageRender {
                 peak
             }
         }.getOrDefault(0)
+    }
+
+    // ================= v0.47.0: سقف البث وتطبيع الإخراج وترميز المقيّس وقص صمت الأطراف =================
+
+    /** هدف تطبيع الإخراج: ذروة −1 dBFS (0.8913 — عرف البث الإذاعي، هامش أمان للترميز). */
+    const val MASTER_TARGET_AMP = 0.8913f
+
+    /** سقف كسب التطبيع بالديسيبل — لا تضخيم لا نهائي للزمدر الصامت. */
+    const val MASTER_MAX_GAIN_DB = 24.0
+
+    /**
+     * كسب التطبيع من ذروة مقاسة إلى هدف ذروة (v0.47.0): نسبة الهدف/الذروة،
+     * والتضخيم وحده محصور بسقف [maxGainDb] كي لا يُضخّم صمتًا شبه خاوي ضجيجًا،
+     * والتخفيض مطلق الحدود (خفض المزيج الحارّ إلى −1dBFS مشروع دائمًا)،
+     * والذروة الصفرية (صمت تام) تعود بكسب 1.0 فلا يُمسّ الملف.
+     */
+    fun masterGain(peak: Int, target: Float = MASTER_TARGET_AMP, maxGainDb: Double = MASTER_MAX_GAIN_DB): Float {
+        if (peak <= 0) return 1f
+        val p = peak.coerceAtMost(32_767) / 32_768f
+        val raw = (target / p).toDouble()
+        return if (raw >= 1.0) Math.min(raw, Math.pow(10.0, maxGainDb / 20.0)).toFloat()
+        else raw.toFloat()
+    }
+
+    /** رأس بيانات WAV: إزاحة كتلة البيانات وطولها — لقراءة المقيّس في مكانه. */
+    internal data class WavDataRange(val dataOffset: Long, val dataLength: Long)
+
+    /** تشريح رأس RIFF/WAVE وإيجاد كتلة data — تمرّ الأجزاء الأخرى بلا مساس. */
+    internal fun wavDataRange(file: File): WavDataRange? {
+        if (file.length() < 44L) return null
+        return try {
+            val raf = RandomAccessFile(file, "r")
+            try {
+                val head = ByteArray(12)
+                raf.readFully(head)
+                if (String(head, 0, 4) != "RIFF" || String(head, 8, 4) != "WAVE") return null
+                var pos = 12L
+                while (pos + 8L <= file.length()) {
+                    raf.seek(pos)
+                    val id = ByteArray(4)
+                    raf.readFully(id)
+                    val b = ByteArray(4)
+                    raf.readFully(b)
+                    val size = ((b[0].toInt() and 0xFF) or ((b[1].toInt() and 0xFF) shl 8) or
+                            ((b[2].toInt() and 0xFF) shl 16) or ((b[3].toInt() and 0xFF) shl 24)).toLong() and 0xFFFFFFFFL
+                    if (String(id) == "data" && pos + 8L + size <= file.length()) {
+                        return WavDataRange(pos + 8L, size)
+                    }
+                    pos += 8L + size + (size and 1L)
+                }
+                null
+            } finally {
+                raf.close()
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * تطبيع ملف WAV في مكانه إلى هدف الذروة (v0.47.0 — «تطبيع الإخراج»):
+     * تمريرة ذروة بالكتل ثم تمريرة مقياس بالكتل عبر RandomAccessFile — بلا
+     * تحميل الملف كاملًا في الذاكرة فلا يهم طوله. يعيد الكسب المطبق بالديسيبل
+     * (موجب = تضخيم، سالب = تخفيض، 0.0 = بلا فرج محسوس)، أو null إن لم يُطبَّق
+     * شيء (ليس WAV صالحًا أو صمت تام أو تعذّرت الكتابة).
+     */
+    fun applyWavMaster(file: File, target: Float = MASTER_TARGET_AMP, maxGainDb: Double = MASTER_MAX_GAIN_DB): Double? {
+        val range = wavDataRange(file) ?: return null
+        if (range.dataLength < 2L) return null
+        var peak = 0
+        try {
+            RandomAccessFile(file, "r").use { raf ->
+                raf.seek(range.dataOffset)
+                val buf = ByteArray(128 * 1024)
+                var remaining = range.dataLength
+                while (remaining > 0) {
+                    val n = raf.read(buf, 0, min(buf.size.toLong(), remaining).toInt())
+                    if (n <= 0) break
+                    var i = 0
+                    while (i + 1 < n) {
+                        val v = ((buf[i].toInt() and 0xFF) or (buf[i + 1].toInt() shl 8)).toShort().toInt()
+                        val a = maxOf(v, -v)
+                        if (a > peak) peak = a
+                        i += 2
+                    }
+                    remaining -= n
+                }
+            }
+        } catch (_: Throwable) {
+            return null
+        }
+        // صمت تام: لا يُضخّم ولا يُعدّ تطبيعًا — null يفصلها عن «طبَّق بلا فرج»
+        if (peak <= 0) return null
+        val gain = masterGain(peak, target, maxGainDb)
+        val gainDb = 20.0 * Math.log10(gain.toDouble())
+        if (Math.abs(gainDb) < 0.05) return 0.0
+        try {
+            RandomAccessFile(file, "rw").use { raf ->
+                raf.seek(range.dataOffset)
+                val buf = ByteArray(128 * 1024)
+                var remaining = range.dataLength
+                while (remaining > 0) {
+                    val n = raf.read(buf, 0, min(buf.size.toLong(), remaining).toInt())
+                    if (n <= 0) break
+                    var i = 0
+                    while (i + 1 < n) {
+                        val v = ((buf[i].toInt() and 0xFF) or (buf[i + 1].toInt() shl 8)).toShort().toInt()
+                        val s = Math.round(v * gain).toInt().coerceIn(-32_768, 32_767)
+                        buf[i] = (s and 0xFF).toByte()
+                        buf[i + 1] = ((s shr 8) and 0xFF).toByte()
+                        i += 2
+                    }
+                    raf.seek(raf.filePointer - n)
+                    raf.write(buf, 0, n)
+                    remaining -= n
+                }
+            }
+        } catch (_: Throwable) {
+            return null
+        }
+        return gainDb
+    }
+
+    /**
+     * ترميز ملف WAV جاهز إلى MP3 (v0.47.0 — ذيل مسار «تطبيع الإخراج»):
+     * نفس محرك LAME الخالص وبنفس إعدادات المصبّ المتدفق (44.1k ستيريو joint)،
+     * يُقرأ المؤقت المطبَّع ويُرمَّز كتلةً كتلة. يعيد نتيجة التصيير بعُمرها.
+     */
+    fun encodeWavToMp3(wav: File, out: File, bitrateKbps: Int = MP3_DEFAULT_KBPS): Result {
+        val header = WavHeader.read(wav) ?: return Result(false, 0L, "ملف WAV المؤقت غير صالح للتطبيع")
+        val durationMs = WavFileWriter.durationMsOf(header.dataBytes, header.sampleRate, header.channels.coerceAtLeast(1))
+        val srcFmt = AudioFormat(RATE.toFloat(), 16, CHANNELS, true, false)
+        val encoder = LameEncoder(
+            srcFmt,
+            bitrateKbps.coerceIn(64, 320),
+            LameEncoder.MPEG_VERSION_1,
+            LameEncoder.CHANNEL_MODE_JOINT_STEREO,
+            false
+        )
+        val chunkSize = encoder.pcmBufferSize.coerceAtLeast(4096)
+        val inBuf = ByteArray(chunkSize)
+        val outBuf = ByteArray(chunkSize / 2 + 8192)
+        return try {
+            out.parentFile?.mkdirs()
+            runCatching { if (out.isFile) out.delete() }
+            BufferedOutputStream(FileOutputStream(out), 1 shl 16).use { fos ->
+                AudioSystem.getAudioInputStream(wav).use { ais ->
+                    while (true) {
+                        val n = ais.read(inBuf, 0, chunkSize)
+                        if (n <= 0) break
+                        // LAME يستهلك الكتلة المُغذّاة كلها في النداء الواحد — نفس عقد المصبّ المتدفق
+                        val w = encoder.encodeBuffer(inBuf, 0, n, outBuf)
+                        if (w > 0) fos.write(outBuf, 0, w)
+                    }
+                    val fin = encoder.encodeFinish(outBuf)
+                    if (fin > 0) fos.write(outBuf, 0, fin)
+                }
+            }
+            Result(true, durationMs, null)
+        } catch (t: Throwable) {
+            Result(false, 0L, "تعذّر ترميز MP3 المطبَّع: ${t.message ?: ""}")
+        } finally {
+            try { encoder.close() } catch (_: Throwable) { }
+        }
+    }
+
+    /** عتبة كشف الصمت القياسية: −45 dBFS خطيًا (قلق غرفة هادئة لا صوت مقصود). */
+    const val SILENCE_THRESHOLD_DB = -45.0
+
+    /** هامش أمان يُبقى حول أول وآخر صوت بعد قصّ الصمت (مللي ثانية). */
+    const val SILENCE_MARGIN_MS = 40L
+
+    /** عرض نافذة تحليل الصمت (مللي ثانية) — حبيبات القرار. */
+    const val SILENCE_WINDOW_MS = 10L
+
+    /**
+     * حدود أول/آخر صوت في ملف مصدر (v0.47.0 — «قص صمت الأطراف»): تحليل RMS
+     * بنوافذ [SILENCE_WINDOW_MS] على المصدر بمعدله الأصلي، مع هوامش أمان
+     * [SILENCE_MARGIN_MS] وطيّ داخل مدة الملف. يعيد null إن كان الملف صمتًا
+     * كاملًا (لا صوت يُحفظ) أو فشل الفكّ.
+     */
+    fun silenceBounds(
+        file: File,
+        thresholdDb: Double = SILENCE_THRESHOLD_DB,
+        marginMs: Long = SILENCE_MARGIN_MS,
+        windowMs: Long = SILENCE_WINDOW_MS
+    ): Pair<Long, Long>? {
+        val threshold = 32_768.0 * Math.pow(10.0, thresholdDb / 20.0)
+        return runCatching {
+            MontageClipSource.open(file).use { src ->
+                val ch = src.channels.coerceAtLeast(1)
+                val winFrames = (src.rate * windowMs / 1000L).coerceAtLeast(1L)
+                val buf = ShortArray(64 * 1024)
+                var firstWin = -1L
+                var lastWin = -1L
+                var win = 0L
+                var inWin = 0L
+                var winPeak = 0
+                while (true) {
+                    val n = src.read(buf)
+                    if (n <= 0) break
+                    for (i in 0 until n) {
+                        val a = Math.abs(buf[i].toInt())
+                        if (a > winPeak) winPeak = a
+                        inWin++
+                        if (inWin >= winFrames * ch) {
+                            if (winPeak > threshold) {
+                                if (firstWin < 0) firstWin = win
+                                lastWin = win
+                            }
+                            win++
+                            inWin = 0
+                            winPeak = 0
+                        }
+                    }
+                }
+                if (inWin > 0 && winPeak > threshold) {
+                    if (firstWin < 0) firstWin = win
+                    lastWin = win
+                }
+                if (firstWin < 0) return null
+                val start = (firstWin * windowMs - marginMs).coerceAtLeast(0L)
+                val end = (lastWin + 1) * windowMs + marginMs
+                Pair(start, end)
+            }
+        }.getOrNull()
     }
 }
 

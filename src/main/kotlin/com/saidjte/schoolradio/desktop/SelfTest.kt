@@ -2497,6 +2497,46 @@ object SelfTest {
                         null, 0L, 0L, false, false, false, broadcastLive = true
                     ).onAir
                 ) { "v46 display lights with session" }
+
+                // ================= v0.47.0: أدوات المونتاج الخمس =================
+
+                // 1) سقف البث: كسب التطبيع ثم تطبيقه في المكان على موجة حقيقية
+                check(MontageRender.masterGain(0) == 1f) { "v47 master silence spared" }
+                val gHot = MontageRender.masterGain(32_767)
+                check(gHot < 0.9f && gHot > 0.88f) { "v47 master hot->-1dBFS g=$gHot" }
+                check(MontageRender.masterGain(100) <= 15.86f) { "v47 master gain capped" }
+                val masterWav = MontageDemo.tone(File(tmp, "v47-master.wav"), 44_100, 2, 500, 440.0)
+                val masterDb = MontageRender.applyWavMaster(masterWav)
+                check(masterDb != null && masterDb > 5.0 && masterDb < 10.0) { "v47 master applied g=$masterDb" }
+                check(MontageRender.applyWavMaster(masterWav) == 0.0) { "v47 master second pass no-op" }
+
+                // 2) ترميز المقيّس: WAV مطبَّع → MP3 حقيقي بعُمر مطابق
+                val mp3Out = File(tmp, "v47-master.mp3")
+                val enc = MontageRender.encodeWavToMp3(masterWav, mp3Out, 128)
+                check(enc.ok && mp3Out.isFile && mp3Out.length() > 1000 && enc.durationMs > 400) { "v47 encodeWavToMp3" }
+
+                // 3) قصّ صمت الأطراف: ملف صمت تام يُردّ بnull
+                val silent = File(tmp, "v47-silent.wav")
+                WavFileWriter(silent, 44_100, 2).close()
+                check(MontageRender.silenceBounds(silent) == null) { "v47 silence all-null" }
+
+                // 4) استماع المحدد: مشروع مصغر بمقطع واحد والحر يُسحب للصفر
+                val audV = MontageLogic.auditionProject(
+                    MontageProject(clips = listOf(MontageClip("a", "/x.wav", "م", startMs = 100, endMs = 900, durationMs = 5_000))),
+                    "a", null
+                )
+                check(audV != null && audV.clips.size == 1 && audV.musicClips.isEmpty()) { "v47 audition voice" }
+                val audM = MontageLogic.auditionProject(
+                    MontageProject(musicClips = listOf(MontageMusicClip("b", "/y.mp3", "خ", startMs = 2_000))),
+                    null, "b"
+                )
+                check(audM != null && audM.musicClips[0].startMs == 0L) { "v47 audition music zeroed" }
+                check(MontageLogic.auditionProject(MontageProject(), null, null) == null) { "v47 audition none" }
+
+                // 5) التشغيل الواحد وسقف البث المفتاح
+                check(!MontageLogic.oneShotReached(999, 1_000) && MontageLogic.oneShotReached(1_000, 1_000)) { "v47 oneshot" }
+                check(MontageLogic.masterNormalizeEffective(MontageProject())) { "v47 normalize default on" }
+                check(!MontageLogic.masterNormalizeEffective(MontageProject(masterNormalize = false))) { "v47 normalize off honored" }
             }
 
             println("SELFTEST OK — version $APP_VERSION")

@@ -2303,6 +2303,18 @@ class AppViewModel {
     private val _montageLoopEnabled = MutableStateFlow(false)
     val montageLoopEnabled: StateFlow<Boolean> = _montageLoopEnabled.asStateFlow()
 
+    /**
+     * نهاية التشغيل الواحد للمنطقة المحددة (v0.47.0 — «تشغيل المحدد»): النبضة
+     * توقف التشغيل لحظة بلوغها وتُمسح — نمط مستقل عن الحلقة A/B الباقية.
+     */
+    private val _montageOneShotEnd = MutableStateFlow<Long?>(null)
+
+    // ---- v0.47.0: سقف البث واستماع المحدد وقص الصمت والمكتبة ----
+
+    /** ملف الاستماع المؤقت — اسمه مختلف عن preview.wav فلا يُزامن الرأس الرئيسي أثناءه. */
+    private val montageAuditionFile: File
+        get() = File(File(dataDir(), "montage"), "audition.wav")
+
     // ---- v0.36.0: مسطرة العمليات والأدوات والمسارات المتعددة ----
 
     /** المنطقة المحددة على المسطرة [بداية، نهاية) — null = لا تحديد (حالة عرض لا تُحفظ بتاريخ التحرير). */
@@ -2745,6 +2757,20 @@ class AppViewModel {
      * على المحرك: تجاوز النهاية يعود للبداية بسعيٍ محسوب.
      */
     fun montageLoopTick() {
+        // التشغيل الواحد للمنطقة (v0.47.0): توقف المشغّل يُمسح العَلَم، وبلوغ
+        // النهاية يقف بلطف عند الحدّ ويُثبّت الرأس هناك — نمط مستقل عن الحلقة.
+        val oneShot = _montageOneShotEnd.value
+        if (oneShot != null) {
+            if (player.currentFile.value != montagePreviewFile || !player.isPlaying.value) {
+                _montageOneShotEnd.value = null
+            } else if (MontageLogic.oneShotReached(player.positionMs.value, oneShot)) {
+                player.stop()
+                setMontagePlayhead(oneShot)
+                _montageOneShotEnd.value = null
+                _lastLibraryMessage.value = "انتهى تشغيل المحدد عند ${montageClock(oneShot)}"
+                return
+            }
+        }
         if (!_montageLoopEnabled.value) return
         val s = _montageLoopStart.value ?: return
         val e = _montageLoopEnd.value ?: return
@@ -2810,6 +2836,9 @@ class AppViewModel {
         }
         val fmt = if (preview) MontageExportFormat.WAV else _montageExportFormat.value
         val kbps = _montageExportBitrate.value
+        // سقف البث (v0.47.0): التصدير المطبَّع يُصيَّر WAV مؤقتًا ثم يُقاس ذروته
+        // ويُقاس إلى −1dBFS في مكانه، ثم يُرمَّز MP3 من المؤقت إن كانت الصيغة MP3
+        val masterOn = !preview && MontageLogic.masterNormalizeEffective(p)
         val target = if (preview)
             File(File(dataDir(), "montage"), "preview.wav")
         else
@@ -2818,17 +2847,36 @@ class AppViewModel {
                 prefix = "مونتاج",
                 extension = fmt.extension
             )
+        val masterTemp = if (masterOn) File(target.parentFile, target.nameWithoutExtension + "-master.wav") else null
+        val renderTarget = if (masterOn) masterTemp!! else target
+        val renderFmt = if (masterOn) MontageExportFormat.WAV else fmt
         if (preview) montagePreviewStamp = null // ما يُصيَّر الآن هو الأحدث دائمًا
         montageRenderCancelled = false
         _montageRenderProgress.value = 0f
         montageRenderJob = runScope.launch(Dispatchers.IO) {
             val r = MontageRender.render(
-                p, target,
-                format = fmt,
+                p, renderTarget,
+                format = renderFmt,
                 bitrateKbps = kbps,
                 onProgress = { pr -> _montageRenderProgress.value = pr },
                 cancelled = { montageRenderCancelled }
             )
+            // التطبيع بعد التصيير وقبل أي تعامل مع الناتج — والإلغاء أثناءه يُنظّف المؤقت
+            var masterDb: Double? = null
+            if (r.ok && masterOn && !montageRenderCancelled) {
+                masterDb = MontageRender.applyWavMaster(renderTarget)
+                if (fmt == MontageExportFormat.MP3) {
+                    val enc = MontageRender.encodeWavToMp3(renderTarget, target, kbps)
+                    runCatching { renderTarget.delete() }
+                    if (!enc.ok) {
+                        _montageRenderProgress.value = null
+                        _lastLibraryMessage.value = enc.message ?: "فشل ترميز MP3 المطبَّع"
+                        return@launch
+                    }
+                }
+            } else if (masterOn && montageRenderCancelled) {
+                runCatching { renderTarget.delete() }
+            }
             _montageRenderProgress.value = null
             when {
                 r.ok && preview -> {
@@ -2861,8 +2909,14 @@ class AppViewModel {
                     signRecording(target, r.durationMs)
                     _lastMontageExport.value = target
                     val fmtTag = if (fmt == MontageExportFormat.MP3) "MP3 ${kbps}k" else "WAV"
+                    val masterTag = when {
+                        masterOn && masterDb != null && Math.abs(masterDb) > 0.05 ->
+                            " — طُبِّع الإخراج: ${"%.1f".format(masterDb)}dB إلى −1dBFS"
+                        masterOn -> " — طُبِّع الإخراج إلى −1dBFS"
+                        else -> ""
+                    }
                     _lastLibraryMessage.value =
-                        "صُدِّر المونتاج «${target.name}» — $fmtTag — مدته ${montageClock(r.durationMs)} — جاهز في التسجيلات"
+                        "صُدِّر المونتاج «${target.name}» — $fmtTag — مدته ${montageClock(r.durationMs)}$masterTag — جاهز في التسجيلات"
                 }
                 montageRenderCancelled -> _lastLibraryMessage.value = "أُلغي التصيير"
                 else -> _lastLibraryMessage.value = r.message ?: "فشل التصيير"
@@ -2876,6 +2930,222 @@ class AppViewModel {
         montageRenderJob?.cancel()
         _montageRenderProgress.value = null
         _lastLibraryMessage.value = "أُلغي التصيير"
+    }
+
+    // ================= v0.47.0: سقف البث والاستماع والتشغيل الواحد وقص الصمت والمكتبة =================
+
+    /** مفتاح «تطبيع الإخراج» — يُحفظ في المشروع ويُحترم عند التصدير (null = مفعّل افتراضيًا). */
+    fun setMontageMasterNormalize(on: Boolean) {
+        applyMontage(_montageProject.value.copy(masterNormalize = on))
+        _lastLibraryMessage.value =
+            if (on) "تطبيع الإخراج مفعّل — كل تصدير يُرفع إلى ذروة −1dBFS (سقف البث)"
+            else "تطبيع الإخراج معطّل — التصدير يخرج بمستوى المزج كما هو"
+    }
+
+    /**
+     * استماع للمقطع المحدد وحده (v0.47.0): نسخة مصغرة بمنطق MontageLogic
+     * تُصيَّر في audition.wav (اسم يخالف preview.wav فلا يُزامن الرأس الرئيسي
+     * أثناءها) وتُشغّل من صفر — والرأس يبقى مكانه ويعود سليمًا.
+     */
+    fun auditionMontageSelected() {
+        if (_montageRenderProgress.value != null) return
+        val p = _montageProject.value
+        val proj = MontageLogic.auditionProject(
+            p,
+            _montageSelectedClipId.value,
+            _montageSelectedMusicId.value
+        )
+        if (proj == null) {
+            _lastLibraryMessage.value = "حدّد مقطعًا أولًا ثم استمع له وحده"
+            return
+        }
+        montageRenderCancelled = false
+        _montageRenderProgress.value = 0f
+        montageRenderJob = runScope.launch(Dispatchers.IO) {
+            val r = MontageRender.render(
+                proj, montageAuditionFile,
+                format = MontageExportFormat.WAV,
+                onProgress = { pr -> _montageRenderProgress.value = pr },
+                cancelled = { montageRenderCancelled }
+            )
+            _montageRenderProgress.value = null
+            if (r.ok) {
+                player.play(montageAuditionFile)
+                val name = proj.clips.firstOrNull()?.title ?: proj.musicClips.firstOrNull()?.title ?: "المقطع"
+                _lastLibraryMessage.value = "استماع ل«${name}» (${montageClock(r.durationMs)}) — الرأس لم يتحرك"
+            } else {
+                _lastLibraryMessage.value = r.message ?: "تعذّر تصيير الاستماع"
+            }
+        }
+    }
+
+    /**
+     * تشغيل المنطقة المحددة مرة واحدة (v0.47.0): الرأس ينطلق من بدايتها والنبضة
+     * تقف آليًا عند نهايتها — على عكس «حلقة من المحدد» التي تعود للبداية دائمًا.
+     */
+    fun playMontageSelectionOnce() {
+        val sel = _montageSelection.value
+        if (sel == null || sel.second <= sel.first) {
+            _lastLibraryMessage.value = "حدّد منطقة على المسطرة أولًا"
+            return
+        }
+        if (!montageHasSource(_montageProject.value)) {
+            _lastLibraryMessage.value = "أضف مقاطع موجودة على القرص أولًا"
+            return
+        }
+        val (ss, se) = sel
+        _montageOneShotEnd.value = se
+        setMontagePlayhead(ss)
+        val stamp = montageStamp(_montageProject.value)
+        if (montagePreviewStamp == stamp && montagePreviewFile.isFile &&
+            player.preparePaused(montagePreviewFile, ss)
+        ) {
+            if (!player.isPlaying.value) player.toggle()
+            _lastLibraryMessage.value =
+                "تشغيل المحدد مرة واحدة: ${montageClock(ss)} ← ${montageClock(se)} — يقف آليًا عند النهاية"
+        } else {
+            renderMontage(preview = true, thenPlayFromPlayhead = true)
+        }
+    }
+
+    /**
+     * قصّ صمت الأطراف من المقطع المحدد (v0.47.0): تحليل حدود أول/آخر صوت في
+     * الملف المصدر (نوافذ 10ms وعتبة −45dBFS وهامش 40ms) ثم ضمّ النافذة
+     * المقطوعة إليها — للتعليق في نافذته وللمسار الحر في نافذة ملفه بلا مساس
+     * موضع الخط الزمني. مرتد بالكامل عبر سجل التراجع.
+     */
+    fun trimMontageSilence() {
+        if (_montageTransformBusy.value || _montageRenderProgress.value != null) return
+        val vid = _montageSelectedClipId.value
+        val mid = _montageSelectedMusicId.value
+        val voice = vid?.let { id -> _montageProject.value.clips.firstOrNull { it.id == id } }
+        val music = mid?.let { id -> _montageProject.value.musicClips.firstOrNull { it.id == id } }
+        val clipPath = voice?.path ?: music?.path
+        if (clipPath == null) {
+            _lastLibraryMessage.value = "حدّد مقطعًا أولًا ثم قُصّ صمت أطرافه"
+            return
+        }
+        val f = File(clipPath)
+        if (!f.isFile) {
+            _lastLibraryMessage.value = "ملف المقطع غير موجود على القرص"
+            return
+        }
+        pushMontageHistory()
+        _montageTransformBusy.value = true
+        runScope.launch(Dispatchers.IO) {
+            val bounds = MontageRender.silenceBounds(f)
+            if (bounds == null) {
+                _montageTransformBusy.value = false
+                _lastLibraryMessage.value = "المقطع صمت كامل — لا صوت يُحفظ فلم يُقصّ شيء"
+                return@launch
+            }
+            val (bs, be) = bounds
+            val title = voice?.title ?: music?.title ?: "المقطع"
+            when {
+                voice != null -> {
+                    val (s, e) = MontageLogic.clampWindow(voice.startMs, voice.endMs, voice.durationMs)
+                    val ns = bs.coerceIn(s, e)
+                    val ne = be.coerceIn(ns, e)
+                    if (ns <= s && ne >= e) {
+                        _montageTransformBusy.value = false
+                        _lastLibraryMessage.value = "«$title»: لا صمت يُذكر في الأطراف — النافذة كما هي"
+                        return@launch
+                    }
+                    applyMontage(
+                        _montageProject.value.copy(
+                            clips = _montageProject.value.clips.map {
+                                if (it.id == voice.id) it.copy(startMs = ns, endMs = ne) else it
+                            }
+                        ),
+                        record = false
+                    )
+                    _montageTransformBusy.value = false
+                    _lastLibraryMessage.value =
+                        "«$title»: قُصّ الصمت — ${montageClock(ns - s)} من البداية و${montageClock(e - ne)} من النهاية"
+                }
+                else -> {
+                    val m = music!!
+                    val (s, e) = MontageLogic.clampWindow(m.startInFileMs, m.endInFileMs, m.durationMs)
+                    val ns = bs.coerceIn(s, e)
+                    val ne = be.coerceIn(ns, e)
+                    if (ns <= s && ne >= e) {
+                        _montageTransformBusy.value = false
+                        _lastLibraryMessage.value = "«$title»: لا صمت يُذكر في الأطراف — النافذة كما هي"
+                        return@launch
+                    }
+                    applyMontage(
+                        _montageProject.value.copy(
+                            musicClips = _montageProject.value.musicClips.map {
+                                if (it.id == m.id) it.copy(startInFileMs = ns, endInFileMs = ne) else it
+                            }
+                        ),
+                        record = false
+                    )
+                    _montageTransformBusy.value = false
+                    _lastLibraryMessage.value =
+                        "«$title»: قُصّ الصمت — ${montageClock(ns - s)} من البداية و${montageClock(e - ne)} من النهاية"
+                }
+            }
+        }
+    }
+
+    /**
+     * إضافة صوت من المكتبة المدمجة إلى المونتاج (v0.47.0 — «من المكتبة»):
+     * [toVoice=true] يُلحقه نهاية مسار التعليق (البرنامج يُبنى من مكتبته)،
+     * وإلا مقطعًا حرًا عند الرأس على المسار الافتراضي «موسيقى» — بلا حوار
+     * ملفات ولا تكرار ممنوع (إعادة الجينل نفسه مرتين مشروعة في المونتاج).
+     */
+    fun addLibrarySoundToMontage(soundId: String, toVoice: Boolean) {
+        // خريطتان منفصلتان: ملفات المكتبة (36) وملفات الجينلات (7) — البحث فيهما معًا
+        val file = _bundledSoundFiles.value[soundId] ?: bundledJingleFiles[soundId]
+        if (file == null || !file.isFile) {
+            _lastLibraryMessage.value = "ملف المكتبة غير مستخرج بعد — أعد فتح التطبيق"
+            return
+        }
+        val sound = BundledSounds.ALL.firstOrNull { it.id == soundId }
+        val jingle = BundledJingles.ALL.firstOrNull { it.id == soundId }
+        val title = sound?.title ?: jingle?.title ?: file.nameWithoutExtension
+        if (toVoice) {
+            val pending = MontageClip(id = MontageLogic.newClipId(), path = file.absolutePath, title = title)
+            applyMontage(
+                _montageProject.value.copy(
+                    clips = (_montageProject.value.clips + pending).take(MontageLogic.MAX_CLIPS)
+                )
+            )
+            runScope.launch(Dispatchers.IO) {
+                val d = durationOf(file)
+                val clips = _montageProject.value.clips.map { c ->
+                    if (c.id != pending.id) return@map c
+                    val (s, e) = MontageLogic.clampWindow(c.startMs, c.endMs, d)
+                    c.copy(durationMs = d, startMs = s, endMs = e)
+                }
+                applyMontage(_montageProject.value.copy(clips = clips), record = false)
+            }
+            _lastLibraryMessage.value = "أُضيف «$title» إلى نهاية مسار التعليق"
+        } else {
+            val pending = MontageMusicClip(
+                id = MontageLogic.newMusicClipId(),
+                path = file.absolutePath,
+                title = title,
+                startMs = _montagePlayheadMs.value.coerceAtLeast(0L)
+            )
+            applyMontage(
+                _montageProject.value.copy(
+                    musicClips = (_montageProject.value.musicClips + pending).take(MontageLogic.MAX_TRACK_CLIPS)
+                )
+            )
+            runScope.launch(Dispatchers.IO) {
+                val d = durationOf(file)
+                val clips = _montageProject.value.musicClips.map { m ->
+                    if (m.id != pending.id) return@map m
+                    val (s, e) = MontageLogic.clampWindow(m.startInFileMs, m.endInFileMs, d)
+                    m.copy(durationMs = d, startInFileMs = s, endInFileMs = e)
+                }
+                applyMontage(_montageProject.value.copy(musicClips = clips), record = false)
+            }
+            _lastLibraryMessage.value =
+                "أُضيف «$title» كمسار حر عند ${montageClock(_montagePlayheadMs.value.coerceAtLeast(0L))}"
+        }
     }
 
     /** إضافة الملف المصدَّر إلى القائمة الجارية بلا تشغيل فوري — قرار البث للمذيع (البند 13). */

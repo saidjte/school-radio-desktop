@@ -203,7 +203,14 @@ data class MontageProject(
     val automation: List<MontageAutomationLane>? = null,
     /** المنطقة المحددة على المسطرة [selectionStartMs, selectionEndMs) — null = لا تحديد. */
     val selectionStartMs: Long = -1L,
-    val selectionEndMs: Long = -1L
+    val selectionEndMs: Long = -1L,
+    // ==== v0.47.0: سقف البث ====
+    /**
+     * تطبيع الإخراج النهائي إلى ذروة −1 dBFS — null في ملفات JSON القديمة
+     * يعني الافتراضي مفعّل (قرار masterNormalizeEffective)، والقيمة الصريحة
+     * تُحترم: true مفعّل وfalse معطّل بمطلع المذيع.
+     */
+    val masterNormalize: Boolean? = null
 )
 
 /** مغلّف عرض مقطع: ذروات دلاء النافذة بعد المستوى والتلاشين (0..1 معياري). */
@@ -1066,6 +1073,43 @@ object MontageLogic {
      */
     fun loopSeekMs(playMs: Long, loopStartMs: Long, loopEndMs: Long): Long? =
         if (loopEndMs > loopStartMs && playMs >= loopEndMs) loopStartMs else null
+
+    /**
+     * نبضة التشغيل الواحد للمنطقة المحددة (v0.47.0): نهاية صالحة وموضع بلغها
+     * أو تجاوزها = حان وقف التشغيل. الحلقة A/B باقية كما هي — وهذان نمطان
+     * مستقلان: الحلقة تعود للبداية، والتشغيل الواحد يقف عند النهاية.
+     */
+    fun oneShotReached(playMs: Long, oneShotEndMs: Long?): Boolean =
+        oneShotEndMs != null && oneShotEndMs > 0L && playMs >= oneShotEndMs
+
+    /**
+     * مشروع استماع لمقطع واحد (v0.47.0 — «استماع للمحدد»): نسخة مصغرة من
+     * المشروع تحوي المقطع المحدد وحده بنافذته ومستواه وتلاشيه وتحويلاته
+     * (المحوّلات تعيش في ملف المصدر فتُسمع كما هي)، والتعليق يُسمع نافذته
+     * كما هي والمقطع الحر يُسحب إلى موضع الصفر كي لا يُسبق بصمت، بلا كروس
+     * فيد ولا خفض ولا تطبيع إخراج — سماع المقطع وحده لا المزيج. التعليق
+     * المحدد يفوز حين يكون الاثنان محددين (التعليق هو البرنامج). يعيد null
+     * إن لم يوجد محدد صالح.
+     */
+    fun auditionProject(p: MontageProject, voiceId: String?, musicId: String?): MontageProject? {
+        val voice = voiceId?.takeIf { it.isNotEmpty() }?.let { id -> p.clips.firstOrNull { it.id == id } }
+        if (voice != null) {
+            val (s, e) = clampWindow(voice.startMs, voice.endMs, voice.durationMs)
+            return MontageProject(clips = listOf(voice.copy(startMs = s, endMs = e)))
+        }
+        val music = musicId?.takeIf { it.isNotEmpty() }?.let { id -> p.musicClips.firstOrNull { it.id == id } }
+        if (music != null) {
+            return MontageProject(musicClips = listOf(music.copy(startMs = 0L)))
+        }
+        return null
+    }
+
+    /**
+     * قرار تطبيع الإخراج الفعلي (v0.47.0 — «سقف البث»): null في المشروع
+     * يعني الافتراضي مفعّل — ملفات JSON القديمة التي لا تحمل الحقل تُعدّ
+     * مفعّلة، والقيم الصريحة true/false تُحترم كما هي.
+     */
+    fun masterNormalizeEffective(p: MontageProject): Boolean = p.masterNormalize != false
 
     /**
      * تعقيم المشروع قبل التصيير: المقاطع الموجودة على القرص فقط، والنوافذ

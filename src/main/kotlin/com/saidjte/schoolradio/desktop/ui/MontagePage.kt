@@ -44,6 +44,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
@@ -51,6 +52,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -64,6 +68,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.audio.AudioFx
+import com.saidjte.schoolradio.desktop.audio.BundledJingles
+import com.saidjte.schoolradio.desktop.audio.BundledSounds
 import com.saidjte.schoolradio.desktop.audio.FxParam
 import com.saidjte.schoolradio.desktop.audio.FxPresets
 import com.saidjte.schoolradio.desktop.audio.MontageExportFormat
@@ -77,6 +83,7 @@ import com.saidjte.schoolradio.desktop.data.MontageMusicClip
 import com.saidjte.schoolradio.desktop.data.MontageProject
 import com.saidjte.schoolradio.desktop.data.MontageTemplateCatalog
 import com.saidjte.schoolradio.desktop.data.MontageTool
+import com.saidjte.schoolradio.desktop.data.SoundGroups
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -137,6 +144,8 @@ fun MontagePage(vm: AppViewModel) {
     var showDuplicateDialog by remember { mutableStateOf(false) }
     // v0.40.0: حوار مكتبة المؤثرات الصوتية — والنبضة من الاختصار E تفتحه
     var showEffectsDialog by remember { mutableStateOf(false) }
+    // v0.47.0: حوار «من المكتبة» — الأصوات المدمجة والجينلات تُضاف نقرًا بلا حوار ملفات
+    var showLibraryPicker by remember { mutableStateOf(false) }
     val effectsOpenTick by vm.montageEffectsOpenTick.collectAsState()
     LaunchedEffect(effectsOpenTick) {
         if (effectsOpenTick > 0) showEffectsDialog = true
@@ -218,6 +227,13 @@ fun MontagePage(vm: AppViewModel) {
                     vm.refreshRecordings()
                     showPicker = true
                 }
+            )
+            // من المكتبة (v0.47.0): أصوات وموسيقى المدمجات والجينلات بنقرة —
+            // إلى نهاية التعليق أو مقطعًا حرًا عند الرأس، بلا حوار ملفات
+            SecondaryAction(
+                text = "من المكتبة ▾",
+                enabled = !rendering,
+                onClick = { showLibraryPicker = true }
             )
             SecondaryAction(
                 text = "تفريغ",
@@ -349,6 +365,13 @@ fun MontagePage(vm: AppViewModel) {
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold
             )
+            // استماع للمحدد (v0.47.0): المقطع وحده بنافذته ومستواه وتحويلاته —
+            // في ملف استماع مستقل فلا يتحرك رأس المشروع ولا تُمس معاينته
+            SecondaryAction(
+                text = "استماع للمحدد",
+                enabled = !rendering && (selectedId != null || selectedMusicId != null),
+                onClick = { vm.auditionMontageSelected() }
+            )
             SecondaryAction(
                 text = "قص (X)",
                 enabled = !rendering && (selectedId != null || selectedMusicId != null),
@@ -393,6 +416,13 @@ fun MontagePage(vm: AppViewModel) {
                 text = "المؤثرات… (E)",
                 enabled = !rendering && (selectedId != null || selectedMusicId != null),
                 onClick = { showEffectsDialog = true }
+            )
+            // قص صمت الأطراف (v0.47.0): تنظيف افتتاحية التسجيل وختامه — تحليل
+            // نوافذ 10ms بعتبة −45dBFS وهامش أمان 40ms، مرتد بالسجل كله
+            SecondaryAction(
+                text = "قص صمت الأطراف",
+                enabled = !rendering && !transformBusy && (selectedId != null || selectedMusicId != null),
+                onClick = { vm.trimMontageSilence() }
             )
             if (clipboard != null) {
                 val label = when (val c = clipboard) {
@@ -476,6 +506,13 @@ fun MontagePage(vm: AppViewModel) {
                         text = "حلقة من المحدد",
                         enabled = !rendering,
                         onClick = { vm.setMontageLoopFromSelection() }
+                    )
+                    // تشغيل المحدد مرة واحدة (v0.47.0): ينطلق من بدايته ويقف
+                    // آليًا عند نهايتها — الحلقة تعود للبداية وهذا يقف
+                    SecondaryAction(
+                        text = "تشغيل المحدد",
+                        enabled = !rendering,
+                        onClick = { vm.playMontageSelectionOnce() }
                     )
                     SecondaryAction(
                         text = "علامة عند بدايته",
@@ -631,6 +668,19 @@ fun MontagePage(vm: AppViewModel) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // سقف البث (v0.47.0): تطبيع الإخراج إلى ذروة −1dBFS — مفعّل افتراضيًا
+            // ومحفوظ في المشروع، ويُسمّى الفارق بالديسيبل في رسالة التصدير
+            val masterOn = MontageLogic.masterNormalizeEffective(project)
+            SecondaryAction(
+                if (masterOn) "تطبيع الإخراج ●" else "تطبيع الإخراج ○",
+                enabled = !rendering,
+                onClick = { vm.setMontageMasterNormalize(!masterOn) }
+            )
+            Text(
+                "سقف البث −1dBFS",
+                style = MaterialTheme.typography.labelSmall.numeric(),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Text(
                 "صيغة التصدير:",
                 style = MaterialTheme.typography.bodyMedium,
@@ -718,7 +768,7 @@ fun MontagePage(vm: AppViewModel) {
             }
         }
         Text(
-            "اختصارات الصفحة: نقر مزدوج على مقطع = تسميته · مسافة معاينة/إيقاف · S تقسيم عند الرأس · Delete حذف المحدد · R حذف المنطقة المحددة · G الالتقاط · Esc مسح التحديد · ←/→ تحريك الرأس (Shift: دقة 10ms) · ↑/↓ تحديد · Ctrl+Z/Y تراجع/إعادة",
+            "اختصارات الصفحة: نقر مزدوج على مقطع = تسميته · مسافة معاينة/إيقاف · S تقسيم عند الرأس · Delete حذف المحدد · R حذف المنطقة المحددة · G الالتقاط · Esc مسح التحديد · ←/→ تحريك الرأس (Shift: دقة 10ms) · ↑/↓ تحديد · Ctrl+Z/Y تراجع/إعادة · Ctrl+عجلة تكبير الخط · أدوات المقطع الحديثة: استماع للمحدد وحده وقصّ صمت أطرافه، وشريط المنطقة: تشغيل المحدد مرة واحدة يقف آليًا عند نهايته، والتصدير يُطبَّع إلى −1dBFS (سقف البث) قابل للتعطيل، و«من المكتبة ▾» يضيف المدمجات نقرًا",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -975,9 +1025,124 @@ fun MontagePage(vm: AppViewModel) {
             onDismiss = { showEffectsDialog = false }
         )
     }
+    // من المكتبة (v0.47.0): كل مدمجات المكتبة والجينلات — نقر يضيف
+    // إلى نهاية التعليق أو مقطعًا حرًا عند الرأس بلا حوار ملفات
+    if (showLibraryPicker) {
+        MontageLibraryPickerDialog(
+            onAddVoice = { vm.addLibrarySoundToMontage(it, toVoice = true) },
+            onAddTrack = { vm.addLibrarySoundToMontage(it, toVoice = false) },
+            onDismiss = { showLibraryPicker = false }
+        )
+    }
 }
 
 // ================= أدوات الموضع والمغلّفات =================
+
+/**
+ * منتقي «من المكتبة» (v0.47.0): كل أصوات وموسيقى المدمجات (36 بندًا بخمس
+ * مجموعات) ثم الجينلات السبعة — كل بند بزرين: «→ تعليق» يُلحقه نهاية مسار
+ * التعليق و«→ مسار» مقطعًا حرًا عند الرأس على المسار الافتراضي. الإضافة
+ * لا تُغلق الحوار فبناء البرنامج يجري نقرًا بعد نقر، ورسالة التأكيد تظهر
+ * في الصفحة خلفه.
+ */
+@Composable
+private fun MontageLibraryPickerDialog(
+    onAddVoice: (String) -> Unit,
+    onAddTrack: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("من المكتبة — أضف إلى المونتاج", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    "زر «→ تعليق» يُلحق الصوت نهاية مسار التعليق، و«→ مسار» يضعه مقطعًا حرًا عند الرأس على المسار الافتراضي «موسيقى» — بلا إغلاق فبناء البرنامج نقرًا بعد نقر.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                // الجينلات السبعة أولًا — هي الافتتاحات والفواصل والختام
+                SectionHeader("الجينلات المدمجة")
+                BundledJingles.ALL.forEach { j ->
+                    LibraryPickRow(
+                        title = j.title,
+                        subtitle = j.purpose,
+                        onAddVoice = { onAddVoice(j.id) },
+                        onAddTrack = { onAddTrack(j.id) }
+                    )
+                }
+                SoundGroups.BUNDLED.forEach { group ->
+                    SectionHeader(group)
+                    BundledSounds.ALL.filter { it.group == group }.forEach { s ->
+                        LibraryPickRow(
+                            title = s.title,
+                            subtitle = s.description,
+                            onAddVoice = { onAddVoice(s.id) },
+                            onAddTrack = { onAddTrack(s.id) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("إغلاق") }
+        }
+    )
+}
+
+@Composable
+private fun SectionHeader(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = 6.dp)
+    )
+}
+
+@Composable
+private fun LibraryPickRow(
+    title: String,
+    subtitle: String,
+    onAddVoice: () -> Unit,
+    onAddTrack: () -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        TextButton(onClick = onAddVoice) { Text("→ تعليق") }
+        TextButton(onClick = onAddTrack) { Text("→ مسار") }
+    }
+}
 
 /** المغلّف وفهرس دلوِه عند موضع زمني على الخط الزمني الكلي — للويڤ فورم وVU. */
 internal fun envAndBucketAt(
@@ -1015,6 +1180,7 @@ private val TRACK_HEADERS_W_DP = 216.dp
  * ومسار التعليق، وكل مسار حر بخطه الخاص. الأدوات أعلاه: تكبير وتقسيم والتقاط.
  * الاتجاه داخل الخط الزمني LTR — عرف المحررات الصوتية حتى في الواجهات العربية.
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun MontageTimelineCard(
     vm: AppViewModel,
@@ -1065,6 +1231,17 @@ private fun MontageTimelineCard(
             .clip(RoundedCornerShape(16.dp))
             .background(MaterialTheme.colorScheme.surface)
             .border(1.dp, LocalStudioColors.current.cardBorder, RoundedCornerShape(16.dp))
+            // تكبير بعجلة الفأرة مع Ctrl (v0.47.0 — معيار المحررات الصوتية):
+            // لا يسرق تمرير الصفحة — العجلة الاعتيادية تمرر كما هي
+            .onPointerEvent(PointerEventType.Scroll) { e ->
+                if (e.keyboardModifiers.isCtrlPressed) {
+                    val dy: Float = e.changes.firstOrNull()?.scrollDelta?.y ?: 0f
+                    when {
+                        dy > 0f -> onZoom(false)
+                        dy < 0f -> onZoom(true)
+                    }
+                }
+            }
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -1081,6 +1258,11 @@ private fun MontageTimelineCard(
                 color = MaterialTheme.colorScheme.primary
             )
             SecondaryAction("+", enabled = pxPerSec < 800f, onClick = { onZoom(true) })
+            Text(
+                "أو Ctrl+عجلة فوق الخط",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Text(
                 "أداة:",
                 style = MaterialTheme.typography.labelMedium,
