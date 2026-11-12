@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -146,7 +147,13 @@ fun OnAirPill(onAir: Boolean, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(18.dp))
-            .background(if (onAir) sc.onAir else MaterialTheme.colorScheme.surface)
+            // v0.46.0: نفس لسان شارة النافذة — طبقة واضحة بحدّ مرسوم ونص أوضح
+            .background(if (onAir) sc.onAir else MaterialTheme.colorScheme.surfaceVariant)
+            .border(
+                1.dp,
+                if (onAir) androidx.compose.ui.graphics.Color.Transparent else MaterialTheme.colorScheme.outlineVariant,
+                RoundedCornerShape(18.dp)
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -160,7 +167,7 @@ fun OnAirPill(onAir: Boolean, modifier: Modifier = Modifier) {
             if (onAir) "على الهواء" else "خارج البث",
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Bold,
-            color = if (onAir) sc.onAirContent else MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (onAir) sc.onAirContent else MaterialTheme.colorScheme.onBackground
         )
     }
 }

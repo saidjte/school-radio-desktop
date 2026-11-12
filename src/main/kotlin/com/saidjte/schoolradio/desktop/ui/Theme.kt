@@ -69,10 +69,12 @@ data class StudioColors(
 private val DefaultStudioColors = StudioColors(
     onAir = Color(GuiTokens.ON_AIR_BG),
     onAirContent = Color(GuiTokens.ON_AIR_CONTENT),
-    recordingAccent = Color(0xFFEF9A9A),
-    recDot = Color(0xFFE53935),
+    // عائلة حمراء واحدة لحالتي التسجيل والحياة (v0.46.0): النقطة بالأحمر الصلب
+    // والنص بتدرجه الفاتح المضبوط بقياس WCAG — بدل ثلاثة أحمر متفرقة
+    recordingAccent = Color(GuiTokens.RECORDING_TEXT),
+    recDot = Color(GuiTokens.zoneRed),
     liveTimer = Color(0xFF81C784),
-    liveDot = Color(0xFFFF6E6E),
+    liveDot = Color(GuiTokens.zoneRed),
     meterGreen = Color(GuiTokens.zoneGreen),
     meterAmber = Color(GuiTokens.zoneAmber),
     meterRed = Color(GuiTokens.zoneRed),

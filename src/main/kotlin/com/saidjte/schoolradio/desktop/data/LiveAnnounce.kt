@@ -45,4 +45,55 @@ object LiveAnnounceLogic {
     /** عنوان نغمة الإعلان من معرفها — «نغمة مخصصة» للمعرف الغريب غير المتوقع. */
     fun jingleTitleOf(id: String, titlesOf: (String) -> String?): String =
         titlesOf(id) ?: "نغمة مخصصة"
+
+    // ================= v0.46.0: إنهاء البث + نغمة الإعلان من ملف المستخدم =================
+
+    /** نص رسالة الإنهاء — الزر يطويق الشارة ويطفئ شارة الهواء المشتقة من الإعلان. */
+    const val END_MESSAGE = "تم إنهاء البث المباشر"
+
+    /**
+     * رسالة الإنهاء الصادقة: إن بقيت مصادر حية تعمل (مايك/تسجيل/موسيقى) فإن
+     * شارة الهواء تبقى مضاءة بحقها — فالرسالة تشرح ذلك بدل أن تُخفيه.
+     */
+    fun endMessage(otherSourcesLive: Boolean): String =
+        if (otherSourcesLive) "$END_MESSAGE — مصادر حية (مايك/تسجيل/موسيقى) ما زالت تعمل"
+        else END_MESSAGE
+
+    /**
+     * مصدر نغمة الإعلان: نغمة مدمجة بمعرفها أو ملف من ملفات المستخدم (v0.46.0 —
+     * طلب «اضافة نغمة قابلة التخصيص»). القاعدة: ملف مخصص موجود وقابل للقراءة
+     * يفوز دائمًا، وغاب الملف عاد الإعلان للنغمة المدمجة المختارة بدل أن يصمت.
+     */
+    sealed class AnnounceSource {
+        /** نغمة من الجينلات المدمجة السبعة. */
+        data class BuiltIn(val jingleId: String) : AnnounceSource()
+
+        /** نغمة من ملف اختاره المستخدم — يعيش على قرصه ويُحفظ مساره في settings.json. */
+        data class CustomFile(val path: String) : AnnounceSource()
+    }
+
+    /**
+     * حسم مصدر نغمة الإعلان لحظة النقر: المسار المخصص المهذّب وملفه موجود
+     * يعطي CustomFile، وكل حال أخرى (غائب/فارغ/ملف مفقود) تعطي BuiltIn بمعرّف
+     * مهذّب بresolveJingleId نفسها — قرار واحد نقي يُختبر بلا واجهة ولا ملفات.
+     */
+    fun resolveAnnounceSource(
+        customPath: String?,
+        selectedJingleId: String,
+        knownIds: Collection<String>,
+        fileExists: (String) -> Boolean
+    ): AnnounceSource {
+        val p = customPath?.trim().takeUnless { it.isNullOrEmpty() }
+        if (p != null && fileExists(p)) return AnnounceSource.CustomFile(p)
+        return AnnounceSource.BuiltIn(resolveJingleId(selectedJingleId, knownIds))
+    }
+
+    /**
+     * تسمية النغمة المخصصة في منتقي نغمة الإعلان: اسم الملف وحده يُقصّ عند
+     * 24 محرفًا بعلامة الحذف حتى لا يمزّق اسمٌ طويل تخطيط الشريط العلوي.
+     */
+    fun customLabel(path: String, maxChars: Int = 24): String {
+        val name = path.trim().replace('\\', '/').substringAfterLast('/').ifEmpty { "نغمة مخصصة" }
+        return if (name.length > maxChars) name.take(maxChars) + "…" else name
+    }
 }

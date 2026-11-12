@@ -96,11 +96,14 @@ private fun LiveTopBar(vm: AppViewModel) {
             delay(500)
         }
     }
+    // جلسة البث المعلنة (v0.46.0): الإعلان يفتحها و«إنهاء البث» يغلقها
+    val broadcastLive by vm.broadcastLive.collectAsState()
     val onAir = StudioLogic.status(
         micLive = micState == MicState.LIVE,
         recording = recording,
         musicPlaying = playing && !paused,
-        announceActive = LiveAnnounceLogic.isActive(announceAt, announceNow)
+        announceActive = LiveAnnounceLogic.isActive(announceAt, announceNow),
+        broadcastLive = broadcastLive
     ).onAir
 
     Row(

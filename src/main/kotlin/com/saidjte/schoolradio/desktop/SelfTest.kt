@@ -2453,6 +2453,50 @@ object SelfTest {
                 check(StudioLogic.pickerLabel(1, "") == "2. بدون عنوان") { "v45 picker empty" }
                 val pl = StudioLogic.pickerLabel(0, "فترة طويلة جدًا في الإذاعة المدرسية تحتاج قصًّا محكمًا هنا")
                 check(pl.endsWith("…") && pl.length <= 42) { "v45 picker truncate=$pl" }
+
+                // ================= v0.46.0: إنهاء البث + نغمة من ملف + لوحة الهواء =================
+
+                // 1) إنهاء البث: الوجه المغلق — الجلسة تضيء الهواء والإنهاء يطفئها
+                check(!StudioLogic.status(false, false, false).broadcastLive) { "v46 session default off" }
+                check(StudioLogic.status(false, false, false, broadcastLive = true).onAir) { "v46 session lights onAir" }
+                check(!StudioLogic.status(false, false, false, broadcastLive = false).onAir) { "v46 end turns badge off" }
+                check(StudioLogic.status(micLive = true, recording = false, musicPlaying = false, broadcastLive = false).onAir) { "v46 live mic keeps onAir after end" }
+                check(LiveAnnounceLogic.endMessage(false) == "تم إنهاء البث المباشر") { "v46 end message clean" }
+                check(LiveAnnounceLogic.endMessage(true).contains("ما زالت تعمل")) { "v46 end message honest" }
+
+                // 2) نغمة الإعلان من ملف المستخدم: الحسم لحظة النقر
+                val src = LiveAnnounceLogic.resolveAnnounceSource(
+                    "/nonexistent/tone.mp3", "magic_sweep", ids
+                ) { false }
+                check(src == LiveAnnounceLogic.AnnounceSource.BuiltIn("magic_sweep")) { "v46 missing custom falls back" }
+                val src2 = LiveAnnounceLogic.resolveAnnounceSource(
+                    " /x/nashid.mp3 ", "school_bell", ids
+                ) { true }
+                check(src2 == LiveAnnounceLogic.AnnounceSource.CustomFile("/x/nashid.mp3")) { "v46 existing custom wins (trimmed)" }
+                check(LiveAnnounceLogic.customLabel("C:\\m\\طويلة جدا جدا جدا جدا في الاسم.mp3").endsWith("…")) { "v46 custom label cut" }
+
+                // 3) الإعدادات: مسار النغمة المخصصة يجتمع مع معرف المدمجة في وثيقة واحدة
+                val st = File(tmp, "settings-v46.json")
+                val store = SettingsStore(st)
+                store.setLiveAnnounceCustomPath("/x/nashid.mp3")
+                store.setLiveAnnounceJingleId("school_bell")
+                val re = SettingsStore(st)
+                check(re.liveAnnounceCustomPath() == "/x/nashid.mp3") { "v46 custom path round trip" }
+                check(re.liveAnnounceJingleId() == "school_bell") { "v46 jingle id survives alongside" }
+                re.setLiveAnnounceCustomPath(null)
+                check(SettingsStore(st).liveAnnounceCustomPath() == null) { "v46 clear persists" }
+
+                // 4) لوحة شاشة على الهواء: عقد التباين المقيس كله صائم
+                check(GuiTokens.validateOnAirContrast()) { "v46 on-air contrast contract" }
+                check(GuiTokens.validateThemeLayering()) { "v46 theme layering intact" }
+
+                // 5) شاشة الطلاب: الجلسة المعلنة تضيء النموذج والإنهاء يعيده مطفأً
+                check(
+                    OnAirDisplayLogic.buildModel(
+                        false, -1, 0L, null, false, emptyList(), emptyList(),
+                        null, 0L, 0L, false, false, false, broadcastLive = true
+                    ).onAir
+                ) { "v46 display lights with session" }
             }
 
             println("SELFTEST OK — version $APP_VERSION")

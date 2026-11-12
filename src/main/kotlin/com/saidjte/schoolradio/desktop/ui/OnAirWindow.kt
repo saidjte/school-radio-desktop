@@ -1,6 +1,7 @@
 package com.saidjte.schoolradio.desktop.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -125,6 +126,8 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
     val musicPos by vm.player.positionMs.collectAsState()
     val musicDur by vm.player.durationMs.collectAsState()
     val playing by vm.player.isPlaying.collectAsState()
+    // جلسة البث المعلنة (v0.46.0): تبقي شارة الهواء مضاءة حتى «إنهاء البث»
+    val broadcastLive by vm.broadcastLive.collectAsState()
 
     // شارة إعلان البث المباشر (v0.35.0): تضيء مدة محدودة بعد نقرة الزر
     val announceAt by vm.liveAnnounceStartedAt.collectAsState()
@@ -141,7 +144,7 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
     val model = remember(
         runActive, runIndex, runElapsed, remaining, warn, schedule,
         musicTitle, musicPos, musicDur, playing,
-        micState == MicState.LIVE, rec, mixRec, announceActive
+        micState == MicState.LIVE, rec, mixRec, announceActive, broadcastLive
     ) {
         OnAirDisplayLogic.buildModel(
             runActive = runActive,
@@ -157,7 +160,8 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
             musicPlaying = playing,
             micLive = micState == MicState.LIVE,
             recording = rec || mixRec,
-            announceActive = announceActive
+            announceActive = announceActive,
+            broadcastLive = broadcastLive
         )
     }
 
@@ -181,16 +185,18 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
                     fontWeight = FontWeight.Bold
                 )
                 Text(
+                    // v0.46.0 وضوح النصوص: سطر التعريف للطلاب يُقرأ من بعيد
                     "عرض الطلاب — يتابع الحلقة لحظة بلحظة",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onBackground
                 )
             }
             Spacer(Modifier.weight(1f))
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(24.dp))
-                    .background(if (model.onAir) sc.onAir else MaterialTheme.colorScheme.surface)
+                    .background(if (model.onAir) sc.onAir else MaterialTheme.colorScheme.surfaceVariant)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(24.dp))
                     .padding(horizontal = 20.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -208,7 +214,7 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
                     if (model.onAir) "على الهواء" else "خارج البث",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    color = if (model.onAir) sc.onAirContent else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (model.onAir) sc.onAirContent else MaterialTheme.colorScheme.onBackground
                 )
             }
             Text(
@@ -239,7 +245,8 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
                 )
                 Text(
                     "الإعلان ${announceRemaining / 1000L}ث",
-                    style = MaterialTheme.typography.labelLarge.numeric(),
+                    style = MaterialTheme.typography.titleSmall.numeric(),
+                    fontWeight = FontWeight.Bold,
                     color = sc.onAirContent
                 )
             }
@@ -272,9 +279,10 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
                         fontWeight = FontWeight.Bold
                     )
                     Text(
+                        // v0.46.0 وضوح النصوص: إرشاد الطلاب يُقرأ من آخر القاعة
                         "عند بدء الحلقة أو تشغيل الموسيقى يُعرض ما يبثّه المذيع هنا لحظة بلحظة",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onBackground,
                         textAlign = TextAlign.Center
                     )
                 }
@@ -282,12 +290,14 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
         }
 
         // التالية في الحلقة — يعرف الطلاب ما بعد الفقرة الجارية
+        // (v0.46.0: بطاقة صلبة بحدّ مرسوم كلسان البطاقات في كل التطبيق — لا شفافية متفاوتة)
         if (model.nextTitle != null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
                     .padding(horizontal = 18.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -318,7 +328,8 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
                     .padding(horizontal = 18.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -341,6 +352,7 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
         }
 
         // التذييل: مؤشرات البث الحية + إنهاء العرض
+        // (v0.46.0: عائلة حمراء واحدة — النقطة بالأحمر الصلب والنص بتدرجه الفاتح المقيس)
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(16.dp)
@@ -350,7 +362,7 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
                 Text(
                     "الميكروفون مباشر",
                     style = MaterialTheme.typography.labelLarge,
-                    color = sc.liveDot,
+                    color = sc.recordingAccent,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -366,8 +378,8 @@ private fun OnAirContent(vm: AppViewModel, onClose: () -> Unit, onSecondary: Boo
             if (!model.onAir && micState != MicState.LIVE && !rec && !mixRec) {
                 Text(
                     "الاستوديو في وضع الاستعداد",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onBackground
                 )
             }
             Spacer(Modifier.weight(1f))
@@ -474,6 +486,7 @@ private fun RunItemCard(
 /** بطاقة الموسيقى كعنوان رئيسي حين لا حلقة جارية: العنوان والزمن والتقدم. */
 @Composable
 private fun MusicHeadlineCard(model: OnAirModel) {
+    val sc = LocalStudioColors.current
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -510,7 +523,7 @@ private fun MusicHeadlineCard(model: OnAirModel) {
                 .fillMaxWidth(0.86f)
                 .height(14.dp)
                 .clip(RoundedCornerShape(7.dp))
-                .background(MaterialTheme.colorScheme.surface)
+                .background(sc.meterTrack)
         ) {
             Box(
                 modifier = Modifier

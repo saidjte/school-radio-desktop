@@ -70,6 +70,19 @@ object GuiTokens {
     const val SURFACE_VARIANT = 0xFF1C242E.toInt()
     const val CARD_BORDER = 0xFF232D3A.toInt()
 
+    /**
+     * توكنز شاشة «على الهواء» الموحدة (v0.46.0 — طلب «الالوان في شاشة على
+     * الهواء غير متناسقة وبعض النصوص غير واضحة»): عائلة حمراء واحدة لحالتي
+     * الحية والتسجيل — النقطة بالأحمر الصلب (zoneRed) والنص بتدرجه الفاتح
+     * المضبوط بقياس WCAG — بدل ثلاثة أحمر متفرقة كانت تشتت العين.
+     */
+    const val RECORDING_TEXT = 0xFFFF8A80.toInt()
+
+    /** نسب التباين المقاسة مسبقًا بالحساب المطبوع (scripts/onair_contrast_v46.py). */
+    const val RATIO_RECORDING_TEXT_VARIANT = 6.86
+    const val RATIO_ON_AIR_CONTENT_ON_AIR_BG = 5.62
+    const val RATIO_ZONE_RED_VARIANT_DOT = 3.70
+
     /** ثيم سليم: كل طبقة تختلف عن طبقتها العلوية بوضوح. */
     fun validateThemeLayering(): Boolean =
         BG != SURFACE && SURFACE != SURFACE_VARIANT &&
@@ -78,4 +91,18 @@ object GuiTokens {
     /** حُبيبات النص الحرجة تتجاوز 4.5:1. */
     fun validateCriticalContrast(): Boolean =
         contrastRatio(ON_AIR_CONTENT, ON_AIR_BG) >= 4.5
+
+    /**
+     * عقد التباين لشاشة على الهواء (v0.46.0): كل ثنائية نص/خلفية في النافذة
+     * فوق 4.5:1 والنقاط الحية فوق 3:1 — لوحة موحدة مقيسة لا ذوق متغير.
+     */
+    fun validateOnAirContrast(): Boolean =
+        contrastRatio(ON_AIR_CONTENT, ON_AIR_BG) >= 4.5 &&
+                contrastRatio(RECORDING_TEXT, SURFACE_VARIANT) >= 4.5 &&
+                contrastRatio(RECORDING_TEXT, SURFACE) >= 4.5 &&
+                contrastRatio(RECORDING_TEXT, BG) >= 4.5 &&
+                contrastRatio(0xFFB9C0CB.toInt(), BG) >= 4.5 &&
+                contrastRatio(0xFFE4E7EB.toInt(), SURFACE_VARIANT) >= 4.5 &&
+                contrastRatio(zoneRed, SURFACE_VARIANT) >= 3.0 &&
+                contrastRatio(zoneRed, BG) >= 3.0
 }

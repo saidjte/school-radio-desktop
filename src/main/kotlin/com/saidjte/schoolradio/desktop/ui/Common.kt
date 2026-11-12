@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS
 import com.saidjte.schoolradio.desktop.data.SegmentKind
 import java.io.File
 import javax.swing.JFileChooser
@@ -277,6 +278,22 @@ object FilePickers {
         val chooser = JFileChooser()
         chooser.dialogTitle = "اختر ملفًا صوتيًا"
         chooser.fileFilter = FileNameExtensionFilter("ملفات صوتية (WAV / MP3)", "wav", "mp3")
+        val result = chooser.showOpenDialog(null)
+        return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+    }
+
+    /**
+     * اختيار نغمة إعلان من ملف المستخدم (v0.46.0 — طلب «اضافة نغمة قابلة
+     * التخصيص») — كل الصيغ التي يفكها المحرك (PLAYABLE_EXTENSIONS) لا
+     * WAV/MP3 وحدهما، فلا يُرفض OGG/FLAC لا سبب له.
+     */
+    fun pickAnnounceToneFile(): File? {
+        val chooser = JFileChooser()
+        chooser.dialogTitle = "اختر نغمة الإعلان"
+        chooser.fileFilter = FileNameExtensionFilter(
+            "ملفات صوتية (MP3 / WAV / OGG / FLAC)",
+            *PLAYABLE_EXTENSIONS.toTypedArray()
+        )
         val result = chooser.showOpenDialog(null)
         return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
     }

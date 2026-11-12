@@ -84,11 +84,13 @@ object OnAirDisplayLogic {
         musicPlaying: Boolean,
         micLive: Boolean,
         recording: Boolean,
-        announceActive: Boolean = false
+        announceActive: Boolean = false,
+        broadcastLive: Boolean = false
     ): OnAirModel {
         // شارة الإعلان تُضيء الهواء كذلك (v0.45.0 — طلب «زر الإعلان عن البث
-        // المباشر يجب أن يفعل شارة على الهواء»): نقرة الإعلان حالة هواء كاملة
-        val onAir = micLive || recording || musicPlaying || announceActive
+        // المباشر يجب أن يفعل شارة على الهواء»): نقرة الإعلان حالة هواء كاملة،
+        // وجلسة البث المعلنة تبقيها مضاءة حتى «إنهاء البث» (v0.46.0)
+        val onAir = micLive || recording || musicPlaying || announceActive || broadcastLive
         val item = if (runActive) scheduleTitles.getOrNull(runIndex) else null
         val plannedSec = if (runActive) schedulePlannedSeconds.getOrNull(runIndex) ?: 0L else 0L
 

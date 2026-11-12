@@ -71,10 +71,17 @@ data class StudioStatus(
     val recording: Boolean,
     val musicPlaying: Boolean,
     /** شارة إعلان البث المباشر مضاءة (v0.45.0 — طلب «زر الإعلان يجب أن يفعل شارة على الهواء»). */
-    val announceActive: Boolean = false
+    val announceActive: Boolean = false,
+    /**
+     * جلسة البث المعلنة مفتوحة (v0.46.0 — طلب «عند الاعلان عن البث لا يوجد زر
+     * انتهاء البث»): الإعلان يفتحها و«إنهاء البث» يغلقها — فتظل شارة الهواء
+     * مضاءة بعد خمود شارة الخمس عشرة ثانية حتى ينهيها المذيع بنفسه،
+     * وهي حالة جلسة حية لا تُحفَظ: الإقلاع الجديد يفتحها مطفأة.
+     */
+    val broadcastLive: Boolean = false
 ) {
-    /** على الهواء = أي صوت يخرج أو يُسجَّل الآن أو إعلان بث مضيء. */
-    val onAir: Boolean get() = micLive || recording || musicPlaying || announceActive
+    /** على الهواء = أي صوت يخرج أو يُسجَّل الآن أو إعلان بث مضيء أو جلسة معلنة مفتوحة. */
+    val onAir: Boolean get() = micLive || recording || musicPlaying || announceActive || broadcastLive
 }
 
 /**
@@ -147,13 +154,14 @@ object StudioLogic {
         return if (next in 0 until itemCount) next else null
     }
 
-    /** تجميع حالة الهواء من مصادرها الثلاثة وشارة الإعلان (v0.45.0). */
+    /** تجميع حالة الهواء من مصادرها الثلاثة وشارة الإعلان وجلسة البث المعلنة (v0.46.0). */
     fun status(
         micLive: Boolean,
         recording: Boolean,
         musicPlaying: Boolean,
-        announceActive: Boolean = false
-    ): StudioStatus = StudioStatus(micLive, recording, musicPlaying, announceActive)
+        announceActive: Boolean = false,
+        broadcastLive: Boolean = false
+    ): StudioStatus = StudioStatus(micLive, recording, musicPlaying, announceActive, broadcastLive)
 
     /**
      * تسمية فقرة في منتقي السكريبت اليدوي على شاشة الاستوديو (v0.45.0 —

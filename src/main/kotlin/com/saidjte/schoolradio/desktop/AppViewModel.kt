@@ -10,6 +10,7 @@ import com.saidjte.schoolradio.desktop.audio.FxPresets
 import com.saidjte.schoolradio.desktop.audio.DuckBus
 import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.MicLiveEngine
+import com.saidjte.schoolradio.desktop.audio.MicState
 import com.saidjte.schoolradio.desktop.audio.MixBus
 import com.saidjte.schoolradio.desktop.audio.MontageExportFormat
 import com.saidjte.schoolradio.desktop.audio.MontageRender
@@ -214,11 +215,44 @@ class AppViewModel {
     /** ملفات الجينلات المدمجة المستخرجة بمعرفاتها — مصدر جينل الإعلان. */
     @Volatile private var bundledJingleFiles: Map<String, File> = emptyMap()
 
+    // ---- جلسة البث المعلن (v0.46.0 — طلب «عند الاعلان عن البث لا يوجد زر انتهاء البث») ----
+
+    /**
+     * جلسة البث المعلنة مفتوحة: الإعلان يفتحها فتظل شارة الهواء مضاءة بعد
+     * خمود شارة الخمس عشرة ثانية، و«إنهاء البث» يغلقها. حالة جلسة حية لا
+     * تُحفَظ — الإقلاع الجديد يفتحها مطفأة فالعهد سليم.
+     */
+    private val _broadcastLive = MutableStateFlow(false)
+    val broadcastLive: StateFlow<Boolean> = _broadcastLive.asStateFlow()
+
+    /**
+     * إنهاء البث المباشر — الوجه المغلق لدورة الإعلان: يطفئ شارة الهواء
+     * المشتقة من الجلسة ويطويق شارة الإعلان إن كانت ما زالت مضاءة. المصادر
+     * الحية الحقيقية (مايك/تسجيل/موسيقى) لا تُمسّ بأي شيء — لها أزرارها
+     * الخاصة — والرسالة تشرح بصدق إن بقيت أيٌّ منها تعمل.
+     */
+    fun endLiveBroadcast() {
+        _broadcastLive.value = false
+        _liveAnnounceStartedAt.value = null
+        val stillLive = mic.state.value == MicState.LIVE ||
+            mic.recording.value || mixRecording.value ||
+            (player.isPlaying.value && !player.isPaused.value)
+        _lastLibraryMessage.value = LiveAnnounceLogic.endMessage(stillLive)
+    }
+
     // ---- نغمة الإعلان (v0.45.0): اختيار المذيع من المدمجات ويُحفظ بين الجلسات ----
 
     /** نغمة الإعلان المختارة — تُهذّب من المحفوظ في init بعد اكتمال المخازن. */
     private val _liveAnnounceJingleId = MutableStateFlow(LiveAnnounceLogic.JINGLE_ID)
     val liveAnnounceJingleId: StateFlow<String> = _liveAnnounceJingleId.asStateFlow()
+
+    /**
+     * نغمة الإعلان من ملف المستخدم (v0.46.0 — طلب «اضافة نغمة قابلة
+     * التخصيص») — مسارها يُحفظ في settings.json، وحسم الصلاحية لحظة
+     * الإعلان: ملف غائب يعيد المدمجة المختارة بدل أن يصمت الإعلان.
+     */
+    private val _liveAnnounceCustomPath = MutableStateFlow<String?>(null)
+    val liveAnnounceCustomPath: StateFlow<String?> = _liveAnnounceCustomPath.asStateFlow()
 
     /** اختيار نغمة الإعلان: المعروف يُحفظ، والغريب يعود للافتراضي برسالة واضحة. */
     fun selectLiveAnnounceJingle(id: String) {
@@ -229,7 +263,25 @@ class AppViewModel {
             _lastLibraryMessage.value = "نغمة الإعلان: «${jingleTitleOf(resolved)}»"
         }
         _liveAnnounceJingleId.value = resolved
+        // النغمتان لا تتعارضان: اختيار مدمجة يمسح ملف المستخدم المحفوظ
+        _liveAnnounceCustomPath.value = null
+        settingsStore.setLiveAnnounceCustomPath(null)
         settingsStore.setLiveAnnounceJingleId(resolved)
+    }
+
+    /** تبنّي نغمة إعلان من ملف اختاره المذيع في المنتقي — مسارها يُحفظ بين الجلسات. */
+    fun setAnnounceToneFile(file: File) {
+        val p = file.absolutePath
+        _liveAnnounceCustomPath.value = p
+        settingsStore.setLiveAnnounceCustomPath(p)
+        _lastLibraryMessage.value = "نغمة الإعلان: ملف «${LiveAnnounceLogic.customLabel(p)}» — تُجرَّب عند الإعلان التالي"
+    }
+
+    /** إزالة النغمة المخصصة — الإعلان يعود للنغمة المدمجة المختارة. */
+    fun clearAnnounceToneFile() {
+        _liveAnnounceCustomPath.value = null
+        settingsStore.setLiveAnnounceCustomPath(null)
+        _lastLibraryMessage.value = "أُزيلت النغمة المخصصة — عاد الإعلان إلى «${jingleTitleOf(_liveAnnounceJingleId.value)}»"
     }
 
     /** عنوان نغمة الإعلان من معرفها — من عناوين المدمجات. */
@@ -237,21 +289,38 @@ class AppViewModel {
         LiveAnnounceLogic.jingleTitleOf(id) { jid -> BundledJingles.ALL.firstOrNull { it.id == jid }?.title }
 
     /**
-     * إعلان البث المباشر بنقرة واحدة: نغمة الإعلان المختارة من القناة
-     * المستقلة (نفس موضع جينل الفاصل الآلي فلا تتراكم الأصوات) + شارة
-     * «البث المباشر بدأ الآن» على شاشة الطلاب + إضاءة شارة على الهواء
-     * (v0.45.0) + رسالة تأكيد في الاستوديو.
+     * إعلان البث المباشر بنقرة واحدة: نغمة الإعلان محسومة من مصدرها (ملف
+     * المستخدم إن كان موجودًا وإلا المدمجة المختارة) من القناة المستقلة
+     * (نفس موضع جينل الفاصل الآلي فلا تتراكم الأصوات) + شارة «البث المباشر
+     * بدأ الآن» على شاشة الطلاب + إضاءة شارة على الهواء (v0.45.0) + فتح
+     * جلسة البث المعلن (v0.46.0) + رسالة تأكيد في الاستوديو.
      */
     fun announceLiveBroadcast() {
-        val id = _liveAnnounceJingleId.value
-        val f = bundledJingleFiles[id]
+        val custom = _liveAnnounceCustomPath.value
+        val customFile = custom?.let { File(it) }
+        val missingCustom = custom != null && (customFile == null || !customFile.isFile)
+        val source = LiveAnnounceLogic.resolveAnnounceSource(
+            customPath = custom,
+            selectedJingleId = _liveAnnounceJingleId.value,
+            knownIds = BundledJingles.ALL.map { it.id }
+        ) { p -> File(p).isFile }
+        val f = when (source) {
+            is LiveAnnounceLogic.AnnounceSource.CustomFile -> File(source.path)
+            is LiveAnnounceLogic.AnnounceSource.BuiltIn -> bundledJingleFiles[source.jingleId]
+        }
         if (f == null || !f.isFile) {
             _lastLibraryMessage.value = "نغمة الإعلان غير متاحة — أعد فتح التطبيق لتُستخرج الجينلات المدمجة"
             return
         }
         jingles.sting(f)
         _liveAnnounceStartedAt.value = System.currentTimeMillis()
-        _lastLibraryMessage.value = "إعلان البث المباشر: «${LiveAnnounceLogic.BANNER_TEXT}» — «${jingleTitleOf(id)}» تعمل الآن"
+        _broadcastLive.value = true
+        val tone = when (source) {
+            is LiveAnnounceLogic.AnnounceSource.CustomFile -> "ملف «${LiveAnnounceLogic.customLabel(source.path)}» يعمل الآن"
+            is LiveAnnounceLogic.AnnounceSource.BuiltIn -> "«${jingleTitleOf(source.jingleId)}» تعمل الآن"
+        }
+        val missing = if (missingCustom) " — ملفك المخصص غائب فعُدنا للمدمجة" else ""
+        _lastLibraryMessage.value = "إعلان البث المباشر: «${LiveAnnounceLogic.BANNER_TEXT}» — $tone تعمل الآن$missing"
     }
 
     private val _jinglePads = MutableStateFlow(JingleWallLogic.emptyPads())
@@ -2282,6 +2351,8 @@ class AppViewModel {
             settingsStore.liveAnnounceJingleId(),
             BundledJingles.ALL.map { it.id }
         )
+        // نغمة الإعلان المخصصة (مسار ملف) من المحفوظ — حسم وجود الملف لحظة الإعلان (v0.46.0)
+        _liveAnnounceCustomPath.value = settingsStore.liveAnnounceCustomPath()?.trim()?.ifEmpty { null }
     }
 
     /** ختم المشروع الذي صُيِّرت معاينته الحالية — تُعاد استعمالها إن لم يتغير المشروع. */

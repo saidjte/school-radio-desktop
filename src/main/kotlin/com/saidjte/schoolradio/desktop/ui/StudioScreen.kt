@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -399,11 +400,14 @@ private fun StudioTopBar(vm: AppViewModel) {
             delay(500)
         }
     }
+    // جلسة البث المعلنة (v0.46.0): الإعلان يفتحها و«إنهاء البث» يغلقها
+    val broadcastLive by vm.broadcastLive.collectAsState()
     val onAir = StudioLogic.status(
         micLive = micState == MicState.LIVE,
         recording = recording || mixRec,
         musicPlaying = playing && !paused,
-        announceActive = LiveAnnounceLogic.isActive(announceAt, announceNow)
+        announceActive = LiveAnnounceLogic.isActive(announceAt, announceNow),
+        broadcastLive = broadcastLive
     ).onAir
     val sc = LocalStudioColors.current
 
@@ -458,6 +462,11 @@ private fun StudioTopBar(vm: AppViewModel) {
             // إعلان البث المباشر (v0.35.0): نغمة الإعلان من القناة المستقلة
             // + شارة «البث المباشر بدأ الآن» على شاشة الطلاب + شارة على الهواء (v0.45.0)
             SecondaryAction(text = "إعلان البث المباشر", onClick = { vm.announceLiveBroadcast() })
+            // إنهاء البث (v0.46.0 — طلب «عند الاعلان عن البث لا يوجد زر انتهاء البث»):
+            // الوجه المغلق لدورة الإعلان — يظهر فقط والجلسة مفتوحة فيطفئ شارة الهواء
+            if (broadcastLive) {
+                SecondaryAction(text = "إنهاء البث", onClick = { vm.endLiveBroadcast() })
+            }
             // اختيار نغمة الإعلان (v0.45.0): من الجينلات المدمجة السبعة ويُحفظ بين الجلسات
             AnnounceTonePicker(vm)
             // جدار الجينغل (v0.28.0): يفتح نافذة منبثقة مستقلة غير ماسكة —
@@ -495,14 +504,23 @@ private fun StudioTopBar(vm: AppViewModel) {
  * قائمة منسدلة بجينلات المدمجات السبعة بجانب زر إعلان البث المباشر،
  * المختار يُعلَّم بنقطة ويُحفظ في settings.json فتعود النغمة بين الجلسات —
  * والإعلان التالي يطلق النغمة المختارة أيًا كانت.
+ * v0.46.0 (طلب «اضافة نغمة قابلة التخصيص»): بند «من ملف…» يفتح منتقي ملفات
+ * بنفس صيغ المحرك — النغمة المخصصة تعلو المدمجات ويظهر اسم ملفها على الزر،
+ * وبند إزالتها يعيد المدمجة المختارة. ملف غائب عند الإعلان يعيد المدمجة تلقائيًا.
  */
 @Composable
 private fun AnnounceTonePicker(vm: AppViewModel) {
     var menu by remember { mutableStateOf(false) }
     val selectedId by vm.liveAnnounceJingleId.collectAsState()
+    val customPath by vm.liveAnnounceCustomPath.collectAsState()
+    val label = if (customPath != null) {
+        "نغمة الإعلان: ملف «${LiveAnnounceLogic.customLabel(customPath ?: "")}» ▾"
+    } else {
+        "نغمة الإعلان: ${vm.jingleTitleOf(selectedId)} ▾"
+    }
     Box {
         SecondaryAction(
-            text = "نغمة الإعلان: ${vm.jingleTitleOf(selectedId)} ▾",
+            text = label,
             onClick = { menu = true }
         )
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -510,13 +528,31 @@ private fun AnnounceTonePicker(vm: AppViewModel) {
                 DropdownMenuItem(
                     text = {
                         Text(
-                            (if (j.id == selectedId) "● " else "") + j.title,
+                            (if (customPath == null && j.id == selectedId) "● " else "") + j.title,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     },
                     onClick = {
                         vm.selectLiveAnnounceJingle(j.id)
+                        menu = false
+                    }
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("من ملف… (MP3 / WAV / OGG / FLAC)", maxLines = 1) },
+                onClick = {
+                    menu = false
+                    val f = FilePickers.pickAnnounceToneFile() ?: return@DropdownMenuItem
+                    vm.setAnnounceToneFile(f)
+                }
+            )
+            if (customPath != null) {
+                DropdownMenuItem(
+                    text = { Text("إزالة النغمة المخصصة", maxLines = 1) },
+                    onClick = {
+                        vm.clearAnnounceToneFile()
                         menu = false
                     }
                 )

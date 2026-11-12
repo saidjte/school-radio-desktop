@@ -101,7 +101,9 @@ data class RecordingJson(
  * الغريب يعود للافتراضي بلا مساس.
  */
 data class AnnounceJson(
-    val jingleId: String? = null
+    val jingleId: String? = null,
+    /** نغمة إعلان من ملف المستخدم — مسار مطلق، والغائب عند الإعلان يعيد المدمجة (v0.46.0). */
+    val customPath: String? = null
 )
 
 /** إعدادات التطبيق العامة — تُحفظ في settings.json. */
@@ -493,6 +495,21 @@ class SettingsStore(private val file: File) {
     fun setLiveAnnounceJingleId(id: String) {
         val cur = doc.announce ?: AnnounceJson()
         doc = doc.copy(announce = cur.copy(jingleId = id.trim()))
+        persist()
+    }
+
+    // ================= نغمة الإعلان من ملف المستخدم (v0.46.0) =================
+
+    /** مسار النغمة المخصصة المحفوظ كما هو — الحسم (وجود الملف) لحظة الإعلان. */
+    fun liveAnnounceCustomPath(): String? = doc.announce?.customPath
+
+    /**
+     * حفظ مسار النغمة المخصصة أو مسحه (null = العودة للمدمجات). اختيار
+     * نغمة مدمجة من المنتقي يمسح المسار فالنموذجان لا يتعارضان أبدًا.
+     */
+    fun setLiveAnnounceCustomPath(path: String?) {
+        val cur = doc.announce ?: AnnounceJson()
+        doc = doc.copy(announce = cur.copy(customPath = path?.trim()?.ifEmpty { null }))
         persist()
     }
 
