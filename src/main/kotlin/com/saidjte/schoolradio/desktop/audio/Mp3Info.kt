@@ -1,8 +1,13 @@
 package com.saidjte.schoolradio.desktop.audio
 
+import java.io.BufferedInputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.InputStream
 import java.io.RandomAccessFile
+import javazoom.jl.decoder.Bitstream
+import javazoom.jl.decoder.Decoder
+import javazoom.jl.decoder.SampleBuffer
 
 /**
  * محلّل ترويسات MP3 خالص (دون فك ترميز): يجد أول إطار صالح، ويحسب حجم الإطار،
@@ -123,7 +128,11 @@ object Mp3Info {
             RandomAccessFile(file, "r").use { raf ->
                 val fileLen = raf.length()
                 if (fileLen < 128) return null
-                val head = ByteArray(64 * 1024)
+                // v0.49.0 «الصيغ المدعومة»: رأس 1MB بدل 64KB — ملفات MP3 بأغلفة
+                // ألبوم مضمنة (APIC) يصل وسم ID3v2 فيها إلى مئات الكيلوبايتات
+                // كانت تسقط خارج نافذة البحث فيفشل التحليل ويرفض القارئ ملفًا
+                // سليمًا («بعض ملفات mp3 لا تعمل») — الآن تُقرأ كاملة وتُفحص كلها
+                val head = ByteArray(1 shl 20)
                 val headLen = raf.read(head).coerceAtLeast(0)
 
                 var offset = id3v2Size(head)
@@ -131,7 +140,7 @@ object Mp3Info {
 
                 var first: FrameHeader? = null
                 var frameOffset = offset
-                val searchLimit = minOf(headLen - 4, offset + 16 * 1024)
+                val searchLimit = headLen - 4
                 while (frameOffset < searchLimit) {
                     val h = parseFrame(head, frameOffset)
                     if (h != null) {
@@ -207,6 +216,80 @@ object Mp3Info {
             }
         } catch (_: Exception) {
             null
+        }
+    }
+}
+
+/**
+ * تحسّس الإطار الأول بفكّه الفعلي عبر JLayer (v0.49.0 «الصيغ المدعومة») —
+ * مصدر الحقيقة لقنوات الخرج ومعدلها حتى لو فشل تحليل الترويسات كله: Bitstream
+ * يقفز فوق أي مخلفات قبل المزامنة بنفسه، فالملفات ذات الرؤوس الشاذة (ولو
+ * أعيدت تسميتها) تُفكّ إن كانت MP3 حقيقية وتُرفض برسالة صادقة إن لم تكن.
+ * خالص بلا عتاد صوتي — يُختبر وحدويًا على كل العينات.
+ */
+internal object Mp3Probe {
+
+    data class FirstFrame(
+        val sampleRate: Int,     // معدل خرج فك JLayer الفعلي (MPEG2/2.5 أنصف منه في الترويسة)
+        val channels: Int,
+        val samplesPerFrame: Int // 1152 لـ MPEG-1 و576 لـ MPEG-2/2.5 (Layer 3)
+    )
+
+    /** فك أول إطار صالح من الملف — null عند عدم وجود صوت MP3 يُفك أصلًا. */
+    fun decodeFirstFrame(file: File): FirstFrame? {
+        var bs: Bitstream? = null
+        return try {
+            val s = BufferedInputStream(FileInputStream(file), 1 shl 16)
+            Mp3Info.skipId3v2(s)
+            val b = Bitstream(s)
+            bs = b
+            val dec = Decoder()
+            var guard = 0
+            while (guard++ < 4096) {
+                val h = try { b.readFrame() } catch (_: Exception) { null } ?: break
+                try {
+                    val d = dec.decodeFrame(h, b)
+                    if (d is SampleBuffer && d.buffer.isNotEmpty()) {
+                        val freq = dec.outputFrequency
+                        return FirstFrame(
+                            freq,
+                            dec.outputChannels,
+                            if (freq >= 32000) 1152 else 576
+                        )
+                    }
+                } catch (_: Exception) {
+                    // إطار شاذ: جرب التالي
+                } finally {
+                    try { b.closeFrame() } catch (_: Exception) { }
+                }
+            }
+            null
+        } catch (_: Exception) {
+            null
+        } finally {
+            try { bs?.close() } catch (_: Exception) { }
+        }
+    }
+
+    /** عدّ إطارات الملف كاملًا دون فك — مدة مضبوطة للملفات بلا ترويسة تحليلية. */
+    fun countFramesMs(file: File, first: FirstFrame): Long {
+        var bs: Bitstream? = null
+        return try {
+            val s = BufferedInputStream(FileInputStream(file), 1 shl 16)
+            Mp3Info.skipId3v2(s)
+            val b = Bitstream(s)
+            bs = b
+            var n = 0L
+            while (true) {
+                val h = try { b.readFrame() } catch (_: Exception) { null } ?: break
+                n++
+                try { b.closeFrame() } catch (_: Exception) { }
+            }
+            n * first.samplesPerFrame * 1000L / first.sampleRate
+        } catch (_: Exception) {
+            0L
+        } finally {
+            try { bs?.close() } catch (_: Exception) { }
         }
     }
 }

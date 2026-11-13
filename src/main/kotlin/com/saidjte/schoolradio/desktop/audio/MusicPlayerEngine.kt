@@ -22,7 +22,15 @@ import kotlin.concurrent.thread
 import kotlin.math.min
 
 /** الصيغ القابلة للتشغيل فعليًا في المحرك — بوابة واحدة للاستيراد والمسح والمكتبة. */
-val PLAYABLE_EXTENSIONS = setOf("wav", "mp3", "ogg", "oga", "flac", "aif", "aiff", "au")
+/** الصيغ التي يفكها القارئ — فلاتر الاختيار والاستيراد تتبعها (v0.49.0 موسّعة). */
+val PLAYABLE_EXTENSIONS = setOf(
+    "wav", "mp3", "ogg", "oga", "flac", "aif", "aiff", "au",
+    "aac", "m4a", "m4b", "mp4", "mp2", "mpga", "mpeg", "mpa"
+)
+
+/** رسالة الصيغ المدعومة — تظهر في أخطاء الفتح الصادقة (وفق قائمة VLC wiki.videolan.org). */
+const val SUPPORTED_FORMATS_HINT =
+    "الصيغ المدعومة: MP3 (MPEG-1/2/2.5 وLayer 2 وVBR) وWAV وFLAC وOGG وAAC/M4A وAIFF/AU"
 
 /**
  * قارئ مقطع صوتي يفكّ ويكتب في خط السماع مباشرة.
@@ -161,7 +169,14 @@ private class Mp3TrackReader(
 ) : TrackReader {
 
     private val info = Mp3Info.analyze(file)
-    private val fh = info?.first
+    private var fh: Mp3Info.FrameHeader? = info?.first
+    // v0.49.0 «الصيغ المدعومة»: ملفات يفشل تحليل ترويساتها (وسوم ضخمة/رؤوس
+    // شاذة) لم تكن تعمل إطلاقًا — الآن يُفك أول إطار فعليًا لمصدر الحقيقة
+    // وتُحتسب المدة بعدّ الإطارات كاملًا (قراءة سريعة بلا فك)
+    private val probed: Mp3Probe.FirstFrame? = if (info == null) Mp3Probe.decodeFirstFrame(file) else null
+    private val fallbackDurationMs: Long = if (info == null) {
+        probed?.let { Mp3Probe.countFramesMs(file, it) } ?: 0L
+    } else 0L
     private val format: AudioFormat
     private val out: PcmOutLine
     private var stream: BufferedInputStream
@@ -170,16 +185,39 @@ private class Mp3TrackReader(
     private var framesDone = 0L
     private var currentMsValue = 0L
 
-    override val durationMs: Long = info?.durationMs ?: 0L
+    override val durationMs: Long
+        get() = info?.durationMs ?: fallbackDurationMs
     override val currentMs: Long get() = currentMsValue
 
     init {
-        val i = info ?: throw IllegalArgumentException("تعذّر تحليل ملف MP3: ${file.name}")
-        val f = fh!!
+        val p = probed
+        if (info == null && p == null) {
+            throw IllegalArgumentException(
+                "تعذّر فك «${file.name}» كـMP3 — الملف تالف أو ليست صيغته MP3. " + SUPPORTED_FORMATS_HINT
+            )
+        }
+        val f: Mp3Info.FrameHeader
+        if (info != null) {
+            f = fh!!
+            format = AudioFormat(f.sampleRate.toFloat(), 16, f.channels, true, false)
+        } else {
+            // ترويسة مبنية من فك الإطار الأول: قنوات ومعدل الخرج الحقيقيان —
+            // وMPEG2/2.5 تُصحَّح هنا كذلك لأن JLayer يفكها بمعدل خرج الحقيقة
+            f = Mp3Info.FrameHeader(
+                version = if (p!!.sampleRate >= 32000) 1 else 2,
+                layer = 3,
+                sampleRate = p.sampleRate,
+                bitRateKbps = 0,
+                channels = p.channels,
+                samplesPerFrame = p.samplesPerFrame,
+                frameSize = 0
+            )
+            fh = f
+            format = AudioFormat(p.sampleRate.toFloat(), 16, p.channels, true, false)
+        }
         stream = BufferedInputStream(FileInputStream(file), 1 shl 16)
         Mp3Info.skipId3v2(stream)
         bitstream = Bitstream(stream)
-        format = AudioFormat(f.sampleRate.toFloat(), 16, f.channels, true, false)
         out = AudioDevices.openOutLine(outMain, outSecond, format, onSecondOutFailed)
         out.open(format, 16 * 1024)
         out.start()
@@ -218,7 +256,7 @@ private class Mp3TrackReader(
     }
 
     override fun seek(ms: Long) {
-        val i = info ?: return
+        val i = info
         val f = fh ?: return
         val target = ms.coerceIn(0L, durationMs)
         try { bitstream.close() } catch (_: Exception) { }
@@ -231,10 +269,11 @@ private class Mp3TrackReader(
         // موضع البايت وزمن المرساة قبل العدّ الدقيق للإطارات:
         // - جدول Xing المئوي (VBR موسوم): مواضع بايتات لكل 1% زمني — أدق المسارات
         // - متوسط معدل البت الفعلي (VBR دون جدول): من حجم البيانات والمدة
-        // - معدل الإطار الأول (CBR): التحويل الخطي مباشر
+        // - معدل الإطار الأول (CBR): التحويل الخطي مباشرةً
+        // - بلا ترويسة تحليلية (v0.49.0): متوسط فعلي من حجم الملف والمدة المعدودة
         val jumpMs: Long
-        val toc = i.toc
-        val dataBytes = i.dataBytes.coerceAtLeast(0L)
+        val toc = i?.toc
+        val dataBytes = i?.dataBytes?.coerceAtLeast(0L) ?: 0L
         if (toc != null && toc.size >= 100 && durationMs > 0 && dataBytes > 0) {
             val frac = ((target - 500L).coerceAtLeast(0L)).toFloat() / durationMs.toFloat()
             val idx = (frac * 100).toInt().coerceIn(0, 99)
@@ -242,9 +281,12 @@ private class Mp3TrackReader(
             jumpMs = idx.toLong() * durationMs / 100L
             skipBytes(s, (byteFrac * dataBytes).toLong())
         } else {
-            val avgKbps = if (i.isVbr && durationMs > 0 && dataBytes > 0)
-                (dataBytes * 8L / durationMs).toInt().coerceAtLeast(1)
-            else f.bitRateKbps
+            val avgKbps = when {
+                i != null && i.isVbr && durationMs > 0 && dataBytes > 0 ->
+                    (dataBytes * 8L / durationMs).toInt().coerceAtLeast(1)
+                i != null -> f.bitRateKbps
+                else -> ((file.length() * 8L) / durationMs.coerceAtLeast(1L)).toInt().coerceAtLeast(1)
+            }
             jumpMs = (target - 1500L).coerceAtLeast(0L)
             skipBytes(s, jumpMs * avgKbps / 8L)
         }
@@ -311,7 +353,14 @@ private class PcmTrackReader(
     override val currentMs: Long get() = currentMsValue
 
     init {
-        val raw = openAudioInputStream(file)
+        // v0.49.0: رسالة فتح صادقة تسمّي الملف والصيغ المدعومة بدل استثناء مجرد
+        val raw = try {
+            openAudioInputStream(file)
+        } catch (t: Throwable) {
+            throw IllegalArgumentException(
+                "تعذّر فتح «${file.name}» — الملف تالف أو صيغته غير مدعومة بعد. $SUPPORTED_FORMATS_HINT", t
+            )
+        }
         val rf = raw.format
         val isPlainPcm = rf.encoding == AudioFormat.Encoding.PCM_SIGNED &&
                 !rf.isBigEndian && rf.sampleSizeInBits == 16
@@ -324,12 +373,17 @@ private class PcmTrackReader(
 
         val fl = ais.frameLength
         val wavInfo = WavHeader.read(file)
+        // v0.49.0: FLAC أولًا من STREAMINFO — jflac يبلّغ frameLength بحجم
+        // الملف بالبايتات فيضيّر المدة، وAAC بلا طول إطاري فمدتها من بنية
+        // الحاوية (mdhd) أو مسح ADTS
+        val flacMs = if (file.name.lowercase().endsWith(".flac")) FlacInfo.durationMsOf(file) else -1L
         durationMs = when {
+            flacMs > 0 -> flacMs
             fl > 0 && pcmFormat.frameRate > 0 -> (fl * 1000L / pcmFormat.frameRate.toLong())
             wavInfo != null -> WavFileWriter.durationMsOf(
                 wavInfo.dataBytes, wavInfo.sampleRate, wavInfo.channels, wavInfo.bitsPerSample
             )
-            else -> 0L
+            else -> ExtraDuration.durationMsOf(file).coerceAtLeast(0L)
         }
 
         out = AudioDevices.openOutLine(outMain, outSecond, pcmFormat, onSecondOutFailed)
@@ -409,7 +463,9 @@ private class PcmTrackReader(
 /**
  * فتح مجرى صوتي بقرّاء صريحين حسب الامتداد — بلا اعتماد على ServiceLoader
  * (دمج ملفات الخدمات في الجرة الموحّدة غير مضمون):
- * OGG عبر قارئ Vorbis الصريح، FLAC عبر قارئ Flac الصريح، والباقي عبر AudioSystem.
+ * OGG عبر قارئ Vorbis الصريح، FLAC عبر قارئ Flac الصريح، AAC/M4A عبر قارئ
+ * jaad الصريح (v0.49.0 «الصيغ المدعومة» — تسجيلات آيفون M4A وADTS)، والباقي
+ * عبر AudioSystem (WAV/AIFF/AU مدمجة).
  */
 internal fun openAudioInputStream(file: File): AudioInputStream {
     val name = file.name.lowercase()
@@ -418,22 +474,32 @@ internal fun openAudioInputStream(file: File): AudioInputStream {
             VorbisAudioFileReader().getAudioInputStream(file)
         name.endsWith(".flac") ->
             FlacAudioFileReader().getAudioInputStream(file)
+        name.endsWith(".aac") ->
+            AacSupport.openAdts(file)
+        name.endsWith(".m4a") || name.endsWith(".m4b") || name.endsWith(".mp4") ->
+            AacSupport.openMp4(file)
         else -> AudioSystem.getAudioInputStream(file)
     }
 }
 
 /**
  * تقدير مدة ملف صوتي بفتح المجرى وقراءة طوله الإطاري —
- * للأصوات غير MP3/WAV (OGG/FLAC/AIFF/AU) في قوائم العرض. يعيد 0 إن تعذّر.
+ * للأصوات غير MP3/WAV (OGG/FLAC/AAC/M4A/AIFF/AU) في قوائم العرض. يعيد 0 إن تعذّر.
+ * v0.49.0: AAC/M4A من بنية الحاوية وFLAC من STREAMINFO — frameLength وحده
+ * يخدع في هذين (jaad لا يعطي طولًا وjflac يعطي حجم الملف بالبايتات).
  */
 internal object StreamProbe {
-    fun durationMsOf(file: File): Long = try {
-        openAudioInputStream(file).use { ais ->
-            val fl = ais.frameLength
-            val fr = ais.format.frameRate
-            if (fl > 0 && fr > 0) (fl * 1000L / fr.toLong()) else 0L
-        }
-    } catch (_: Exception) { 0L }
+    fun durationMsOf(file: File): Long {
+        return try {
+            val extra = ExtraDuration.durationMsOf(file)
+            if (extra > 0) return extra
+            openAudioInputStream(file).use { ais ->
+                val fl = ais.frameLength
+                val fr = ais.format.frameRate
+                if (fl > 0 && fr > 0) (fl * 1000L / fr.toLong()) else 0L
+            }
+        } catch (_: Exception) { 0L }
+    }
 }
 
 /**
@@ -992,10 +1058,23 @@ class MusicPlayerEngine {
         val onSecondFail: (Throwable) -> Unit = { t: Throwable ->
             _error.value = "المخرج الثاني: " + AudioDevices.describeOutputFailure(t)
         }
-        return if (name.endsWith(".mp3")) {
-            Mp3TrackReader(file, outputMain, outputSecond, { _volume.value }, onSecondFail, channel)
-        } else {
-            PcmTrackReader(file, outputMain, outputSecond, { _volume.value }, onSecondFail, channel)
+        // v0.49.0 «الصيغ المدعومة»: عائلة MPEG كلها (1/2/2.5 — Layer 1/2/3 وVBR)
+        // عبر قارئ MP3 القوي بعائله المحكم، وعائلة AAC (M4A/ADTS) عبر قارئ PCM
+        // مع القارئ الصريح لـjaad، وصيغ غير مدعومة بعد برسالة صادقة تسمّي المدعوم
+        val mp3Family = name.endsWith(".mp3") || name.endsWith(".mp2") ||
+            name.endsWith(".mpga") || name.endsWith(".mpeg") || name.endsWith(".mpa")
+        val aacFamily = name.endsWith(".aac") || name.endsWith(".m4a") ||
+            name.endsWith(".m4b") || name.endsWith(".mp4")
+        val notYetSupported = name.endsWith(".opus") || name.endsWith(".wma") ||
+            name.endsWith(".amr") || name.endsWith(".ac3") || name.endsWith(".dts") ||
+            name.endsWith(".wv") || name.endsWith(".ape") || name.endsWith(".mka")
+        return when {
+            mp3Family -> Mp3TrackReader(file, outputMain, outputSecond, { _volume.value }, onSecondFail, channel)
+            aacFamily -> PcmTrackReader(file, outputMain, outputSecond, { _volume.value }, onSecondFail, channel)
+            notYetSupported -> throw IllegalArgumentException(
+                "صيغة «${file.extension.lowercase()}» غير مدعومة بعد في هذه النسخة. $SUPPORTED_FORMATS_HINT"
+            )
+            else -> PcmTrackReader(file, outputMain, outputSecond, { _volume.value }, onSecondFail, channel)
         }
     }
 }

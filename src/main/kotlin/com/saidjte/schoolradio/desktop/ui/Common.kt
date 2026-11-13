@@ -269,7 +269,11 @@ object FilePickers {
         val chooser = JFileChooser()
         chooser.dialogTitle = "اختر ملفات صوتية"
         chooser.isMultiSelectionEnabled = true
-        chooser.fileFilter = FileNameExtensionFilter("ملفات صوتية (WAV / MP3)", "wav", "mp3")
+        // v0.49.0 «الصيغ المدعومة»: كل صيغ المحرك لا WAV/MP3 وحدهما
+        chooser.fileFilter = FileNameExtensionFilter(
+            "ملفات صوتية (MP3 / WAV / AAC / M4A / FLAC / OGG ...)",
+            *PLAYABLE_EXTENSIONS.toTypedArray()
+        )
         val result = chooser.showOpenDialog(null)
         return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFiles.toList() else null
     }
@@ -277,7 +281,10 @@ object FilePickers {
     fun pickSingleAudioFile(): File? {
         val chooser = JFileChooser()
         chooser.dialogTitle = "اختر ملفًا صوتيًا"
-        chooser.fileFilter = FileNameExtensionFilter("ملفات صوتية (WAV / MP3)", "wav", "mp3")
+        chooser.fileFilter = FileNameExtensionFilter(
+            "ملفات صوتية (MP3 / WAV / AAC / M4A / FLAC / OGG ...)",
+            *PLAYABLE_EXTENSIONS.toTypedArray()
+        )
         val result = chooser.showOpenDialog(null)
         return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
     }
@@ -307,8 +314,8 @@ object FilePickers {
         chooser.dialogTitle = "اختر ملفات مكتبتك الصوتية"
         chooser.isMultiSelectionEnabled = true
         chooser.fileFilter = FileNameExtensionFilter(
-            "ملفات صوتية (MP3 / WAV / OGG / FLAC)",
-            "mp3", "wav", "ogg", "oga", "flac", "aif", "aiff", "au"
+            "ملفات صوتية (MP3 / WAV / AAC / M4A / FLAC / OGG ...)",
+            *PLAYABLE_EXTENSIONS.toTypedArray()
         )
         val result = chooser.showOpenDialog(null)
         return if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFiles.toList() else null

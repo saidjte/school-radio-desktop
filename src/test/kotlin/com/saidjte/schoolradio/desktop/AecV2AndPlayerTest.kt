@@ -399,8 +399,10 @@ class AecV2AndPlayerTest {
         val dir = Files.createTempDirectory("sr-libguard-test").toFile()
         try {
             val good = File(dir, "song.mp3").apply { writeBytes(ByteArray(128)) }
-            val bad = File(dir, "voice.m4a").apply { writeBytes(ByteArray(128)) }
-            val bad2 = File(dir, "clip.wma").apply { writeBytes(ByteArray(128)) }
+            // v0.49.0: m4a أصبحت مدعومة فيتقبلها البوابة (فكّها مسؤولية القارئ
+            // برسالة صادقة إن كانت تالفًا)، وwma ما تزال غير مدعومة فتُرفض صراحة
+            val bad = File(dir, "clip.wma").apply { writeBytes(ByteArray(128)) }
+            val bad2 = File(dir, "note.opus").apply { writeBytes(ByteArray(128)) }
             val store = MusicLibraryStore(File(dir, "library.json"))
             val r = store.addFiles(listOf(good, bad, bad2), LibraryDefaults.FALLBACK_CATEGORY)
             assertEquals(1, r.added.size, "القابل للفك فقط يدخل")
@@ -419,6 +421,13 @@ class AecV2AndPlayerTest {
         assertTrue("flac" in PLAYABLE_EXTENSIONS)
         assertTrue("mp3" in PLAYABLE_EXTENSIONS)
         assertTrue("wav" in PLAYABLE_EXTENSIONS)
-        assertFalse("m4a" in PLAYABLE_EXTENSIONS, "Aac غير مدعوم — يُرفض في البوابة صراحة")
+        // v0.49.0 «الصيغ المدعومة»: عائلة AAC/M4A وMP2 دخلت القائمة فعليًا
+        assertTrue("m4a" in PLAYABLE_EXTENSIONS, "M4A مدعومة الآن بقارئها الخاص")
+        assertTrue("aac" in PLAYABLE_EXTENSIONS)
+        assertTrue("m4b" in PLAYABLE_EXTENSIONS)
+        assertTrue("mp4" in PLAYABLE_EXTENSIONS)
+        assertTrue("mp2" in PLAYABLE_EXTENSIONS)
+        assertFalse("opus" in PLAYABLE_EXTENSIONS, "OPUS ما يزال غير مدعوم — يُرفض صراحة")
+        assertFalse("wma" in PLAYABLE_EXTENSIONS, "WMA ما يزال غير مدعوم — يُرفض صراحة")
     }
 }

@@ -4237,7 +4237,8 @@ class AppViewModel {
         "wav" -> WavHeader.read(f)?.let {
             WavFileWriter.durationMsOf(it.dataBytes, it.sampleRate, it.channels, it.bitsPerSample)
         }
-        "mp3" -> Mp3Info.analyze(f)?.durationMs
+        // v0.49.0: عائلة MPEG كلها عبر Mp3Info والباقي بمسح المجرى (AAC/M4A/OGG/FLAC)
+        "mp3", "mp2", "mpga", "mpeg", "mpa" -> Mp3Info.analyze(f)?.durationMs
         else -> StreamProbe.durationMsOf(f)
     } ?: 0L
 
