@@ -2489,6 +2489,8 @@ object SelfTest {
                 // 4) لوحة شاشة على الهواء: عقد التباين المقيس كله صائم
                 check(GuiTokens.validateOnAirContrast()) { "v46 on-air contrast contract" }
                 check(GuiTokens.validateThemeLayering()) { "v46 theme layering intact" }
+                // v0.48.0: لون المحتوى الافتراضي للنوافذ المستقلة مقروء على خلفيتها وبطاقاتها
+                check(GuiTokens.validateWindowContentContrast()) { "v48 window content contrast" }
 
                 // 5) شاشة الطلاب: الجلسة المعلنة تضيء النموذج والإنهاء يعيده مطفأً
                 check(

@@ -105,4 +105,17 @@ object GuiTokens {
                 contrastRatio(0xFFE4E7EB.toInt(), SURFACE_VARIANT) >= 4.5 &&
                 contrastRatio(zoneRed, SURFACE_VARIANT) >= 3.0 &&
                 contrastRatio(zoneRed, BG) >= 3.0
+
+    /**
+     * عقد لون المحتوى الافتراضي للنوافذ المستقلة (v0.48.0 «العناوين بالأسود
+     * لا تظهر»): نافذة الطلاب وجدار الجينغل كانتا بلا غلاف Surface فكل نص
+     * بلا لون صريح — الساعة واسم المدرسة و«الاستوديو جاهز» والعنوان الضخم
+     * للفقرة الجارية و«التالية» والموسيقى وعنوان الجدار ونسبته — يرث الأسود
+     * الافتراضي على الداكن فلا يظهر. الإصلاح: غلاف Surface يثبّت onBackground
+     * لونَ محتوى للسلالة كلها. العقد: هذا اللون يظل مقروءًا على خلفية النافذة
+     * وعلى بطاقاتها فوق 4.5:1 فلو غُيّرت السمة بقيت العناوين ظاهرة.
+     */
+    fun validateWindowContentContrast(): Boolean =
+        contrastRatio(0xFFE4E7EB.toInt(), BG) >= 4.5 &&
+                contrastRatio(0xFFE4E7EB.toInt(), SURFACE_VARIANT) >= 4.5
 }

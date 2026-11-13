@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -77,7 +78,16 @@ fun JingleWallWindow(vm: AppViewModel, onClose: () -> Unit) {
     ) {
         AppTheme {
             CompositionLocalProviderRtl {
-                JingleWallContent(vm = vm, onClose = onClose)
+                // v0.48.0 «العناوين بالأسود لا تظهر»: غلاف Surface بعقد النافذة
+                // الرئيسية — عنوان «جدار الجينغل» و«صوت الجينلات» ونسبة المستوى
+                // و«موضع بانتظار التعيين» كانت ترث الأسود الافتراضي على الداكن
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                    contentColor = MaterialTheme.colorScheme.onBackground
+                ) {
+                    JingleWallContent(vm = vm, onClose = onClose)
+                }
             }
         }
     }

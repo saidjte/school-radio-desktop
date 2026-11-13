@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -85,7 +86,18 @@ fun OnAirWindow(vm: AppViewModel, onClose: () -> Unit) {
             androidx.compose.runtime.CompositionLocalProvider(
                 LocalLayoutDirection provides LayoutDirection.Rtl
             ) {
-                OnAirContent(vm = vm, onClose = onClose, onSecondary = secondary != null)
+                // v0.48.0 «العناوين بالأسود لا تظهر»: غلاف Surface بعقد النافذة
+                // الرئيسية (Main.kt) — يثبّت لون المحتوى الافتراضي للسلالة كلها
+                // فلا يرث أي نص بلا لون صريح الأسود الافتراضي على الداكن: الساعة
+                // واسم المدرسة و«الاستوديو جاهز» والعنوان الضخم للفقرة الجارية
+                // والتالية والموسيقى كلها تظهر بلون الخلفية المعاكس المقياس
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                    contentColor = MaterialTheme.colorScheme.onBackground
+                ) {
+                    OnAirContent(vm = vm, onClose = onClose, onSecondary = secondary != null)
+                }
             }
         }
     }
