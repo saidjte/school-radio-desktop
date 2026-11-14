@@ -609,16 +609,18 @@ object SelfTest {
                 for (i in direct.indices) convErr = maxOf(convErr, kotlin.math.abs(conv[i] - direct[i]))
                 check(convErr < 1e-9) { "fft convolve=$convErr" }
             }
-            // بوابة الصيغ: الملفات غير القابلة للفك لا تدخل المكتبة — تُعدّ وتُعرض
-            run {
-                val libDir = File(tmp, "libguard").apply { mkdirs() }
-                val goodWav = File(libDir, "g.wav")
-                val gw = WavFileWriter(goodWav, 8000, 1)
-                gw.write(ByteArray(1600))
-                gw.close()
-                val fakeM4a = File(libDir, "bad.m4a").apply { writeBytes(ByteArray(64)) }
-                val store = com.saidjte.schoolradio.desktop.data.MusicLibraryStore(File(tmp, "libguard.json"))
-                val r = store.addFiles(listOf(goodWav, fakeM4a), "فقرات متنوعة")
+                // بوابة الصيغ: الملفات غير القابلة للفك لا تدخل المكتبة — تُعدّ وتُعرض
+                // (v0.50.0: العيّنة الرديئة صارت .opus — كانت .m4a من عهد v0.42.0
+                // وتعاقد v0.49.0 جعل m4a مدعومة فانكسر الفحص في جرة المنشورة نفسها)
+                run {
+                    val libDir = File(tmp, "libguard").apply { mkdirs() }
+                    val goodWav = File(libDir, "g.wav")
+                    val gw = WavFileWriter(goodWav, 8000, 1)
+                    gw.write(ByteArray(1600))
+                    gw.close()
+                    val fakeOpus = File(libDir, "bad.opus").apply { writeBytes(ByteArray(64)) }
+                    val store = com.saidjte.schoolradio.desktop.data.MusicLibraryStore(File(tmp, "libguard.json"))
+                    val r = store.addFiles(listOf(goodWav, fakeOpus), "فقرات متنوعة")
                 check(r.added.size == 1 && r.skippedUnsupported == 1) {
                     "library guard ${r.added.size}/${r.skippedUnsupported}"
                 }
@@ -2540,6 +2542,41 @@ object SelfTest {
                 check(MontageLogic.masterNormalizeEffective(MontageProject())) { "v47 normalize default on" }
                 check(!MontageLogic.masterNormalizeEffective(MontageProject(masterNormalize = false))) { "v47 normalize off honored" }
             }
+
+                // ================= v0.50.0: استيراد يوتيوب — MP4 المجزّأ (SABR/HLS) =================
+                // العطل المبلَّغ عنه: «لم يُفكّ أي إطار صوتي من الملف المُحمَّل» — يوتيوب
+                // يسلم الصوت moov بجداول فارغة وعينات في moof+mdat والحاوية ترى صفرًا.
+                run {
+                    val fmp4Res = GuiTokens::class.java.classLoader.getResourceAsStream("selftest/test_tone_fmp4.m4a")?.readBytes()
+                    check(fmp4Res != null && fmp4Res.size > 10_000) { "v50 fmp4 fixture present" }
+                    val fmp4 = File(tmp, "v50-fmp4.m4a")
+                    fmp4.writeBytes(fmp4Res!!)
+                    val fmp4Out = File(tmp, "v50-fmp4.mp3")
+                    val fmp4Size = AudioTranscoder.m4aToMp3(fmp4, fmp4Out, durationSec = 3)
+                    check(fmp4Size > 10_000) { "v50 fmp4 transcode size=$fmp4Size" }
+                    val fmp4Info = Mp3Info.analyze(fmp4Out)
+                    check(fmp4Info != null && fmp4Info.durationMs in 2_700..3_400) { "v50 fmp4 duration=${fmp4Info?.durationMs}" }
+                    check(fmp4Info!!.first.sampleRate == 44_100 && fmp4Info.first.channels == 2) { "v50 fmp4 shape" }
+                    // مسار JAAD الكلاسيكي لم يُمس: النغمة الأصلية تظل تفكّ كما كانت
+                    val classicRes = GuiTokens::class.java.classLoader.getResourceAsStream("selftest/test_tone.m4a")?.readBytes()
+                    check(classicRes != null && classicRes.size > 10_000) { "v50 classic fixture present" }
+                    val classic = File(tmp, "v50-classic.m4a")
+                    classic.writeBytes(classicRes!!)
+                    val classicSize = AudioTranscoder.m4aToMp3(classic, File(tmp, "v50-classic.mp3"), durationSec = 3)
+                    check(classicSize > 10_000) { "v50 classic transcode intact size=$classicSize" }
+                    // بنية MP4 سليمة بلا إطارات ولا أجزاء → رسالة صادقة تسمّي الحقيقة
+                    val emptyRes = GuiTokens::class.java.classLoader.getResourceAsStream("selftest/test_tone_mp4_empty.m4a")?.readBytes()
+                    check(emptyRes != null && emptyRes.size > 10_000) { "v50 empty fixture present" }
+                    val emptyIn = File(tmp, "v50-empty.m4a")
+                    emptyIn.writeBytes(emptyRes!!)
+                    var v50msg = ""
+                    try {
+                        AudioTranscoder.m4aToMp3(emptyIn, File(tmp, "v50-empty.mp3"))
+                    } catch (t: IllegalStateException) {
+                        v50msg = t.message ?: ""
+                    }
+                    check(v50msg.contains("بلا إطارات")) { "v50 honest zero-frames message: $v50msg" }
+                }
 
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
