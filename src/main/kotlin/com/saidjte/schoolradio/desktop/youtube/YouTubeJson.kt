@@ -50,6 +50,72 @@ object YouTubeJson {
      */
     const val FALLBACK_FORMAT = "140/bestaudio[ext=m4a]/bestaudio/best"
 
+    /**
+     * مصدر بث مباشر مُختار من JSON الأداة (v0.51.0 «تشغيل مباشر دون تحميل»):
+     * مسار صوتي خالص يمكن فكّه محليًا حيًا — mp4a عبر fMP4 أو قائمة HLS،
+     * أو MP3 جاهز. صيغ opus/vorbis/webm تُرفض صادقًا (لا فاكّ جافا لهما).
+     */
+    data class StreamSource(
+        val url: String,
+        /** https = وسيط مباشر، وأي شيء يحوي m3u8 = قائمة HLS. */
+        val protocol: String,
+        /** امتداد الحاوية كما تسمّيها الأداة (m4a/mp4/mp3…). */
+        val ext: String,
+        val abr: Double
+    ) {
+        val isHls: Boolean get() = protocol.lowercase().contains("m3u8")
+        val isMp3: Boolean get() = ext.lowercase() == "mp3"
+    }
+
+    /**
+     * اختيار أفضل مصدر بث من JSON مقطع (مخرجات -J): مرشّحات mp4a وmp3 الصوتية
+     * الخالصة التي تملك رابطًا فعليًا، والأولوية للرابط المباشر (https) على HLS
+     * ثم لأعلى abr. يعيد null إن لم يوجد ما يفكّه المحرك — فتُعرض رسالة صادقة
+     * تقترح زر التحميل بدلًا من التشغيل المباشر.
+     */
+    fun pickStreamSource(json: String): StreamSource? = try {
+        val root = JsonParser.parseString(json).asJsonObject
+        val cands = ArrayList<StreamSource>()
+
+        fun consider(url: String?, protocol: String?, ext: String?, abr: Double) {
+            val u = url?.trim().orEmpty()
+            if (u.isEmpty()) return
+            val e = ext?.trim()?.lowercase().orEmpty()
+            val p = protocol?.trim()?.lowercase().orEmpty()
+            val codecOk = e in setOf("m4a", "mp4", "mp3", "mpga", "aac", "a4a", "m4b")
+            val protoOk = p == "https" || p == "http" || p.contains("m3u8") ||
+                    p.contains("dash_https") || p.isEmpty()
+            if (!codecOk || !protoOk) return
+            if (p == "n/a" && !u.contains("googlevideo")) return // صيغة بلا رابط فعلي
+            cands.add(StreamSource(u, p.ifEmpty { "https" }, e.ifEmpty { "m4a" }, abr))
+        }
+
+        root.get("formats")?.asJsonArrayOrNull()?.forEach { f ->
+            val o = f.asJsonObjectOrNull() ?: return@forEach
+            val acodec = o.get("acodec")?.asStringOrNull() ?: return@forEach
+            val vcodec = o.get("vcodec")?.asStringOrNull() ?: "none"
+            val audioOnly = vcodec == "none" || vcodec.isEmpty()
+            val playableCodec = acodec.startsWith("mp4a") || acodec.startsWith("mp3")
+            if (!audioOnly || !playableCodec) return@forEach
+            consider(
+                o.get("url")?.asStringOrNull(),
+                o.get("protocol")?.asStringOrNull(),
+                o.get("ext")?.asStringOrNull(),
+                o.get("abr")?.asDoubleOrNull() ?: 0.0
+            )
+        }
+        // الصيغة المطلوبة نفسها (-f) إن كانت مرشّحة — عادةً الأفضل في القائمة
+        consider(
+            root.get("url")?.asStringOrNull(),
+            root.get("protocol")?.asStringOrNull(),
+            root.get("ext")?.asStringOrNull(),
+            root.get("abr")?.asDoubleOrNull() ?: 0.0
+        )
+        cands.maxByOrNull { (if (!it.isHls) 1_000_000 else 0) + (it.abr * 1000).toInt() }
+    } catch (_: Exception) {
+        null
+    }
+
     /** تحليل JSON مقطع واحد (yt-dlp -J). يعيد null إن لم يكن مقطعًا صالحًا. */
     fun parseVideo(json: String): VideoInfo? = try {
         val root = JsonParser.parseString(json).asJsonObject
@@ -148,4 +214,10 @@ object YouTubeJson {
         if (isJsonNull) null else try { asLong } catch (_: Exception) {
             try { asDouble.toLong() } catch (_: Exception) { null }
         }
+
+    private fun com.google.gson.JsonElement.asJsonArrayOrNull(): com.google.gson.JsonArray? =
+        if (isJsonNull || !isJsonArray) null else try { asJsonArray } catch (_: Exception) { null }
+
+    private fun com.google.gson.JsonElement.asJsonObjectOrNull(): com.google.gson.JsonObject? =
+        if (isJsonNull || !isJsonObject) null else try { asJsonObject } catch (_: Exception) { null }
 }

@@ -16,6 +16,8 @@ import com.saidjte.schoolradio.desktop.audio.MontageExportFormat
 import com.saidjte.schoolradio.desktop.audio.MontageRender
 import com.saidjte.schoolradio.desktop.audio.Mp3Info
 import com.saidjte.schoolradio.desktop.audio.MusicPlayerEngine
+import com.saidjte.schoolradio.desktop.audio.StreamRef
+import com.saidjte.schoolradio.desktop.audio.StreamSpec
 import com.saidjte.schoolradio.desktop.audio.PLAYABLE_EXTENSIONS
 import com.saidjte.schoolradio.desktop.audio.RecordingEngine
 import com.saidjte.schoolradio.desktop.audio.RecordingStudio
@@ -2159,6 +2161,47 @@ class AppViewModel {
     fun youtubePending() = youtubeService.pendingDownload()
     fun setYouTubeCookies(file: File?) { youtubeService.cookiesFile = file }
     fun youtubeCookiesFile(): File? = youtubeService.cookiesFile
+
+    // ================= التشغيل المباشر من يوتيوب دون تحميل (v0.51.0) =================
+    // نظير نسخة الهاتف: الصوت يُجلب من يوتيوب حيًّا ويعمل فورًا في المشغّل
+    // الرئيسي — بلا تحميل ملف ولا تحويل ولا دخول للمكتبة، وبكل مزايا المزج.
+
+    /**
+     * بدء البث المباشر لمقطع: يجلب رابط الوسيط عبر سلسلة القنوات نفسها ثم
+     * يسليمه لمحرك الموسيقى فيبثّ فورًا — والفشل يظهر برسالته الصادقة في الحوار.
+     */
+    fun youtubeStreamPlay(video: YouTubeJson.VideoInfo) {
+        soundPreview.stop() // صوت واحد في كل لحظة — المعاينة الجارية تتوقف أولًا
+        runScope.launch(Dispatchers.IO) {
+            try {
+                val src = youtubeService.resolveStreamSource(video)
+                val ref = StreamRef(
+                    title = video.title,
+                    videoId = video.videoId,
+                    durationMs = video.durationSec * 1000L,
+                    spec = StreamSpec(
+                        url = src.url,
+                        hls = src.isHls,
+                        mp3 = src.isMp3,
+                        cookiesPath = youtubeService.cookiesFile?.absolutePath
+                    )
+                )
+                player.playStream(ref)
+                youtubeService.markStreaming(video.title)
+            } catch (t: Throwable) {
+                if (t.message != "cancel") {
+                    youtubeService.fail(t.message ?: "تعذّر بدء التشغيل المباشر من يوتيوب")
+                }
+            }
+        }
+    }
+
+    /** إيقاف البث المباشر الجاري وتصفير حالة الحوار. */
+    fun youtubeStopStream() {
+        player.stop()
+        player.awaitIdle(1500)
+        youtubeService.reset()
+    }
 
     // ================= التسجيلات + توقيع المُسجِّل =================
 

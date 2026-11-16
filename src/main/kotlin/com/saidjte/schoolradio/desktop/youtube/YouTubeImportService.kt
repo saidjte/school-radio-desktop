@@ -24,7 +24,7 @@ class YouTubeImportService(
     private val workDir: File
 ) {
 
-    enum class Phase { IDLE, RESOLVING, RESOLVED, RESULTS, PREVIEW_READY, DOWNLOADING, CONVERTING, DONE, FAILED }
+    enum class Phase { IDLE, RESOLVING, RESOLVED, RESULTS, PREVIEW_READY, DOWNLOADING, CONVERTING, STREAMING, DONE, FAILED }
 
     data class State(
         val phase: Phase = Phase.IDLE,
@@ -205,6 +205,34 @@ class YouTubeImportService(
     private fun friendlyBotWall(): String =
         YouTubeJson.describeError("sign in to confirm you're not a bot")
             ?: "يوتيوب يطلب تحقّقًا إضافيًا من شبكتك — أرفق ملف كوكيز أو جرّب شبكة أخرى."
+
+    // ================= التشغيل المباشر دون تحميل (v0.51.0) =================
+
+    /**
+     * جلب مصدر بث مباشر لمقطع عبر سلسلة القنوات نفسها (v0.51.0 «تشغيل مباشر
+     * من يوتيوب دون تحميل») — بلا تنزيل أي ملف ولا تحويل: يعيد رابط الوسيط
+     * الصوتي القابل للفك الحي (fMP4/HLS/MP3) ليشغّله المحرك الرئيسي.
+     * يرمي IllegalStateException برسالة عربية عند غياب مصدر قابل للفك.
+     */
+    fun resolveStreamSource(video: YouTubeJson.VideoInfo): YouTubeJson.StreamSource {
+        cancelFlag.set(false)
+        setState(Phase.RESOLVING, message = "جلب رابط البث المباشر من يوتيوب…")
+        val json = resolveViaChain(video.sourceUrl.ifEmpty { YouTubeUrl.watchUrl(video.videoId) })
+        if (cancelFlag.get()) throw IllegalStateException("cancel")
+        return YouTubeJson.pickStreamSource(json)
+            ?: throw IllegalStateException(
+                "لا يوجد مسار صوتي يفكّه التشغيل المباشر لهذا المقطع (opus/webm أو محجوب عن شبكتك) — " +
+                        "استخدم زر «تحميل» بدلًا منه، أو مقطعًا آخر."
+            )
+    }
+
+    /** إعلان أن البث المباشر بدأ فعليًا في المحرك الرئيسي — حالة الحوار تعكسه. */
+    fun markStreaming(videoTitle: String) {
+        setState(
+            Phase.STREAMING, percent = 100f, title = videoTitle,
+            message = "يُبثّ الآن من يوتيوب في المشغّل الرئيسي — بلا أي ملف محفوظ على القرص."
+        )
+    }
 
     // ================= المعاينة قبل التحميل (v0.44.0) =================
 

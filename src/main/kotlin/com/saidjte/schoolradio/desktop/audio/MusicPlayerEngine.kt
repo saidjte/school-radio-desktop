@@ -49,6 +49,18 @@ internal interface TrackReader : Closeable {
 }
 
 /**
+ * مرجع بث مباشر (v0.51.0 «تشغيل مباشر من يوتيوب دون تحميل») — مقطع يُشغَّل
+ * من الشبكة فورًا بلا أي ملف على القرص: عنوانه ومدته للواجهة ومواصفة البث
+ * ([StreamSpec]) للقارئ. يُفتَح عبر [MusicPlayerEngine.playStream].
+ */
+class StreamRef(
+    val title: String,
+    val videoId: String,
+    val durationMs: Long,
+    val spec: StreamSpec
+)
+
+/**
  * قناة الموسيقى في وحدة المزج: معادل الصوت خمس الشرائح + فيدر + كتم جلسي
  * + مقياس حي + الخفض التلقائي (Voice-Over) + إعطاء مرجع إلغاء الصدى.
  * حيّة لحظيًا: كل التغييرات تسري على الكتلة التالية (~26ms)
@@ -532,6 +544,10 @@ class MusicPlayerEngine {
     private val _currentFile = MutableStateFlow<File?>(null)
     val currentFile: StateFlow<File?> = _currentFile.asStateFlow()
 
+    private val _streamActive = MutableStateFlow(false)
+    /** شارة البث المباشر: المقطع الحالي يبثّ من يوتيوب بلا ملف محلي (v0.51.0). */
+    val streamActive: StateFlow<Boolean> = _streamActive.asStateFlow()
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
@@ -555,6 +571,9 @@ class MusicPlayerEngine {
     /** يُستدعى من خيط التشغيل عند انتهاء المقطع (للانتقال التلقائي). */
     var onEnded: (() -> Unit)? = null
 
+    /** يُستدعى عند انتهاء بث مباشر (v0.51.0) — بلا انتقال آلي لقائمة المكتبة. */
+    var onStreamEnded: (() -> Unit)? = null
+
     /**
      * يُستدعى عندما يفشل فتح المقطع (ملف تالف/غير مقروء) — بوابة تخطي الملفات
      * التالفة آليًا كما في نسخة الهاتف. لا يُستدعى عند الإيقاف اليدوي.
@@ -564,6 +583,7 @@ class MusicPlayerEngine {
     @Volatile private var paused = false
     @Volatile private var stopped = true
     @Volatile private var switchTo: File? = null
+    @Volatile private var switchToStream: StreamRef? = null
     @Volatile private var switchCrossfade = false
     @Volatile private var seekRequest = -1L
     @Volatile private var volumeDirty = false
@@ -635,12 +655,29 @@ class MusicPlayerEngine {
     fun play(file: File) { play(file, crossfade = false) }
 
     /**
+     * تشغيل بث مباشر من يوتيوب (v0.51.0): يلغي أي تبديل ملف معلَّق، والجاري
+     * يُوقف بلا كروس فيد — البث الآتي من الشبكة يبدأ فورًا، وشارة البث تضيء.
+     * فشل الفتح يظهر في خطأ المشغّل كمسار فشل الملفات تمامًا.
+     */
+    fun playStream(ref: StreamRef) {
+        switchTo = null
+        switchToStream = ref
+        seekRequest = -1L
+        paused = false
+        stopped = false
+        _isPaused.value = false
+        _error.value = null
+        ensureWorker()
+    }
+
+    /**
      * تشغيل ملف مع طلب كروس فيد اختياري (v0.31.0): عند `crossfade=true` ووجود
      * مقطع جارٍ بنافذة مفعّلة يُبدأ انتقال مزدوج (الخارج يخفت والداخل يصعد)
      * بدل القطع الصلب — وإلا يُنفَّذ التبديل القديم حرفيًا.
      */
     fun play(file: File, crossfade: Boolean) {
         switchTo = file
+        switchToStream = null // أي طلب بث معلَّق يُلغى — آخر أمر يفوز
         switchCrossfade = crossfade
         // سعي معلّق موجّه للمقطع القديم يُبطَل هنا — فلا يتسرب إلى المقطع
         // الجديد إن سبق العامل إلى فتحه (عقد السعي v0.27.0)
@@ -671,6 +708,7 @@ class MusicPlayerEngine {
     fun stop() {
         stopped = true
         paused = false
+        switchToStream = null
         _isPaused.value = false
     }
 
@@ -692,6 +730,7 @@ class MusicPlayerEngine {
         if (!file.isFile) return false
         restoreAtMs = positionMs.coerceAtLeast(0L)
         switchTo = file
+        switchToStream = null
         switchCrossfade = false
         seekRequest = -1L
         paused = true
@@ -746,8 +785,49 @@ class MusicPlayerEngine {
         var xMs = 0L
         var xAsked = false // سألنا عن «التالي» لهذا المقطع؟ — سؤال واحد لكل مقطع
         var wasPaused = false
+        // البث المباشر (v0.51.0): القارئ الحالي بثّ من يوتيوب؟ لهذا أثر الحالة
+        // فشارة البث ومرجع المرجع الحالي وقرار «من انتهى» تتخذ على أساسه
+        var streamNow = false
         try {
             while (!stopped) {
+                // —— تبديل إلى بث مباشر: يلغي أي معلَّق آخر ويعيد البدء فورًا ——
+                val ss = switchToStream
+                if (ss != null) {
+                    switchToStream = null
+                    try { reader?.close() } catch (_: Exception) { }
+                    if (xOut != null) {
+                        try { xOut?.close() } catch (_: Exception) { }
+                        xOut = null
+                        _xfading.value = false
+                    }
+                    reader = null
+                    wasPaused = false
+                    streamNow = false
+                    try {
+                        reader = openStreamReader(ss)
+                        streamNow = true
+                        currentStream = ss
+                        _currentFile.value = null
+                        _streamActive.value = true
+                        _title.value = ss.title
+                        _hasTrack.value = true
+                        _durationMs.value = ss.durationMs
+                        _positionMs.value = 0L
+                        _isPlaying.value = true
+                        _isPaused.value = false
+                        xAsked = false
+                        reopenOutput = false // فُتح للتو بالمخرج الحالي — لا حاجة لإعادة
+                        channel.resetEnv()
+                    } catch (t: Throwable) {
+                        reader = null
+                        currentStream = null
+                        _hasTrack.value = false
+                        _isPlaying.value = false
+                        _streamActive.value = false
+                        _error.value = t.message ?: "تعذّر بدء البث المباشر"
+                        break
+                    }
+                }
                 val sw = switchTo
                 if (sw != null) {
                     switchTo = null
@@ -759,6 +839,9 @@ class MusicPlayerEngine {
                             val nr = openReader(sw)
                             xAsked = false
                             _currentFile.value = sw
+                            streamNow = false
+                            currentStream = null
+                            _streamActive.value = false
                             _title.value = sw.nameWithoutExtension
                             _hasTrack.value = true
                             _durationMs.value = nr.durationMs
@@ -794,6 +877,9 @@ class MusicPlayerEngine {
                         try {
                             reader = openReader(sw)
                             _currentFile.value = sw
+                            streamNow = false
+                            currentStream = null
+                            _streamActive.value = false
                             _title.value = sw.nameWithoutExtension
                             _hasTrack.value = true
                             _durationMs.value = reader.durationMs
@@ -866,12 +952,13 @@ class MusicPlayerEngine {
                     reopenOutput = false
                     val cf = _currentFile.value
                     val r0 = reader
-                    if (r0 != null && cf != null) {
+                    // بث مباشر يُعاد فتحه عند الموضع نفسه أيضًا — قارئ البث يعيد اتصاله
+                    if (r0 != null && (cf != null || (streamNow && currentStream != null))) {
                         val pos = r0.currentMs
                         val wasPaused = paused
                         try { r0.close() } catch (_: Exception) { }
                         reader = try {
-                            val nr = openReader(cf)
+                            val nr = if (streamNow) openStreamReader(currentStream!!) else openReader(cf!!)
                             if (pos > 0) {
                                 try { nr.seek(pos) } catch (_: Exception) { }
                             }
@@ -884,7 +971,7 @@ class MusicPlayerEngine {
                             outputMain = null
                             outputSecond = null
                             try {
-                                val nr = openReader(cf)
+                                val nr = if (streamNow) openStreamReader(currentStream!!) else openReader(cf!!)
                                 if (pos > 0) {
                                     try { nr.seek(pos) } catch (_: Exception) { }
                                 }
@@ -954,9 +1041,15 @@ class MusicPlayerEngine {
                         if (endedDuringFade) {
                             // انتهى المقطع أثناء التلاشٍ: عقد الانتهاء نفسه في المسار الرئيسي
                             _isPlaying.value = false
-                            val cb = onEnded
-                            if (cb != null) cb()
-                            if (switchTo == null || stopped) break
+                            if (streamNow) {
+                                _streamActive.value = false
+                                val scb = onStreamEnded
+                                if (scb != null) scb()
+                            } else {
+                                val cb = onEnded
+                                if (cb != null) cb()
+                            }
+                            if (switchTo == null && switchToStream == null || stopped) break
                             continue
                         }
                     }
@@ -992,6 +1085,9 @@ class MusicPlayerEngine {
                                     val nr = openReader(nf)
                                     xAsked = false
                                     _currentFile.value = nf
+                                    streamNow = false
+                                    currentStream = null
+                                    _streamActive.value = false
                                     _title.value = nf.nameWithoutExtension
                                     _durationMs.value = nr.durationMs
                                     _positionMs.value = 0L
@@ -1017,9 +1113,17 @@ class MusicPlayerEngine {
                     }
                 } else {
                     _isPlaying.value = false
-                    val cb = onEnded
-                    if (cb != null) cb()
-                    if (switchTo == null || stopped) break
+                    if (streamNow) {
+                        // البث المباشر انتهى: بلا انتقال آلي لقائمة المكتبة — نظيف وصامت
+                        _streamActive.value = false
+                        currentStream = null
+                        val scb = onStreamEnded
+                        if (scb != null) scb()
+                    } else {
+                        val cb = onEnded
+                        if (cb != null) cb()
+                    }
+                    if (switchTo == null && switchToStream == null || stopped) break
                 }
             }
         } catch (t: Throwable) {
@@ -1036,6 +1140,8 @@ class MusicPlayerEngine {
                 _positionMs.value = 0L
                 _durationMs.value = 0L
                 _xfading.value = false
+                _streamActive.value = false
+                currentStream = null
             }
             synchronized(workerLock) { worker = null }
         }
@@ -1047,6 +1153,12 @@ class MusicPlayerEngine {
      * null دائمًا فلا يسري أثره إطلاقًا.
      */
     @Volatile internal var trackReaderOverride: ((File) -> TrackReader)? = null
+
+    /** خط حقن قارئ البث المباشر للاختبارات — نظير trackReaderOverride (v0.51.0). */
+    @Volatile internal var streamReaderOverride: ((StreamRef) -> TrackReader)? = null
+
+    /** مرجع البث الحالي — يُستخدم عند إعادة فتح المخرجات أثناء البث. */
+    @Volatile private var currentStream: StreamRef? = null
 
     /** مدتا التلاشٍ الناعم (v0.29.0): خروج 350ms عند الإيقاف المؤقت وصعود 300ms عند الاستئناف. */
     private val FADE_OUT_MS = 350L
@@ -1076,5 +1188,17 @@ class MusicPlayerEngine {
             )
             else -> PcmTrackReader(file, outputMain, outputSecond, { _volume.value }, onSecondFail, channel)
         }
+    }
+
+    /** فتح قارئ البث المباشر (v0.51.0) — بنفس مخرجات الملفات وقناة المزج نفسها. */
+    private fun openStreamReader(ref: StreamRef): TrackReader {
+        streamReaderOverride?.let { return it(ref) }
+        val onSecondFail: (Throwable) -> Unit = { t: Throwable ->
+            _error.value = "المخرج الثاني: " + AudioDevices.describeOutputFailure(t)
+        }
+        return StreamTrackReader(
+            ref.spec, ref.title, ref.durationMs,
+            outputMain, outputSecond, { _volume.value }, onSecondFail, channel
+        )
     }
 }

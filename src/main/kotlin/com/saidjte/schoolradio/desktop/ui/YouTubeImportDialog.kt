@@ -253,16 +253,28 @@ fun YouTubeImportDialog(
 
                     YouTubeImportService.Phase.RESOLVED -> {
                         st.resolved?.let { v ->
-                            VideoCard(v, previewPlayingPath == null, busy,
-                                onPreview = { vm.youtubePreview(v) },
-                                footer = {
-                                    PrimaryAction(
-                                        text = "تحميل إلى «${shortenName(category, 12)}»",
-                                        enabled = !busy,
-                                        onClick = { vm.youtubeImport(v, category) }
-                                    )
-                                }
-                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                VideoCard(v, previewPlayingPath == null, busy,
+                                    onPreview = { vm.youtubePreview(v) },
+                                    footer = {
+                                        SecondaryAction(
+                                            text = "تشغيل مباشر",
+                                            enabled = !busy,
+                                            onClick = { vm.youtubeStreamPlay(v) }
+                                        )
+                                        PrimaryAction(
+                                            text = "تحميل إلى «${shortenName(category, 12)}»",
+                                            enabled = !busy,
+                                            onClick = { vm.youtubeImport(v, category) }
+                                        )
+                                    }
+                                )
+                                Text(
+                                    "«تشغيل مباشر» يبثّ الصوت من يوتيوب فورًا في المشغّل الرئيسي دون تحميل ولا حفظ — كما في الهاتف.",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
 
@@ -310,6 +322,11 @@ fun YouTubeImportDialog(
                                         onClick = { vm.youtubePreview(v) }
                                     )
                                     SecondaryAction(
+                                        text = "مباشر",
+                                        enabled = !busy,
+                                        onClick = { vm.youtubeStreamPlay(v) }
+                                    )
+                                    SecondaryAction(
                                         text = "تحميل",
                                         enabled = !busy,
                                         onClick = { vm.youtubeImport(v, category) }
@@ -352,6 +369,34 @@ fun YouTubeImportDialog(
                                     text = "تجاهل المعاينة",
                                     enabled = !busy,
                                     onClick = { vm.youtubeDiscardPreview() }
+                                )
+                            }
+                        }
+                    }
+
+                    YouTubeImportService.Phase.STREAMING -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "يُبثّ الآن: ${st.title.ifEmpty { "مقطع يوتيوب" }}",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                st.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                SecondaryAction(
+                                    text = "إيقاف البث",
+                                    onClick = { vm.youtubeStopStream() }
+                                )
+                                PrimaryAction(
+                                    text = "تم — إغلاق",
+                                    onClick = { vm.youtubeReset(); onDismiss() }
                                 )
                             }
                         }

@@ -1,6 +1,8 @@
 package com.saidjte.schoolradio.desktop
 
 import com.saidjte.schoolradio.desktop.audio.AudioDevices
+import com.saidjte.schoolradio.desktop.audio.Fmp4StreamDemux
+import com.saidjte.schoolradio.desktop.audio.HttpAudioSource
 import com.saidjte.schoolradio.desktop.audio.JingleWallEngine
 import com.saidjte.schoolradio.desktop.audio.LevelMeter
 import com.saidjte.schoolradio.desktop.audio.MixBus
@@ -17,6 +19,7 @@ import com.saidjte.schoolradio.desktop.audio.RecordingStudio
 import com.saidjte.schoolradio.desktop.audio.TrackReader
 import com.saidjte.schoolradio.desktop.audio.WavFileWriter
 import com.saidjte.schoolradio.desktop.audio.WavHeader
+import com.saidjte.schoolradio.desktop.youtube.FragmentedMp4Aac
 import com.saidjte.schoolradio.desktop.data.CrossfadeLogic
 import com.saidjte.schoolradio.desktop.data.DevicesJson
 import com.saidjte.schoolradio.desktop.data.MeterLogic
@@ -2576,6 +2579,111 @@ object SelfTest {
                         v50msg = t.message ?: ""
                     }
                     check(v50msg.contains("بلا إطارات")) { "v50 honest zero-frames message: $v50msg" }
+                }
+
+                // ================= v0.51.0: التشغيل المباشر من يوتيوب دون تحميل =================
+                // نظير نسخة الهاتف: الصوت يُجلب حيًّا من الرابط ويُفكّ تدفقيًا بلا ملف.
+                // الفحص داخل الجرة بلا شبكة: الديمكس التدفقي على العيّنة المجزّأة
+                // يطابق الديمكس الملفي عيّنةً عيّنة، وفكّها بjaad يعطي PCM غير صامت،
+                // والتقسيم تهيئةً+أجزاءً (نمط HLS) لا يغيّره، واختيار مصدر البث
+                // يرفض opus ويختار المسار المباشر، وتحليل HLS يفهم init والأجزاء.
+                run {
+                    val bytes51 = GuiTokens::class.java.classLoader.getResourceAsStream("selftest/test_tone_fmp4.m4a")?.readBytes()
+                    check(bytes51 != null && bytes51.size > 10_000) { "v51 fixture present" }
+                    val fmp4File51 = File(tmp, "v51-fmp4.m4a")
+                    fmp4File51.writeBytes(bytes51!!)
+                    val fileScan51 = FragmentedMp4Aac.scan(fmp4File51)
+                    check(fileScan51 != null && fileScan51.samples.size > 100) { "v51 file scan=${fileScan51?.samples?.size}" }
+
+                    // 1) ديمكس تدفقي بمجرى واحد = الديمكس الملفي بايتًا ببايت + فكّ غير صامت
+                    var used1 = false
+                    val demux1 = Fmp4StreamDemux {
+                        if (used1) null else { used1 = true; java.io.ByteArrayInputStream(bytes51) }
+                    }
+                    val cfg1 = demux1.readInit()
+                    check(cfg1.asc.isNotEmpty() && cfg1.trackId == fileScan51!!.trackId) { "v51 init cfg track=${cfg1.trackId}" }
+                    val dec51 = net.sourceforge.jaad.aac.Decoder(cfg1.asc)
+                    val sb51 = net.sourceforge.jaad.aac.SampleBuffer()
+                    sb51.setBigEndian(false)
+                    var idx1 = 0
+                    var frames51 = 0
+                    var pcm51 = 0
+                    while (true) {
+                        val s = demux1.nextSample() ?: break
+                        val fs = fileScan51.samples[idx1]
+                        check(fs.size == s.size &&
+                            bytes51.copyOfRange(fs.offset.toInt(), fs.offset.toInt() + fs.size).contentEquals(s)
+                        ) { "v51 sample $idx1 mismatch" }
+                        idx1++
+                        try {
+                            dec51.decodeFrame(s, sb51)
+                            val d = sb51.getData()
+                            if (d.isNotEmpty()) { frames51++; pcm51 += d.size }
+                        } catch (_: Exception) { }
+                    }
+                    demux1.close()
+                    check(idx1 == fileScan51.samples.size) { "v51 sample count $idx1 vs ${fileScan51.samples.size}" }
+                    check(frames51 > 100 && pcm51 > 100_000) { "v51 decoded frames=$frames51 pcm=$pcm51" }
+
+                    // 2) التقسيم تهيئة+أجزاء (نمط HLS) لا يغيّر العينات
+                    val moofStarts = ArrayList<Int>()
+                    var bp = 0
+                    while (bp + 8 <= bytes51.size) {
+                        val size = ((bytes51[bp].toInt() and 0xFF) shl 24) or ((bytes51[bp + 1].toInt() and 0xFF) shl 16) or
+                                ((bytes51[bp + 2].toInt() and 0xFF) shl 8) or (bytes51[bp + 3].toInt() and 0xFF)
+                        val type = String(bytes51, bp + 4, 4, Charsets.ISO_8859_1)
+                        if (size <= 0 || bp + size > bytes51.size) break
+                        if (type == "moof") moofStarts.add(bp)
+                        bp += size
+                    }
+                    check(moofStarts.size >= 3) { "v51 segments=${moofStarts.size}" }
+                    val streams51 = ArrayList<java.io.ByteArrayInputStream>()
+                    streams51.add(java.io.ByteArrayInputStream(bytes51.copyOfRange(0, moofStarts[0])))
+                    for (k in moofStarts.indices) {
+                        val end = if (k + 1 < moofStarts.size) moofStarts[k + 1] else bytes51.size
+                        streams51.add(java.io.ByteArrayInputStream(bytes51.copyOfRange(moofStarts[k], end)))
+                    }
+                    val demux2 = Fmp4StreamDemux { streams51.removeFirstOrNull() }
+                    demux2.readInit()
+                    var idx2 = 0
+                    while (true) {
+                        val s = demux2.nextSample() ?: break
+                        val fs = fileScan51.samples[idx2]
+                        check(fs.size == s.size &&
+                            bytes51.copyOfRange(fs.offset.toInt(), fs.offset.toInt() + fs.size).contentEquals(s)
+                        ) { "v51 seg sample $idx2 mismatch" }
+                        idx2++
+                    }
+                    demux2.close()
+                    check(idx2 == fileScan51.samples.size) { "v51 seg count $idx2 vs ${fileScan51.samples.size}" }
+
+                    // 3) اختيار مصدر البث: يختار mp4a المباشر ويرفض opus صادقًا
+                    val pick51 = YouTubeJson.pickStreamSource(
+                        """{"id":"a","duration":180,"formats":[
+                            {"format_id":"249","acodec":"opus","vcodec":"none","ext":"webm","abr":50.0,"protocol":"https","url":"https://g/249"},
+                            {"format_id":"140","acodec":"mp4a.40.2","vcodec":"none","ext":"m4a","abr":129.5,"protocol":"https","url":"https://g/140"}],
+                            "url":"https://g/140","protocol":"https","ext":"m4a","abr":129.5}"""
+                    )
+                    check(pick51 != null && pick51.url == "https://g/140" && !pick51.isHls) { "v51 pick=${pick51?.url}" }
+                    check(YouTubeJson.pickStreamSource(
+                        """{"id":"b","duration":9,"formats":[{"format_id":"249","acodec":"opus","vcodec":"none","ext":"webm","abr":50.0,"protocol":"https","url":"https://g/249"}]}"""
+                    ) == null) { "v51 opus refused" }
+
+                    // 4) تحليل HLS: init وأجزاء بمواضع نسبية محلولة، وتشفير مرفوض صادقًا
+                    val pl51 = HttpAudioSource.parse(
+                        "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:10.0,\nseg0.m4s\n#EXT-X-ENDLIST\n",
+                        "http://h/p/playlist.m3u8"
+                    )
+                    check(pl51.initUri == "http://h/p/init.mp4" &&
+                        pl51.segments == listOf("http://h/p/seg0.m4s")) { "v51 hls parse=${pl51.initUri}" }
+                    var hlsThrow = false
+                    try {
+                        HttpAudioSource.parse(
+                            "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXTINF:10.0,\ns.m4s\n",
+                            "http://h/p.m3u8"
+                        )
+                    } catch (_: java.io.IOException) { hlsThrow = true }
+                    check(hlsThrow) { "v51 hls encryption refused" }
                 }
 
             println("SELFTEST OK — version $APP_VERSION")

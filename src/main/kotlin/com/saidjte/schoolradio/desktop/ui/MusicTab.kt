@@ -72,6 +72,7 @@ fun MusicTab(vm: AppViewModel) {
     val shuffle by vm.shuffle.collectAsState()
     val playerError by player.error.collectAsState()
     val playingFromLibrary by vm.playingFromLibrary.collectAsState()
+    val streamActive by player.streamActive.collectAsState()
     val playlists by vm.playlists.collectAsState()
     val activeId by vm.activePlaylistId.collectAsState()
     val activeName = playlists.firstOrNull { it.id == activeId }?.name ?: ""
@@ -165,7 +166,7 @@ fun MusicTab(vm: AppViewModel) {
                 overflow = TextOverflow.Ellipsis
             )
 
-            // شارات الحالة: بث من المكتبة + قيد التشغيل
+            // شارات الحالة: بث من المكتبة + بث يوتيوب حي + قيد التشغيل
             if (playingFromLibrary) {
                 Text(
                     "بث مباشر من المكتبة — القائمة لم تتغيّر",
@@ -175,6 +176,18 @@ fun MusicTab(vm: AppViewModel) {
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .background(MaterialTheme.colorScheme.secondaryContainer)
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
+            if (streamActive) {
+                Text(
+                    "يوتيوب — بث مباشر دون تحميل",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.tertiaryContainer)
                         .padding(horizontal = 8.dp, vertical = 3.dp)
                 )
             }
@@ -311,7 +324,8 @@ fun MusicTab(vm: AppViewModel) {
                     PrimaryAction(
                         text = "تشغيل",
                         onClick = { vm.togglePlay() },
-                        enabled = playlist.isNotEmpty(),
+                        // بث مباشر موقوف مؤقتًا يُستأنف حتى مع قائمة فارغة (v0.51.0)
+                        enabled = playlist.isNotEmpty() || hasTrack,
                         modifier = Modifier.weight(1.4f)
                     )
                 }
