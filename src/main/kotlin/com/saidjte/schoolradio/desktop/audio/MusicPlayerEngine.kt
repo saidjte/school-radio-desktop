@@ -171,13 +171,15 @@ class MusicChannel internal constructor() {
  * قارئ MP3 عبر JLayer: فك إطارًا بإطار مع بحث زمني بإعادة الفتح والعدّ السريع.
  * الكتابة في PcmOutLine — وحيد أو مزدوج (مخرجان معًا) دون أن يعرف القارئ الفرق.
  */
-private class Mp3TrackReader(
+internal class Mp3TrackReader(
     private val file: File,
     outMain: Mixer.Info?,
     outSecond: Mixer.Info?,
     volume: () -> Float,
     onSecondOutFailed: ((Throwable) -> Unit)? = null,
-    private val channel: MusicChannel
+    private val channel: MusicChannel,
+    /** فتح الخط المُحقَن (للاختبارات والفحص الذاتي) — null = مخرجات النظام. */
+    private val outLineFactory: ((AudioFormat) -> PcmOutLine)? = null
 ) : TrackReader {
 
     private val info = Mp3Info.analyze(file)
@@ -230,7 +232,8 @@ private class Mp3TrackReader(
         stream = BufferedInputStream(FileInputStream(file), 1 shl 16)
         Mp3Info.skipId3v2(stream)
         bitstream = Bitstream(stream)
-        out = AudioDevices.openOutLine(outMain, outSecond, format, onSecondOutFailed)
+        out = outLineFactory?.invoke(format)
+            ?: AudioDevices.openOutLine(outMain, outSecond, format, onSecondOutFailed)
         out.open(format, 16 * 1024)
         out.start()
         out.setVolume(volume())
@@ -344,13 +347,15 @@ private class Mp3TrackReader(
  * قارئ PCM (WAV/AIFF/AU وOGG وFLAC عبر قرّاء صريحين) مع تحويل إلى PCM 16-bit عند الحاجة.
  * الكتابة في PcmOutLine — وحيد أو مزدوج (مخرجان معًا).
  */
-private class PcmTrackReader(
+internal class PcmTrackReader(
     private val file: File,
     outMain: Mixer.Info?,
     outSecond: Mixer.Info?,
     volume: () -> Float,
     onSecondOutFailed: ((Throwable) -> Unit)? = null,
-    private val channel: MusicChannel
+    private val channel: MusicChannel,
+    /** فتح الخط المُحقَن (للاختبارات والفحص الذاتي) — null = مخرجات النظام. */
+    private val outLineFactory: ((AudioFormat) -> PcmOutLine)? = null
 ) : TrackReader {
 
     private var ais: AudioInputStream
@@ -398,7 +403,8 @@ private class PcmTrackReader(
             else -> ExtraDuration.durationMsOf(file).coerceAtLeast(0L)
         }
 
-        out = AudioDevices.openOutLine(outMain, outSecond, pcmFormat, onSecondOutFailed)
+        out = outLineFactory?.invoke(pcmFormat)
+            ?: AudioDevices.openOutLine(outMain, outSecond, pcmFormat, onSecondOutFailed)
         out.open(pcmFormat, 16 * 1024)
         out.start()
         out.setVolume(volume())
@@ -992,6 +998,16 @@ class MusicPlayerEngine {
                 if (sq >= 0) {
                     seekRequest = -1L
                     try { r.seek(sq) } catch (_: Exception) { }
+                    // عقد التنقل اليدوي (v0.52.0 «التنقل في المقطع ينتقل للمقطع الموالي»):
+                    // السعي نيّة صريحة للبقاء في هذا المقطع عند الموضع المطلوب — فلا
+                    // يبدأ تمشيط آلي لحظة السعي نفسه إن وقع الموضع داخل النافذة الأخيرة
+                    // (كان المتبقي ≤ النافذة فيولّد الانتقال فورًا فيبدو أن التنقل
+                    // «ينتقل للمقطع الموالي»). التمشيط يُعاد تسليحه فقط حين يبقى مدى
+                    // كافٍ خارج النافذة — فيصل للنافذة وصولًا طبيعيًا لا مُستَدعًى بالسعي —
+                    // والسعي داخل النافذة يعني نهايةً صلبة عند نهاية المقطع فعليًا
+                    // بعقد الانتهاء الطبيعي (onEnded) بلا قفزة مبكرة.
+                    xAsked = crossfadeMs > 0L && r.durationMs > 0L &&
+                        CrossfadeLogic.shouldTrigger(r.durationMs - r.currentMs, crossfadeMs)
                     // ترسيخ العرض على موضع القارئ الفعلي بعد تنفيذ السعي —
                     // وهذا ما يجعل السعي أثناء الإيقاف المؤقت يُظهر الموضع الجديد
                     // فورًا بدل الارتداد للقديم. وإن ورد سعي أحدث قبل الاكتمال
