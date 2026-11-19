@@ -195,7 +195,8 @@ internal class Mp3TrackReader(
     private val out: PcmOutLine
     private var stream: BufferedInputStream
     private var bitstream: Bitstream
-    private val decoder = Decoder()
+    // v0.53.0: المفكك متغيّر — السعي البايتي يستلزم مفككًا جديدًا (انظر seek)
+    private var decoder = Decoder()
     private var framesDone = 0L
     private var currentMsValue = 0L
 
@@ -274,27 +275,22 @@ internal class Mp3TrackReader(
         val i = info
         val f = fh ?: return
         val target = ms.coerceIn(0L, durationMs)
-        try { bitstream.close() } catch (_: Exception) { }
-        try { stream.close() } catch (_: Exception) { }
 
-        val s = BufferedInputStream(FileInputStream(file), 1 shl 16)
-        stream = s
-        Mp3Info.skipId3v2(s)
-
+        val toc = i?.toc
+        val dataBytes = i?.dataBytes?.coerceAtLeast(0L) ?: 0L
         // موضع البايت وزمن المرساة قبل العدّ الدقيق للإطارات:
         // - جدول Xing المئوي (VBR موسوم): مواضع بايتات لكل 1% زمني — أدق المسارات
         // - متوسط معدل البت الفعلي (VBR دون جدول): من حجم البيانات والمدة
         // - معدل الإطار الأول (CBR): التحويل الخطي مباشرةً
         // - بلا ترويسة تحليلية (v0.49.0): متوسط فعلي من حجم الملف والمدة المعدودة
+        val jumpBytes: Long
         val jumpMs: Long
-        val toc = i?.toc
-        val dataBytes = i?.dataBytes?.coerceAtLeast(0L) ?: 0L
         if (toc != null && toc.size >= 100 && durationMs > 0 && dataBytes > 0) {
             val frac = ((target - 500L).coerceAtLeast(0L)).toFloat() / durationMs.toFloat()
             val idx = (frac * 100).toInt().coerceIn(0, 99)
             val byteFrac = (toc[idx].toInt() and 0xFF) / 255f
+            jumpBytes = (byteFrac * dataBytes).toLong()
             jumpMs = idx.toLong() * durationMs / 100L
-            skipBytes(s, (byteFrac * dataBytes).toLong())
         } else {
             val avgKbps = when {
                 i != null && i.isVbr && durationMs > 0 && dataBytes > 0 ->
@@ -303,21 +299,55 @@ internal class Mp3TrackReader(
                 else -> ((file.length() * 8L) / durationMs.coerceAtLeast(1L)).toInt().coerceAtLeast(1)
             }
             jumpMs = (target - 1500L).coerceAtLeast(0L)
-            skipBytes(s, jumpMs * avgKbps / 8L)
+            jumpBytes = jumpMs * avgKbps / 8L
         }
-        bitstream = Bitstream(s)
 
-        // عدّ سريع للإطارات (دون فك) حتى الموضع المطلوب
+        // v0.53.0 «السعي داخل المقطع يتسبب بتوقف المشغل وتوقف الموسيقى»:
+        // عقد عدم التزامن — مجال القفزة البايتية غير موثوق (VDR بلا جدول
+        // يُقدَّر بترويسة الإطار الأول الأعلى من متوسطه الفعلي، وdataBytes يحسب
+        // البقايا التالية — غلاف/وسوم ملاحقة — صوتًا) فتقع القفزة بعد الإطار
+        // الأخير أو داخل الفخامة، فتنكسر حلقة العدّ عند أول readFrame()=null
+        // ويبقى القارئ عند EOF وهو يزعم أنه عند الهدف — فأول readChunk تعيد
+        // نهاية مقطع كاذبة والمحرك يوقف الموسيقى وسط المقطع. العلاج داخل
+        // القارئ نفسه: إن لم يجد Bitstream إطارًا واحدًا عند موضع القفزة
+        // يتراجع بالبايت (‎×⅞ ثم ×¾ ثم ×½ ثم ×¼ ثم الصفر) ويعيد المحاولة حتى
+        // مزامنة أول إطار، ثم يمشي سريعًا إلى الهدف — والمرساة الزمنية متناقصة
+        // مع البايتات فالموضع النهائي صادق دائمًا (والمسح من الصفر يكشف نهاية
+        // الصوت الفعلية بصدق إن كانت المدة المعلنة متضخمة).
         var count = 0L
-        while (true) {
-            val h = try { bitstream.readFrame() } catch (_: Exception) { null } ?: break
-            val t = jumpMs + count * f.samplesPerFrame * 1000L / f.sampleRate
-            if (t >= target) break
-            count++
-            try { bitstream.closeFrame() } catch (_: Exception) { }
+        var anchorMs = jumpMs
+        for (fac in floatArrayOf(1f, 0.875f, 0.75f, 0.5f, 0.25f, 0f)) {
+            try { bitstream.close() } catch (_: Exception) { }
+            try { stream.close() } catch (_: Exception) { }
+            val s = BufferedInputStream(FileInputStream(file), 1 shl 16)
+            stream = s
+            Mp3Info.skipId3v2(s)
+            skipBytes(s, (jumpBytes * fac).toLong())
+            anchorMs = (jumpMs * fac).toLong()
+            bitstream = Bitstream(s)
+            count = 0L
+            var reached = false
+            while (true) {
+                val h = try { bitstream.readFrame() } catch (_: Exception) { null }
+                if (h == null) break
+                val t = anchorMs + count * f.samplesPerFrame * 1000L / f.sampleRate
+                if (t >= target) { reached = true; break }
+                count++
+                try { bitstream.closeFrame() } catch (_: Exception) { }
+            }
+            if (reached || fac == 0f) break
         }
-        framesDone = jumpMs * f.sampleRate / (f.samplesPerFrame * 1000L) + count
-        currentMsValue = jumpMs + count * f.samplesPerFrame * 1000L / f.sampleRate
+        framesDone = anchorMs * f.sampleRate / (f.samplesPerFrame * 1000L) + count
+        currentMsValue = anchorMs + count * f.samplesPerFrame * 1000L / f.sampleRate
+        // الجذر الثاني المُثبَت بالمسبار (هذا هو مسار المستخدم الفعلي: شغّل ثم
+        // اسحب): مفكك جافازوم حامل لحالة عبر الإطارات — خزان البِت Layer III
+        // (main_data يشير لبقايا الإطارات السابقة) ومركّب التوليف — فبعد قفزة
+        // بايتية يُغذّى الخزان ببقايا قديمة فتنكسر كتلة فكّ إطار بعد إطار صامتة
+        // («إطار تالف: نتجاوزه» بلا تقدم في الموضع) حتى يفقد Bitstream التزامن
+        // فيعيد readChunk نهاية كاذبة والموسيقى تصمت وسط المقطع. المفكك الجديد
+        // يجعل الخزان والتوليف يبدآن نظيفين من موضع السعي — وهو نفسه ما تفعله
+        // كل مشغلات MP3 عند القفز (المفكك يُبنى من جديد لا يُعاد تدويره).
+        decoder = Decoder()
         out.flush()
     }
 

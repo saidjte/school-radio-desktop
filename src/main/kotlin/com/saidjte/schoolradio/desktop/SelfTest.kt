@@ -2697,116 +2697,201 @@ object SelfTest {
                 // قرّاء حقيقيون يسعون وسط المقطع ويكملون بلا انقطاع مبكر (خط ذاكرة
                 // مُحقَن)، والمحرك: سعي داخل النافذة لا يولّد انتقالًا، ورجوع خارجها
                 // يعيد تسليحه فيصل النافذة وصولًا طبيعيًا لا مُستَدعًى بالسعي.
-                run {
-                    class MemLine : PcmOutLine {
-                        var bytes = 0L
-                        override fun open(format: javax.sound.sampled.AudioFormat, bufferSize: Int) { }
-                        override fun start() { }
-                        override fun stop() { }
-                        override fun flush() { }
-                        override fun write(b: ByteArray, off: Int, len: Int) { bytes += len }
-                        override fun setVolume(v: Float) { }
-                        override fun close() { }
-                    }
+                selftestV52(tmp)
 
-                    // 1) M4A حقيقية: سعي إلى المنتصف ثم إكمال طبيعي
-                    val m4aRes = GuiTokens::class.java.classLoader.getResourceAsStream("selftest/test_tone.m4a")?.readBytes()
-                    check(m4aRes != null && m4aRes.size > 10_000) { "v52 m4a fixture present" }
-                    val m4a52 = File(tmp, "v52-tone.m4a")
-                    m4a52.writeBytes(m4aRes!!)
-                    val rm4a = PcmTrackReader(m4a52, null, null, { 1f }, null, MusicChannel(), outLineFactory = { MemLine() })
-                    try {
-                        check(rm4a.durationMs > 1_000) { "v52 m4a duration=${rm4a.durationMs}" }
-                        rm4a.seek(rm4a.durationMs / 2)
-                        check(rm4a.readChunk()) { "v52 m4a continues after mid seek" }
-                        check(rm4a.currentMs >= rm4a.durationMs / 2 - 100) { "v52 m4a position=${rm4a.currentMs}" }
-                        var g = 0
-                        while (rm4a.readChunk() && g < 500_000) g++
-                        check(rm4a.currentMs >= rm4a.durationMs - 2_000) { "v52 m4a natural end=${rm4a.currentMs}" }
-                    } finally { rm4a.close() }
-
-                    // 2) MP3 مدمج (جينل): سعي إلى المنتصف ثم إكمال
-                    val mp3Res = GuiTokens::class.java.classLoader.getResourceAsStream("jingles/quick_marker.mp3")?.readBytes()
-                    check(mp3Res != null && mp3Res.size > 1_000) { "v52 mp3 fixture present" }
-                    val mp352 = File(tmp, "v52-marker.mp3")
-                    mp352.writeBytes(mp3Res!!)
-                    val rmp3 = Mp3TrackReader(mp352, null, null, { 1f }, null, MusicChannel(), outLineFactory = { MemLine() })
-                    try {
-                        check(rmp3.durationMs > 500) { "v52 mp3 duration=${rmp3.durationMs}" }
-                        rmp3.seek(rmp3.durationMs / 2)
-                        check(rmp3.readChunk()) { "v52 mp3 continues after mid seek" }
-                        check(rmp3.currentMs >= rmp3.durationMs / 2 - 100) { "v52 mp3 position=${rmp3.currentMs}" }
-                    } finally { rmp3.close() }
-
-                    // 3) عقد المحرك: سعي داخل النافذة لا ينتقل — ورجوع خارجها يعيد التسليح
-                    class Fake52(
-                        override val durationMs: Long,
-                        private val chunkMs: Long = 500L
-                    ) : TrackReader {
-                        @Volatile var chunksToRun = 0L
-                        @Volatile var chunks = 0L
-                        @Volatile var current = 0L
-                        var closed = false
-                        override val currentMs: Long get() = current
-                        override fun seek(ms: Long) { current = ms.coerceIn(0, durationMs) }
-                        override fun pause() { }
-                        override fun resume() { }
-                        override fun applyVolume(volume: Float) { }
-                        override fun readChunk(): Boolean {
-                            chunks++
-                            if (chunksToRun <= 0L) { Thread.sleep(3); return true }
-                            chunksToRun--
-                            current += chunkMs
-                            return current < durationMs
-                        }
-                        override fun close() { closed = true }
-                    }
-                    val fa = Fake52(20_000L)
-                    val fb = Fake52(20_000L)
-                    val eng = MusicPlayerEngine()
-                    eng.crossfadeMs = 3_000L
-                    val fileA = File("a.mp3")
-                    val fileB = File("b.mp3")
-                    eng.trackReaderOverride = { if (it == fileA) fa else fb }
-                    var crossfadeAsked = false
-                    eng.onCrossfadeNext = { crossfadeAsked = true; fileB }
-                    try {
-                        eng.play(fileA)
-                        var d = System.currentTimeMillis() + 5_000
-                        while (System.currentTimeMillis() < d && !eng.hasTrack.value) Thread.sleep(10)
-                        check(eng.hasTrack.value) { "v52 engine loaded A" }
-                        eng.seek(18_500L) // داخل النافذة (متبقٍ 1.5ث ≤ 3ث) — كان يولّد الانتقال
-                        d = System.currentTimeMillis() + 5_000
-                        while (System.currentTimeMillis() < d && fa.current < 18_500L) Thread.sleep(10)
-                        // كتلتان فقط: 19_500 < المدة فيبقى العامل حيًّا للسعي التالي —
-                        // وكتلة واحدة كانت تكفي قبل الإصلاح لإطلاق النافذة
-                        fa.chunksToRun = 2
-                        Thread.sleep(400)
-                        check(eng.title.value == "a" && !crossfadeAsked && !eng.xfading.value) {
-                            "v52 seek inside window must NOT transition (title=${eng.title.value} asked=$crossfadeAsked)"
-                        }
-                        eng.seek(5_000L) // رجوع خارج النافذة — يعيد التسليح
-                        d = System.currentTimeMillis() + 5_000
-                        while (System.currentTimeMillis() < d && fa.current < 5_000L) Thread.sleep(10)
-                        fa.chunksToRun = 40 // يتقدم طبيعيًا حتى يدخل النافذة وصولًا طبيعيًا
-                        d = System.currentTimeMillis() + 8_000
-                        while (System.currentTimeMillis() < d && !(crossfadeAsked && eng.title.value == "b")) Thread.sleep(10)
-                        check(crossfadeAsked && eng.title.value == "b") {
-                            "v52 seek back out must re-arm crossfade (asked=$crossfadeAsked title=${eng.title.value})"
-                        }
-                        check(fa.current >= 17_000L) { "v52 window fired near natural end: ${fa.current}" }
-                    } finally {
-                        eng.trackReaderOverride = null
-                        eng.onCrossfadeNext = null
-                        eng.stop()
-                        eng.awaitIdle()
-                    }
-                }
+                // ================= v0.53.0: عقد السعي الواقعي — فكّ ثم سعي ثم فكّ متواصل =================
+                // البلاغ: «السعي داخل المقطع الموسيقي يتسبب بتوقف المشغل. و توقف الموسيقى» —
+                // الجذر السائد المُثبَت بالمسبار: مفكك MPEG حامل لحالة (خزان بِت Layer III
+                // ومركّب التوليف) — بعد السعيد البايتي يُغذّى الخزان ببقايا قديمة فتنكسر
+                // كتلة الفك صامتة حتى فقدان التزامن ونهاية كاذبة وتوقف المحرك وسط المقطع.
+                // الإصلاح: مفكك جديد عند كل سعيد + عقد عدم التزامن (تراجع بايتي حتى أول
+                // إطار إن لم تجد القفزة شيئًا). العقد هنا بلا شبكة ودون عتاد صوت:
+                // فكّ فعلي ثم سعيد عميق 85% ثم فكّ متواصل حتى النهاية الطبيعية — لا
+                // تجميد ولا فشل صامت — والمحرك: سعيد عميق في مقطع مفرد ينتهي عند المدة
+                // الكاملة لا توقفًا وسطها.
+                selftestV53(tmp)
 
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
             tmp.listFiles()?.forEach { it.delete() }
             tmp.delete()
         }
+    }
+
+    /** كتلة فحص v0.52 (عقد التنقل اليدوي) — مستخرجة لإبقاء run() تحت حد JVM 64KB */
+    private fun selftestV52(tmp: File) {
+                class MemLine : PcmOutLine {
+                    var bytes = 0L
+                    override fun open(format: javax.sound.sampled.AudioFormat, bufferSize: Int) { }
+                    override fun start() { }
+                    override fun stop() { }
+                    override fun flush() { }
+                    override fun write(b: ByteArray, off: Int, len: Int) { bytes += len }
+                    override fun setVolume(v: Float) { }
+                    override fun close() { }
+                }
+
+                // 1) M4A حقيقية: سعي إلى المنتصف ثم إكمال طبيعي
+                val m4aRes = GuiTokens::class.java.classLoader.getResourceAsStream("selftest/test_tone.m4a")?.readBytes()
+                check(m4aRes != null && m4aRes.size > 10_000) { "v52 m4a fixture present" }
+                val m4a52 = File(tmp, "v52-tone.m4a")
+                m4a52.writeBytes(m4aRes!!)
+                val rm4a = PcmTrackReader(m4a52, null, null, { 1f }, null, MusicChannel(), outLineFactory = { MemLine() })
+                try {
+                    check(rm4a.durationMs > 1_000) { "v52 m4a duration=${rm4a.durationMs}" }
+                    rm4a.seek(rm4a.durationMs / 2)
+                    check(rm4a.readChunk()) { "v52 m4a continues after mid seek" }
+                    check(rm4a.currentMs >= rm4a.durationMs / 2 - 100) { "v52 m4a position=${rm4a.currentMs}" }
+                    var g = 0
+                    while (rm4a.readChunk() && g < 500_000) g++
+                    check(rm4a.currentMs >= rm4a.durationMs - 2_000) { "v52 m4a natural end=${rm4a.currentMs}" }
+                } finally { rm4a.close() }
+
+                // 2) MP3 مدمج (جينل): سعي إلى المنتصف ثم إكمال
+                val mp3Res = GuiTokens::class.java.classLoader.getResourceAsStream("jingles/quick_marker.mp3")?.readBytes()
+                check(mp3Res != null && mp3Res.size > 1_000) { "v52 mp3 fixture present" }
+                val mp352 = File(tmp, "v52-marker.mp3")
+                mp352.writeBytes(mp3Res!!)
+                val rmp3 = Mp3TrackReader(mp352, null, null, { 1f }, null, MusicChannel(), outLineFactory = { MemLine() })
+                try {
+                    check(rmp3.durationMs > 500) { "v52 mp3 duration=${rmp3.durationMs}" }
+                    rmp3.seek(rmp3.durationMs / 2)
+                    check(rmp3.readChunk()) { "v52 mp3 continues after mid seek" }
+                    check(rmp3.currentMs >= rmp3.durationMs / 2 - 100) { "v52 mp3 position=${rmp3.currentMs}" }
+                } finally { rmp3.close() }
+
+                // 3) عقد المحرك: سعي داخل النافذة لا ينتقل — ورجوع خارجها يعيد التسليح
+                class Fake52(
+                    override val durationMs: Long,
+                    private val chunkMs: Long = 500L
+                ) : TrackReader {
+                    @Volatile var chunksToRun = 0L
+                    @Volatile var chunks = 0L
+                    @Volatile var current = 0L
+                    var closed = false
+                    override val currentMs: Long get() = current
+                    override fun seek(ms: Long) { current = ms.coerceIn(0, durationMs) }
+                    override fun pause() { }
+                    override fun resume() { }
+                    override fun applyVolume(volume: Float) { }
+                    override fun readChunk(): Boolean {
+                        chunks++
+                        if (chunksToRun <= 0L) { Thread.sleep(3); return true }
+                        chunksToRun--
+                        current += chunkMs
+                        return current < durationMs
+                    }
+                    override fun close() { closed = true }
+                }
+                val fa = Fake52(20_000L)
+                val fb = Fake52(20_000L)
+                val eng = MusicPlayerEngine()
+                eng.crossfadeMs = 3_000L
+                val fileA = File("a.mp3")
+                val fileB = File("b.mp3")
+                eng.trackReaderOverride = { if (it == fileA) fa else fb }
+                var crossfadeAsked = false
+                eng.onCrossfadeNext = { crossfadeAsked = true; fileB }
+                try {
+                    eng.play(fileA)
+                    var d = System.currentTimeMillis() + 5_000
+                    while (System.currentTimeMillis() < d && !eng.hasTrack.value) Thread.sleep(10)
+                    check(eng.hasTrack.value) { "v52 engine loaded A" }
+                    eng.seek(18_500L) // داخل النافذة (متبقٍ 1.5ث ≤ 3ث) — كان يولّد الانتقال
+                    d = System.currentTimeMillis() + 5_000
+                    while (System.currentTimeMillis() < d && fa.current < 18_500L) Thread.sleep(10)
+                    // كتلتان فقط: 19_500 < المدة فيبقى العامل حيًّا للسعي التالي —
+                    // وكتلة واحدة كانت تكفي قبل الإصلاح لإطلاق النافذة
+                    fa.chunksToRun = 2
+                    Thread.sleep(400)
+                    check(eng.title.value == "a" && !crossfadeAsked && !eng.xfading.value) {
+                        "v52 seek inside window must NOT transition (title=${eng.title.value} asked=$crossfadeAsked)"
+                    }
+                    eng.seek(5_000L) // رجوع خارج النافذة — يعيد التسليح
+                    d = System.currentTimeMillis() + 5_000
+                    while (System.currentTimeMillis() < d && fa.current < 5_000L) Thread.sleep(10)
+                    fa.chunksToRun = 40 // يتقدم طبيعيًا حتى يدخل النافذة وصولًا طبيعيًا
+                    d = System.currentTimeMillis() + 8_000
+                    while (System.currentTimeMillis() < d && !(crossfadeAsked && eng.title.value == "b")) Thread.sleep(10)
+                    check(crossfadeAsked && eng.title.value == "b") {
+                        "v52 seek back out must re-arm crossfade (asked=$crossfadeAsked title=${eng.title.value})"
+                    }
+                    check(fa.current >= 17_000L) { "v52 window fired near natural end: ${fa.current}" }
+                } finally {
+                    eng.trackReaderOverride = null
+                    eng.onCrossfadeNext = null
+                    eng.stop()
+                    eng.awaitIdle()
+                }
+    }
+
+    /** كتلة فحص v0.53 (عقد السعي الواقعي: فكّ ثم سعي ثم فكّ متواصل) */
+    private fun selftestV53(tmp: File) {
+                class MemLine53 : PcmOutLine {
+                    override fun open(format: javax.sound.sampled.AudioFormat, bufferSize: Int) { }
+                    override fun start() { }
+                    override fun stop() { }
+                    override fun flush() { }
+                    override fun write(b: ByteArray, off: Int, len: Int) { }
+                    override fun setVolume(v: Float) { }
+                    override fun close() { }
+                }
+
+                // 1) القارئ الحقيقي على عيّنة VDR بلا Xing مدمجة: فكّ ثم سعي ثم فكّ متواصل
+                val v53res = GuiTokens::class.java.classLoader.getResourceAsStream("selftest/mp3_vbr_noxing.mp3")?.readBytes()
+                check(v53res != null && v53res.size > 100_000) { "v53 fixture present" }
+                val mp353 = File(tmp, "v53-nosing.mp3")
+                mp353.writeBytes(v53res!!)
+                val r53 = Mp3TrackReader(mp353, null, null, { 1f }, null, MusicChannel(), outLineFactory = { MemLine53() })
+                try {
+                    check(r53.durationMs > 10_000) { "v53 duration=${r53.durationMs}" }
+                    var n53 = 0
+                    while (n53 < 10 && r53.readChunk()) n53++ // فك فعلي قبل السعي — مسار المستخدم
+                    check(n53 == 10) { "v53 pre-seek decode=$n53" }
+                    r53.seek(r53.durationMs * 85L / 100L)
+                    var stalls = 0
+                    var prev = -1L
+                    var g53 = 0
+                    while (r53.readChunk() && g53 < 200_000) {
+                        g53++
+                        val p = r53.currentMs
+                        stalls = if (p == prev) stalls + 1 else 0
+                        prev = p
+                        check(stalls < 10) { "v53 decode stalls after seek at $p" }
+                    }
+                    check(r53.currentMs >= r53.durationMs - 3_000) {
+                        "v53 natural end after decode-then-seek: ${r53.currentMs}/${r53.durationMs}"
+                    }
+                } finally { r53.close() }
+
+                // 2) المحرك: سعيد عميق في مقطع مفرد ⇒ نهاية عند المدة الكاملة (لا توقف وسطها)
+                val eng53 = MusicPlayerEngine()
+                eng53.crossfadeMs = 3_000L
+                eng53.trackReaderOverride = { file53 ->
+                    Mp3TrackReader(file53, null, null, { 1f }, null, MusicChannel(), outLineFactory = { MemLine53() })
+                }
+                var ended53 = false
+                eng53.onEnded = { ended53 = true }
+                try {
+                    eng53.play(mp353)
+                    var d53 = System.currentTimeMillis() + 5_000
+                    while (System.currentTimeMillis() < d53 && !(eng53.hasTrack.value && eng53.isPlaying.value)) Thread.sleep(10)
+                    check(eng53.hasTrack.value && eng53.isPlaying.value) { "v53 engine loaded" }
+                    val dur53 = eng53.durationMs.value
+                    check(dur53 > 10_000) { "v53 engine duration=$dur53" }
+                    eng53.seek(dur53 * 85L / 100L)
+                    d53 = System.currentTimeMillis() + 5_000
+                    while (System.currentTimeMillis() < d53 && eng53.positionMs.value < dur53 * 85L / 100L - 2_500L) Thread.sleep(10)
+                    d53 = System.currentTimeMillis() + 10_000
+                    while (System.currentTimeMillis() < d53 && eng53.isPlaying.value) Thread.sleep(10)
+                    check(ended53 && eng53.positionMs.value >= dur53 - 1_000) {
+                        "v53 engine natural end after deep seek: pos=${eng53.positionMs.value}/$dur53 ended=$ended53"
+                    }
+                } finally {
+                    eng53.trackReaderOverride = null
+                    eng53.onEnded = null
+                    eng53.stop()
+                    eng53.awaitIdle()
+                }
     }
 }
