@@ -544,7 +544,7 @@ private fun VideoThumb(videoId: String) {
     }
 }
 
-/** بطاقة المقطع المجلوب من رابط: العنوان والقناة والمدة + زرا المعاينة والتحميل. */
+/** بطاقة المقطع المجلوب من رابط مباشر (v0.55.0): الغلاف والعنوان والقناة والمدة + زرا المعاينة والتحميل. */
 @Composable
 private fun VideoCard(
     v: com.saidjte.schoolradio.desktop.youtube.YouTubeJson.VideoInfo,
@@ -561,21 +561,35 @@ private fun VideoCard(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Text(
-            v.title,
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.Bold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            listOfNotNull(
-                v.uploader,
-                YouTubeUrl.formatDuration(v.durationSec).takeIf { it.isNotEmpty() }
-            ).joinToString(" · ").ifEmpty { "مقطع يوتيوب" },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        // غلاف الفيديو في بطاقة الرابط المباشر (v0.55.0) — نفس نظام نتائج
+        // البحث وذاكرته المشتركة: معرّف واحد ⇒ جلب واحد في الحوار كله،
+        // وروابط المواقع غير اليوتيوبية تبقى سليمة ببدل موسيقي بلا شبكة.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            VideoThumb(v.videoId)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    v.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    listOfNotNull(
+                        v.uploader,
+                        YouTubeUrl.formatDuration(v.durationSec).takeIf { it.isNotEmpty() }
+                    ).joinToString(" · ").ifEmpty { "مقطع يوتيوب" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
         if (onPreview != null) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SecondaryAction(text = "معاينة", enabled = previewIdle && !busy, onClick = onPreview)

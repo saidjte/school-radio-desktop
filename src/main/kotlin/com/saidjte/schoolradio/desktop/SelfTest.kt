@@ -2720,6 +2720,12 @@ object SelfTest {
                 // والفكّ skia الحقيقي داخل الجرة نفسها.
                 selftestV54()
 
+                // ============ v0.55.0: غلاف بطاقة الرابط المباشر إلى يوتيوب ============
+                // طلب: «اضفها في نتائج الرابط المباشر الى اليوتيوب» — بطاقة المقطع
+                // المجلوب من لصق رابط مباشر تعرض الغلاف بنفس نظام نتائج البحث
+                // وذاكرته المشتركة، وكل مقطع محلول من رابط يُشتق غلافًا من معرّفه.
+                selftestV55()
+
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
             tmp.listFiles()?.forEach { it.delete() }
@@ -2930,6 +2936,18 @@ object SelfTest {
             check(results.size == 1 && YouTubeThumbs.thumbUrl(results[0].videoId) != null) { "v54 search result derivable" }
         } finally {
             YouTubeThumbs.fetcher = realFetcher
+        }
+    }
+
+    /** كتلة فحص v0.55 (غلاف بطاقة الرابط المباشر: كل مقطع محلول من رابط يُشتق غلافًا) */
+    private fun selftestV55() {
+        val v = YouTubeJson.parseVideo(
+            """{"id":"v55selftest01","title":"من رابط مباشر","duration":120,
+                "webpage_url":"https://www.youtube.com/watch?v=v55selftest01"}"""
+        )
+        check(v != null && v.videoId == "v55selftest01") { "v55 parseVideo from direct url" }
+        check(YouTubeThumbs.thumbUrl(v.videoId) == "https://i.ytimg.com/vi/v55selftest01/mqdefault.jpg") {
+            "v55 resolved video derivable thumb"
         }
     }
 }

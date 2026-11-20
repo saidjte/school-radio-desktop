@@ -14,17 +14,20 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * عقد أغلفة نتائج البحث من يوتيوب (v0.54.0 — طلب: «في نتائج البحث في الاستيراد
- * من اليوتيوب أضف صورة غلاف الفيديو»):
+ * عقد أغلفة يوتيوب — نتائج البحث (v0.54.0 — طلب: «في نتائج البحث في الاستيراد
+ * من اليوتيوب أضف صورة غلاف الفيديو») وبطاقة الرابط المباشر (v0.55.0 — طلب:
+ * «اضفها في نتائج الرابط المباشر الى اليوتيوب»):
  *
  * 1) الرابط مشتق قياسيًا من videoId (i.ytimg.com mqdefault — 16:9 صغير سريع)،
  *    والمعرّف يُتحقق حرفيًا قبل الإدراج في الرابط (حارس حقن URL).
  * 2) خط التحميل الكامل بجالب محقون وفكك skia حقيقي: شبكة → صورة → ذاكرة،
  *    وإلغاء تكرار الطيران (طلبات متزامنة للمعرّف نفسه جلب واحد)، والفشل
- *    (بايتات تالفة/شبكة معطوبة) يعيد null بلا تخزين ولا توقف.
- * 3) ذاكرة بسقف 256 صفًا، وكل نتائج بحث محلولة تحمل معرّفًا قابلًا للاشتقاق.
+ *    (بايتات تالفة/شبكة معطوبة) يعيد null بلا تخزين ولا توقف — وذاكرة
+ *    مشتركة بين صفوف البحث وبطاقة الرابط المباشر في الحوار كله.
+ * 3) ذاكرة بسقف 256 صفًا، وكل نتائج البحث والمقاطع المحلولة من روابط
+ *    مباشرة تحمل معرّفًا قابلًا للاشتقاق.
  */
-class YouTubeThumbsV54Test {
+class YouTubeThumbsTest {
 
     // ===== 1) الاشتقاق القياسي من videoId =====
 
@@ -164,5 +167,20 @@ class YouTubeThumbsV54Test {
             assertEquals("https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg", YouTubeThumbs.thumbUrl(v.videoId),
                 "كل نتيجة تُشتق غلافًا")
         }
+    }
+
+    // ===== 9) مقطع محلول من رابط مباشر يحمل معرّفًا قابلًا للاشتقاق (v0.55.0) =====
+
+    @Test
+    fun `video resolved from direct url yields derivable thumbnail`() {
+        val json = """
+            {"id":"ccccccccccc","title":"من رابط مباشر","duration":180,"uploader":"قناة",
+             "webpage_url":"https://www.youtube.com/watch?v=ccccccccccc"}
+        """.trimIndent()
+        val v = YouTubeJson.parseVideo(json)
+        assertTrue(v != null && v.videoId == "ccccccccccc", "المقطع محلول من الرابط المباشر")
+        assertEquals("https://i.ytimg.com/vi/ccccccccccc/mqdefault.jpg", YouTubeThumbs.thumbUrl(v!!.videoId),
+            "بطاقة الرابط المباشر تُشتق الغلاف من المعرّف نفسه")
+        assertNull(YouTubeThumbs.thumbUrl("dQw4w9WgXcQ/extra"), "معرّف ملوث من رابط شاذ يرفض")
     }
 }
