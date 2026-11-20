@@ -1,5 +1,6 @@
 package com.saidjte.schoolradio.desktop.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -7,9 +8,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,6 +26,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,12 +35,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.saidjte.schoolradio.desktop.APP_VERSION
 import com.saidjte.schoolradio.desktop.AppViewModel
 import com.saidjte.schoolradio.desktop.youtube.YouTubeImportService
+import com.saidjte.schoolradio.desktop.youtube.YouTubeThumbs
 import com.saidjte.schoolradio.desktop.youtube.YouTubeUrl
 import java.io.File
 
@@ -298,6 +304,8 @@ fun YouTubeImportDialog(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
+                                    // غلاف الفيديو (v0.54.0) في الطرف المُقَدّم للصف
+                                    VideoThumb(v.videoId)
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             v.title,
@@ -498,6 +506,42 @@ private fun ModeChip(
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp)
     )
+}
+
+/**
+ * غلاف صف نتيجة البحث (v0.54.0): صورة 16:9 تُحمَّل لامتركيًا من CDN يوتيوب
+ * بذاكرة لكل معرّف، وبديل نوتة موسيقية حتى تصل الصورة أو عند فشل الشبكة —
+ * لا توقف للواجهة ولا إعادة محاولة داخل التركيب نفسه.
+ */
+@Composable
+private fun VideoThumb(videoId: String) {
+    var bmp by remember(videoId) { mutableStateOf(YouTubeThumbs.cached(videoId)) }
+    LaunchedEffect(videoId) {
+        if (bmp == null) bmp = YouTubeThumbs.load(videoId)
+    }
+    Box(
+        modifier = Modifier
+            .size(96.dp, 54.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
+    ) {
+        val b = bmp
+        if (b != null) {
+            Image(
+                bitmap = b,
+                contentDescription = null, // زخرفي — العنوان بجواره
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                "♪",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
 }
 
 /** بطاقة المقطع المجلوب من رابط: العنوان والقناة والمدة + زرا المعاينة والتحميل. */

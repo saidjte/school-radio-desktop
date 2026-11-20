@@ -74,6 +74,7 @@ import com.saidjte.schoolradio.desktop.youtube.AudioTranscoder
 import com.saidjte.schoolradio.desktop.youtube.YouTubeClientChain
 import com.saidjte.schoolradio.desktop.youtube.YouTubeImportService
 import com.saidjte.schoolradio.desktop.youtube.YouTubeJson
+import com.saidjte.schoolradio.desktop.youtube.YouTubeThumbs
 import com.saidjte.schoolradio.desktop.youtube.YouTubeUrl
 import com.saidjte.schoolradio.desktop.youtube.YtDlpLocator
 import java.io.File
@@ -2711,6 +2712,14 @@ object SelfTest {
                 // الكاملة لا توقفًا وسطها.
                 selftestV53(tmp)
 
+                // ================= v0.54.0: أغلفة نتائج البحث من يوتيوب =================
+                // طلب: «في نتائج البحث في الاستيراد من اليوتيوب أضف صورة غلاف الفيديو» —
+                // الرابط مشتق قياسيًا من videoId (i.ytimg.com mqdefault 16:9) بتحقق حرفي
+                // حارس حقن، وخط التحميل: ذاكرة → شبكة → فكّ skia → تخزين بسقف، وإلغاء
+                // تكرار الطيران. الفحص هنا بلا شبكة: جالب محقون يقرأ عيّنة JPEG مدمجة
+                // والفكّ skia الحقيقي داخل الجرة نفسها.
+                selftestV54()
+
             println("SELFTEST OK — version $APP_VERSION")
         } finally {
             tmp.listFiles()?.forEach { it.delete() }
@@ -2893,5 +2902,34 @@ object SelfTest {
                     eng53.stop()
                     eng53.awaitIdle()
                 }
+    }
+
+    /** كتلة فحص v0.54 (أغلفة نتائج البحث: اشتقاق + حارس + خط تحميل حقني بفكّ skia حقيقي) */
+    private fun selftestV54() {
+        check(YouTubeThumbs.thumbUrl("dQw4w9WgXcQ") == "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg") {
+            "v54 thumb url derivation"
+        }
+        check(YouTubeThumbs.thumbUrl("../bad id") == null && YouTubeThumbs.thumbUrl("short") == null) {
+            "v54 thumb url guard"
+        }
+        val jpeg = GuiTokens::class.java.classLoader.getResourceAsStream("selftest/tiny_thumb.jpg")?.readBytes()
+        check(jpeg != null && jpeg.size > 100) { "v54 tiny jpeg packaged" }
+        val realFetcher = YouTubeThumbs.fetcher
+        var fetches = 0
+        try {
+            YouTubeThumbs.fetcher = { fetches++; jpeg }
+            val id = "v54selftest01"
+            val bmp = kotlinx.coroutines.runBlocking { YouTubeThumbs.load(id) }
+            check(bmp != null && bmp.width == 8 && bmp.height == 8) { "v54 real skia decode ${bmp?.width}x${bmp?.height}" }
+            check(YouTubeThumbs.cached(id) === bmp) { "v54 cache hit" }
+            val again = kotlinx.coroutines.runBlocking { YouTubeThumbs.load(id) }
+            check(again === bmp && fetches == 1) { "v54 second load from cache (fetches=$fetches)" }
+            val results = YouTubeJson.parseSearchResults(
+                """{"_type":"playlist","entries":[{"id":"v54selfres01","title":"نتيجة","duration":60}]}"""
+            )
+            check(results.size == 1 && YouTubeThumbs.thumbUrl(results[0].videoId) != null) { "v54 search result derivable" }
+        } finally {
+            YouTubeThumbs.fetcher = realFetcher
+        }
     }
 }
